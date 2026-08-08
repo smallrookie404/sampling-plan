@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>系统测点布局调查 · 采样计划软件</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◎</span>
+      <div>
+        <h1>系统测点布局调查</h1>
+        <p class="sub">职业卫生检测采样计划自动生成工具</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btn-import" class="btn">导入 Excel</button>
+      <button id="btn-export" class="btn primary">导出 Excel</button>
+      <button id="btn-csv" class="btn">导出 CSV</button>
+      <button id="btn-save" class="btn">保存数据</button>
+      <button id="btn-db" class="btn">数据记录</button>
+      <button id="btn-reset" class="btn danger-ghost">清空表格</button>
+      <button id="btn-help" class="btn ghost">使用说明</button>
+      <input type="file" id="file-input" accept=".xlsx" hidden />
+      <input type="file" id="db-file-input" accept=".json" hidden />
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="main">测点布局调查</button>
+    <button class="tab" data-tab="hazard">危害因素库 <span id="hazard-count" class="badge"></span></button>
+    <button class="tab" data-tab="items">检测项目参考 <span id="items-count" class="badge"></span></button>
+  </nav>
+  <div id="storage-notice" class="notice hidden">
+    当前为「直接打开页面」模式，数据仅暂存于浏览器。请通过「启动采样计划软件.bat」打开软件，数据将保存到项目文件夹 <b>data\records.json</b>。
+  </div>
+
+  <section id="tab-main" class="tab-panel active">
+    <div class="grid-toolbar">
+      <div class="left">
+        <button id="btn-add" class="btn small">+ 新增行</button>
+        <button id="btn-insert" class="btn small">插入行</button>
+        <button id="btn-copy" class="btn small">复制行</button>
+        <button id="btn-del" class="btn small danger">删除行</button>
+      </div>
+      <div class="right">
+        <span class="legend"><i class="dot input"></i>录入区</span>
+        <span class="legend"><i class="dot computed"></i>自动计算</span>
+        <span class="legend"><i class="dot manual"></i>手工填写</span>
+        <span class="legend"><i class="dot override"></i>可覆盖</span>
+        <span class="legend"><i class="dot error"></i>错误</span>
+        <span id="grid-status" class="status"></span>
+      </div>
+    </div>
+    <div id="grid-wrap" class="grid-wrap">
+      <table id="main-grid" class="grid">
+        <thead id="grid-head"></thead>
+        <tbody id="grid-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-hazard" class="tab-panel">
+    <div class="grid-toolbar">
+      <div class="left">
+        <button id="hazard-add" class="btn small">+ 新增因素</button>
+        <button id="hazard-del" class="btn small danger">删除选中因素</button>
+        <button id="hazard-restore" class="btn small ghost">恢复默认库</button>
+      </div>
+      <div class="right">
+        <input id="hazard-search" class="search" type="text" placeholder="搜索危害因素…" />
+        <span id="hazard-status" class="status"></span>
+      </div>
+    </div>
+    <div class="hazard-wrap">
+      <table id="hazard-grid" class="grid hazard">
+        <thead id="hazard-head"></thead>
+        <tbody id="hazard-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-items" class="tab-panel">
+    <div class="grid-toolbar">
+      <div class="left">
+        <input id="items-search" class="search" type="text" placeholder="搜索检测项目…" />
+      </div>
+      <div class="right"><span id="items-status" class="status"></span></div>
+    </div>
+    <div id="items-list" class="items-list"></div>
+  </section>
+
+  <div id="help-modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>使用说明</h2>
+        <button id="help-close" class="btn small ghost">×</button>
+      </div>
+      <div class="modal-body">
+        <h3>这个软件做什么</h3>
+        <p>复刻《0.系统测点布局调查2025.12.19（6）.xlsx》的全部功能：录入现场调查信息后，右侧自动生成标准化的采样计划字段（检测项目规范名、班制、每班人数、采样类别、检测方式、检测天数、每天样品数、委外检测、粉尘性质、危害来源等），并实时校验填写是否正确。</p>
+        <h3>操作步骤</h3>
+        <ol>
+          <li>在「测点布局调查」页填写左侧<b>录入区</b>（白色列），右侧灰色列为自动计算结果；</li>
+          <li>黄色列（岗位性质、接触类型、是否采样/测量、检测方式）可在下拉中选择覆盖自动值，选择「（自动计算）」即恢复；</li>
+          <li>接害因素输入时有联想提示，名称必须能在「危害因素库」中查到；</li>
+          <li>点击行号可选中整行，用工具栏按钮新增/插入/复制/删除行；</li>
+          <li>新增/插入/复制/删除时可输入<b>自定义行数</b>，批量操作；</li>
+          <li>「保存数据」可为当前数据命名并保存到<b>项目文件夹的 data\records.json</b>；「数据记录」中可按名称或内容<b>搜索</b>，一键调用（替换当前表格），减少重复录入；</li>
+          <li>「危害因素库」页可维护因素字典（新增、删除、搜索），修改后主表自动重算；</li>
+          <li>点「导出 Excel」生成<b>只包含自动计算区（W~BI 共 39 列）</b>的交付文件；「导入 Excel」可载入该导出文件，也可载入原表结构的完整文件继续编辑。</li>
+        </ol>
+        <h3>自动计算规则（与原表公式一致）</h3>
+        <ul>
+          <li>单元/工作场所、岗位/工种、点位、人数、周天数、日接触时长等：同一岗位只填首行，空白自动继承上一行；</li>
+          <li>岗位性质缺省「固定」，作业方式缺省「半手工作业」，检测方式缺省「定点」，是否合岗缺省「否」；</li>
+          <li>检测项目：接害因素经危害因素库自动规范为系统内名称；</li>
+          <li>每班最大人数＝岗位总人数 ÷ 班制数（五班=5、四班=4、三班=3、两班=2），向上取整；</li>
+          <li>班制/班制数：同车间同岗位自动回填，缺省「单班 / 长白班」；</li>
+          <li>检测天数：游离二氧化硅、噪声、高温、工频电场、手传振动、高频电磁场、紫外辐射、有机组分定性→1 天，其余沿用录入的检测天数；</li>
+          <li>每天样品数：有机组分定性/个体采样/游离SiO₂/工频电场/高频电磁场→1；噪声/高温/手传振动→3；紫外辐射→1；日接触 0.5h→2、0.25h→1、其他→3；</li>
+          <li>采样时间类型：定点→短时间、个体→长时间；噪声源：同岗位存在个体噪声采样→是；危害来源：噪声/高温/紫外辐射→设备运行，否则原辅物料。</li>
+        </ul>
+        <p class="tip">提示：导出文件仅含自动计算区，供采样计划交付使用；数据记录以 data\records.json 保存在项目文件夹中，可在「数据记录」页导出 JSON 备份，请定期备份。</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="prompt-modal" class="modal hidden">
+    <div class="modal-box modal-sm">
+      <div class="modal-head">
+        <h2 id="prompt-title">输入</h2>
+        <button id="prompt-cancel" class="btn small ghost">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="prompt-hint" class="prompt-hint"></p>
+        <input id="prompt-input" class="search prompt-input" type="text" />
+        <p id="prompt-msg" class="err-msg"></p>
+        <div class="modal-actions">
+          <button id="prompt-ok" class="btn primary">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="db-modal" class="modal hidden">
+    <div class="modal-box modal-lg">
+      <div class="modal-head">
+        <h2>数据记录（保存于项目文件夹）</h2>
+        <button id="db-close" class="btn small ghost">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="db-toolbar">
+          <input id="db-search" class="search" type="text" placeholder="搜索记录名称或内容（车间/接害因素/检测项目）…" />
+          <button id="db-export" class="btn small">导出备份</button>
+          <button id="db-import" class="btn small">导入备份</button>
+          <span id="db-count" class="status"></span>
+        </div>
+        <div id="db-list" class="db-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/jszip.min.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/logic.js"></script>
+  <script src="js/xlsxio.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

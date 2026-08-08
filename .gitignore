@@ -1,0 +1,16 @@
+# Node 依赖链接（指向本机运行时目录，不入库）
+sampling-plan-app/node_modules/
+
+# 测试产物
+sampling-plan-app/tests/shots/
+sampling-plan-app/tests/out.xlsx
+
+# 临时文件
+*.tmp
+*.log
+
+# 测试用数据库文件（不入库，正式库为 data/records.json）
+sampling-plan-app/data/test-*.json
+
+# 原版 Excel 模板（含调查数据，默认不入库；如需入库请删除下面一行）
+0.系统测点布局调查*.xlsx
