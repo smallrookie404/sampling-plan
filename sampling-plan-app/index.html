@@ -22,6 +22,7 @@
       <button id="btn-csv" class="btn">导出 CSV</button>
       <button id="btn-save" class="btn">保存数据</button>
       <button id="btn-db" class="btn">数据记录</button>
+      <button id="btn-gh" class="btn ghost">GitHub 配置</button>
       <button id="btn-reset" class="btn danger-ghost">清空表格</button>
       <button id="btn-help" class="btn ghost">使用说明</button>
       <input type="file" id="file-input" accept=".xlsx" hidden />
@@ -110,6 +111,7 @@
           <li>点击行号可选中整行，用工具栏按钮新增/插入/复制/删除行；</li>
           <li>新增/插入/复制/删除时可输入<b>自定义行数</b>，批量操作；</li>
           <li>「保存数据」可为当前数据命名并保存到<b>项目文件夹的 data\records.json</b>；「数据记录」中可按名称或内容<b>搜索</b>，一键调用（替换当前表格），减少重复录入；</li>
+          <li>部署到静态网页（GitHub Pages）时，点「GitHub 配置」填写仓库与 Token，保存的数据将直接写入 GitHub 仓库中的 records.json；</li>
           <li>「危害因素库」页可维护因素字典（新增、删除、搜索），修改后主表自动重算；</li>
           <li>点「导出 Excel」生成<b>只包含自动计算区（W~BI 共 39 列）</b>的交付文件；「导入 Excel」可载入该导出文件，也可载入原表结构的完整文件继续编辑。</li>
         </ol>
@@ -160,6 +162,32 @@
           <span id="db-count" class="status"></span>
         </div>
         <div id="db-list" class="db-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="gh-modal" class="modal hidden">
+    <div class="modal-box modal-sm">
+      <div class="modal-head">
+        <h2>GitHub 配置（静态网页模式）</h2>
+        <button id="gh-close" class="btn small ghost">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="prompt-hint">部署在 GitHub Pages 等静态网页时，数据通过 GitHub API 读写仓库中的 records.json，请填写以下信息（Token 仅保存在本机浏览器，不会写入仓库）。</p>
+        <label class="field-label">仓库（用户名/仓库名）</label>
+        <input id="gh-repo" class="search prompt-input" type="text" placeholder="例如：yourname/sampling-plan" />
+        <label class="field-label">分支</label>
+        <input id="gh-branch" class="search prompt-input" type="text" value="main" />
+        <label class="field-label">数据文件路径</label>
+        <input id="gh-path" class="search prompt-input" type="text" value="sampling-plan-app/data/records.json" />
+        <label class="field-label">Token（Fine-grained PAT，需 Contents 读/写权限）</label>
+        <input id="gh-token" class="search prompt-input" type="password" placeholder="github_pat_…" />
+        <p id="gh-msg" class="err-msg"></p>
+        <div class="modal-actions">
+          <button id="gh-test" class="btn small">测试连接</button>
+          <button id="gh-clear" class="btn small danger-ghost">清除配置</button>
+          <button id="gh-save" class="btn primary">保存配置</button>
+        </div>
       </div>
     </div>
   </div>

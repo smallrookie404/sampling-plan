@@ -383,17 +383,75 @@
     renderWindow();
   });
 
-  // ---------- 数据记录（保存到项目文件夹 data/records.json） ----------
+  // ---------- 数据记录存储：本地服务 / GitHub API / 临时模式 ----------
   const RECORDS_KEY = "samplingPlanRecords_v1"; // 仅用于“临时模式”兜底
-  const serverMode = window.location.protocol === "http:" || window.location.protocol === "https:";
+  const GH_CONFIG_KEY = "samplingPlanGithubConfig_v1";
+  const GH_PATH_DEFAULT = "sampling-plan-app/data/records.json";
+  let storageMode = "detecting";
+  let ghSha = null;
 
-  function setStorageNotice(show) {
+  function loadGithubConfig() {
+    try {
+      return JSON.parse(localStorage.getItem(GH_CONFIG_KEY)) || null;
+    } catch {
+      return null;
+    }
+  }
+  function saveGithubConfig(cfg) {
+    try {
+      localStorage.setItem(GH_CONFIG_KEY, JSON.stringify(cfg));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function clearGithubConfig() {
+    try {
+      localStorage.removeItem(GH_CONFIG_KEY);
+    } catch {}
+  }
+
+  function setStorageNotice(show, text) {
     const el = $("storage-notice");
-    if (el) el.classList.toggle("hidden", !show);
+    if (!el) return;
+    if (text) el.innerHTML = text;
+    el.classList.toggle("hidden", !show);
+  }
+
+  function noticeHtml() {
+    if (storageMode === "server") return "";
+    if (storageMode === "github") {
+      return "当前为静态网页模式，数据通过 GitHub API 保存到仓库中的 <b>data/records.json</b>。";
+    }
+    if (storageMode === "static-unconfigured") {
+      return '当前为静态网页模式且未配置 GitHub：请在「<b>GitHub 配置</b>」中填写仓库与 Token，保存的数据将直接写入 GitHub 仓库的 <b>sampling-plan-app/data/records.json</b>；未配置时数据仅暂存浏览器。';
+    }
+    return '当前为「直接打开页面」模式，数据仅暂存于浏览器。请通过「<b>启动采样计划软件.bat</b>」打开软件，数据将保存到项目文件夹 <b>data\\records.json</b>。';
+  }
+
+  async function detectStorageMode() {
+    if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+      try {
+        const res = await fetch("/api/health", { cache: "no-store" });
+        if (res.ok) {
+          storageMode = "server";
+          return;
+        }
+      } catch {}
+      const cfg = loadGithubConfig();
+      storageMode = cfg && cfg.repo && cfg.token ? "github" : "static-unconfigured";
+      return;
+    }
+    storageMode = "temp";
+  }
+
+  async function ensureMode() {
+    if (storageMode === "detecting") await detectStorageMode();
   }
 
   async function loadRecords() {
-    if (serverMode) {
+    await ensureMode();
+    if (storageMode === "server") {
       try {
         const res = await fetch("/api/records", { cache: "no-store" });
         if (!res.ok) throw new Error("HTTP " + res.status);
@@ -404,12 +462,21 @@
         return localLoad();
       }
     }
-    setStorageNotice(true);
+    if (storageMode === "github") {
+      try {
+        return await githubLoad();
+      } catch (e) {
+        alert("读取 GitHub 数据失败：" + e.message);
+        return [];
+      }
+    }
+    setStorageNotice(true, noticeHtml());
     return localLoad();
   }
 
   async function persistRecords(list) {
-    if (serverMode) {
+    await ensureMode();
+    if (storageMode === "server") {
       try {
         const res = await fetch("/api/records", {
           method: "PUT",
@@ -424,7 +491,16 @@
         return localPersist(list);
       }
     }
-    setStorageNotice(true);
+    if (storageMode === "github") {
+      try {
+        return await githubPersist(list);
+      } catch (e) {
+        alert("保存到 GitHub 失败：" + e.message);
+        return false;
+      }
+    }
+    setStorageNotice(true, noticeHtml());
+    alert('当前为静态网页模式且未配置 GitHub，数据仅暂存到浏览器。请在「GitHub 配置」中填写仓库与 Token 后保存。');
     return localPersist(list);
   }
 
@@ -445,6 +521,65 @@
       alert("保存失败：" + e.message);
       return false;
     }
+  }
+
+  // GitHub API 读写（静态网页部署模式）
+  function githubApiUrl(cfg) {
+    const p = (cfg.path || GH_PATH_DEFAULT).split("/").map(encodeURIComponent).join("/");
+    const base = `https://api.github.com/repos/${cfg.repo}/contents/${p}`;
+    return cfg.branch ? `${base}?ref=${encodeURIComponent(cfg.branch)}` : base;
+  }
+
+  function githubRequest(cfg, method, body) {
+    return fetch(githubApiUrl(cfg), {
+      method,
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  async function githubLoad() {
+    const cfg = loadGithubConfig();
+    if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
+    const res = await githubRequest(cfg, "GET");
+    if (res.status === 404) {
+      ghSha = null;
+      return [];
+    }
+    if (!res.ok) throw new Error("HTTP " + res.status + "（请检查仓库名与 Token 权限）");
+    const data = await res.json();
+    ghSha = data.sha;
+    const list = JSON.parse(L.decodeUnicodeBase64(data.content));
+    return Array.isArray(list) ? list : [];
+  }
+
+  async function githubPersist(list) {
+    const cfg = loadGithubConfig();
+    if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
+    if (!ghSha) {
+      const res = await githubRequest(cfg, "GET");
+      if (res.status === 404) ghSha = null;
+      else if (res.ok) ghSha = (await res.json()).sha;
+      else throw new Error("HTTP " + res.status);
+    }
+    const payload = {
+      message: "更新数据记录（采样计划软件）",
+      content: L.encodeUnicodeBase64(JSON.stringify(list, null, 2)),
+      ...(ghSha ? { sha: ghSha } : {}),
+      ...(cfg.branch ? { branch: cfg.branch } : {}),
+    };
+    const res = await githubRequest(cfg, "PUT", payload);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error("HTTP " + res.status + "：" + (err.message || "请检查 Token 的 Contents 读/写权限"));
+    }
+    ghSha = (await res.json()).content?.sha || ghSha;
+    return true;
   }
 
   function isBlankRow(r) {
@@ -610,6 +745,84 @@
     } finally {
       e.target.value = "";
     }
+  });
+
+  // ---------- GitHub 配置（静态网页部署模式） ----------
+  $("btn-gh").addEventListener("click", () => {
+    const cfg = loadGithubConfig() || {};
+    $("gh-repo").value = cfg.repo || "";
+    $("gh-branch").value = cfg.branch || "main";
+    $("gh-path").value = cfg.path || GH_PATH_DEFAULT;
+    $("gh-token").value = cfg.token || "";
+    $("gh-msg").textContent = "";
+    $("gh-modal").classList.remove("hidden");
+  });
+  $("gh-close").addEventListener("click", () => $("gh-modal").classList.add("hidden"));
+  $("gh-modal").addEventListener("click", (e) => {
+    if (e.target.id === "gh-modal") $("gh-modal").classList.add("hidden");
+  });
+  $("gh-test").addEventListener("click", async () => {
+    const repo = $("gh-repo").value.trim();
+    const token = $("gh-token").value.trim();
+    if (!repo || !repo.includes("/") || !token) {
+      $("gh-msg").textContent = "请先填写仓库（用户名/仓库名）与 Token";
+      return;
+    }
+    $("gh-msg").textContent = "正在测试连接…";
+    const cfg = {
+      repo,
+      branch: $("gh-branch").value.trim() || "main",
+      path: $("gh-path").value.trim() || GH_PATH_DEFAULT,
+      token,
+    };
+    try {
+      const res = await githubRequest(cfg, "GET");
+      if (res.status === 404) {
+        $("gh-msg").textContent = "连接成功：数据文件尚不存在，首次保存时自动创建。";
+      } else if (res.ok) {
+        $("gh-msg").textContent = "连接成功：可读写 data/records.json。";
+      } else {
+        const err = await res.json().catch(() => ({}));
+        $("gh-msg").textContent = "连接失败：" + res.status + " " + (err.message || "");
+      }
+    } catch (e) {
+      $("gh-msg").textContent = "连接失败：" + e.message;
+    }
+  });
+  $("gh-save").addEventListener("click", () => {
+    const repo = $("gh-repo").value.trim();
+    const token = $("gh-token").value.trim();
+    if (!repo || !repo.includes("/")) {
+      $("gh-msg").textContent = "仓库格式应为：用户名/仓库名";
+      return;
+    }
+    if (!token) {
+      $("gh-msg").textContent = "请填写 Token";
+      return;
+    }
+    const cfg = {
+      repo,
+      branch: $("gh-branch").value.trim() || "main",
+      path: $("gh-path").value.trim() || GH_PATH_DEFAULT,
+      token,
+    };
+    if (saveGithubConfig(cfg)) {
+      if (storageMode !== "server") storageMode = "github";
+      ghSha = null;
+      setStorageNotice(false);
+      $("gh-modal").classList.add("hidden");
+      alert("GitHub 配置已保存，后续保存的数据将直接写入仓库 records.json。");
+    } else {
+      $("gh-msg").textContent = "保存失败（浏览器存储不可用）";
+    }
+  });
+  $("gh-clear").addEventListener("click", () => {
+    if (!confirm("确定清除 GitHub 配置？")) return;
+    clearGithubConfig();
+    ghSha = null;
+    if (storageMode === "github") storageMode = "static-unconfigured";
+    setStorageNotice(storageMode !== "server", noticeHtml());
+    $("gh-msg").textContent = "已清除配置。";
   });
 
   // ---------- 页签 ----------
@@ -903,14 +1116,15 @@
   });
 
   // ---------- 启动 ----------
-  function init() {
+  async function init() {
     hazardFactors = DEFAULT_DATA.hazardFactors.map((h) => ({ ...h }));
     detectionItems = DEFAULT_DATA.detectionItems.slice();
     loadSample();
     buildHead();
     renderHazardHead();
     rebuildDatalist();
-    if (!serverMode) setStorageNotice(true);
+    await detectStorageMode();
+    setStorageNotice(storageMode !== "server", noticeHtml());
     L.computeRows(rows, { hazardFactors, detectionItems });
     $("hazard-count").textContent = hazardFactors.length;
     $("items-count").textContent = detectionItems.length;

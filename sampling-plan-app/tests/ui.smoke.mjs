@@ -222,6 +222,39 @@ const afterDelete = JSON.parse(fs.readFileSync(TEST_DATA, "utf8"));
 if (afterDelete.some((r) => r.name === "测试记录A")) throw new Error("删除后记录文件仍残留数据");
 console.log("数据记录 保存/搜索/调用/持久化/删除 校验通过 ✔");
 
+// ---------- 9) GitHub 配置界面 ----------
+await page.click("#db-close");
+await page.waitForSelector("#db-modal.hidden", { state: "attached" });
+await page.click("#btn-gh");
+await page.waitForSelector("#gh-modal:not(.hidden)");
+await page.fill("#gh-repo", "testowner/sampling-plan");
+await page.fill("#gh-token", "github_pat_TEST");
+await page.click("#gh-save");
+await page.waitForTimeout(800);
+const ghClass = await page.getAttribute("#gh-modal", "class");
+const ghMsg = await page.textContent("#gh-msg");
+const ghStored = await page.evaluate(() => localStorage.getItem("samplingPlanGithubConfig_v1"));
+if (!ghClass.includes("hidden")) {
+  throw new Error(`GH 弹窗未关闭 class=${ghClass} msg=${ghMsg} stored=${ghStored} 浏览器错误=${JSON.stringify(errors)}`);
+}
+// 服务模式下存储模式不应被切换，提示条保持隐藏
+if (!(await page.$eval("#storage-notice", (el) => el.classList.contains("hidden")))) {
+  throw new Error("服务模式下不应显示存储提示条");
+}
+// 清除配置
+await page.click("#btn-gh");
+await page.waitForSelector("#gh-modal:not(.hidden)");
+await page.click("#gh-clear");
+await page.waitForTimeout(200);
+const ghMsg2 = await page.textContent("#gh-msg");
+if (!ghMsg2.includes("已清除")) throw new Error("清除配置失败: " + ghMsg2);
+const ghCleared = await page.evaluate(() => localStorage.getItem("samplingPlanGithubConfig_v1"));
+if (ghCleared !== null) throw new Error("GitHub 配置未清除");
+await page.click("#gh-close");
+await page.waitForSelector("#gh-modal.hidden", { state: "attached" });
+await page.waitForTimeout(150);
+console.log("GitHub 配置界面校验通过 ✔");
+
 await page.screenshot({ path: SHOT_DIR + "/4-main-after-export.png" });
 
 if (errors.length) {

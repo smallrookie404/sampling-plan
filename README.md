@@ -36,3 +36,18 @@ git push -u origin main
 > - 原版 Excel 模板默认未入库（见 `.gitignore`），如需要一起提交请删除 `.gitignore` 中对应行；
 > - 仓库为私有或公开由你的 GitHub 设置决定，公开仓库请不要包含敏感调查数据；
 > - 首次推送时 git 会弹出 GitHub 登录授权窗口（Git Credential Manager），按提示完成即可。
+
+## 部署到 GitHub Pages（静态网页）
+
+软件核心功能（计算、编辑、校验、导出）全部在浏览器端，可以发布为静态网页；数据保存通过 **GitHub API** 直接读写仓库中的 `sampling-plan-app/data/records.json`，数据库仍然在 GitHub 上。
+
+1. 把仓库推送到 GitHub（main 分支已包含 `.github/workflows/deploy-pages.yml` 自动部署工作流）；
+2. 在仓库 Settings → Pages 中把 Source 设为 **GitHub Actions**，等待部署完成；
+3. 打开 `https://<你的用户名>.github.io/<仓库名>/`；
+4. 点软件右上角「**GitHub 配置**」，填写仓库（用户名/仓库名）、分支、以及一个 **Fine-grained PAT**（仅授予该仓库 Contents 读/写权限）；
+5. 之后「保存数据」会直接更新 GitHub 仓库里的 `records.json`，与本机版的文件夹存储行为一致。
+
+> 安全提示：
+> - Token 只保存在你本机的浏览器中，**切勿提交到仓库或告诉他人**；
+> - 公开仓库请谨慎存放企业调查数据；
+> - 静态版没有本地服务，无法写本机文件夹，数据以 GitHub 仓库中的 records.json 为准。

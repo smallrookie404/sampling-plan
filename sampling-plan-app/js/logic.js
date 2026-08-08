@@ -73,6 +73,21 @@
     return v === null || v === undefined ? "" : String(v);
   }
 
+  // Unicode 安全的 base64（浏览器与 Node 通用），用于 GitHub API 读写 JSON
+  function encodeUnicodeBase64(str) {
+    const bytes = new TextEncoder().encode(String(str));
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function decodeUnicodeBase64(b64) {
+    const bin = atob(String(b64));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
   function contains(needle, hay) {
     return str(hay).includes(str(needle));
   }
@@ -376,6 +391,8 @@
     countErrors,
     snapshotRows,
     restoreRows,
+    encodeUnicodeBase64,
+    decodeUnicodeBase64,
     findDuplicates,
     findHazardByRec,
     findHazardByName,

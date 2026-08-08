@@ -158,4 +158,11 @@ if (!errs.AN || errs.AN !== "接害因素在危害因素库中未找到，请检
 const dup = logic.findDuplicates(data.detectionItems);
 if (dup.length) throw new Error("检测项目不应有重复: " + dup.join(","));
 
+// Unicode 安全 base64 往返（GitHub API 数据读写用）
+const demoJson = JSON.stringify({ name: "测试记录", rows: [{ A: "3号车间", D: "二氧化钛粉尘(总尘)" }] });
+if (logic.decodeUnicodeBase64(logic.encodeUnicodeBase64(demoJson)) !== demoJson) {
+  throw new Error("Unicode base64 往返失败");
+}
+console.log("Unicode base64 往返校验通过 ✔");
+
 console.log("引擎校验：全部通过 ✔");
