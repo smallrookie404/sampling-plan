@@ -1924,10 +1924,25 @@
   }
 
   // ---------- 导出 ----------
+  // 导出行范围：到“检测项目”列（AN）最后一个非空单元格为止；
+  // 若整表 AN 均为空（如接害因素未识别），则回退到最后一条有录入内容的行，避免导出空表
+  function lastExportRow() {
+    let lastAn = -1;
+    let lastContent = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if ((r.values.AN ?? "") !== "") lastAn = i;
+      if (!isBlankRow(r)) lastContent = i;
+    }
+    return lastAn >= 0 ? lastAn : lastContent;
+  }
+
   function exportWorkbook() {
     // 仅导出自动计算区（W~BI 共 39 列）
     const mainRows = [COMPUTED_HEADERS];
-    for (const r of rows) {
+    const end = lastExportRow() + 1;
+    for (let i = 0; i < end; i++) {
+      const r = rows[i];
       const line = [];
       for (const c of COMPUTED_COLS) {
         if (MANUAL_COLS.includes(c)) line.push(r.manual[c]);
@@ -1953,7 +1968,9 @@
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const lines = [COMPUTED_HEADERS.map(q).join(sep)];
-    for (const r of rows) {
+    const end = lastExportRow() + 1;
+    for (let i = 0; i < end; i++) {
+      const r = rows[i];
       const line = [];
       for (const c of COMPUTED_COLS) {
         if (MANUAL_COLS.includes(c)) line.push(r.manual[c]);
