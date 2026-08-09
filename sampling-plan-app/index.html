@@ -185,6 +185,8 @@
         <input id="gh-path" class="search prompt-input" type="text" value="sampling-plan-app/data/records.json" />
         <label class="field-label">Token（Fine-grained PAT，需 Contents 读/写权限）</label>
         <input id="gh-token" class="search prompt-input" type="password" placeholder="github_pat_…" />
+        <label class="token-toggle"><input type="checkbox" id="gh-show-token" /> 显示 Token</label>
+        <p class="prompt-hint">GitHub 在创建 Token 时仅显示一次，之后网页上无法再查看；本软件会将 Token 保存在本机浏览器中，重新打开配置时会自动填入，无需重复输入。如换浏览器或换电脑，请重新创建 Token 后填写。</p>
         <p id="gh-msg" class="err-msg"></p>
         <div class="modal-actions">
           <button id="gh-test" class="btn small">测试连接</button>

@@ -834,8 +834,13 @@
     $("gh-branch").value = cfg.branch || "main";
     $("gh-path").value = cfg.path || GH_PATH_DEFAULT;
     $("gh-token").value = cfg.token || "";
+    $("gh-show-token").checked = false;
+    $("gh-token").type = "password";
     $("gh-msg").textContent = "";
     $("gh-modal").classList.remove("hidden");
+  });
+  $("gh-show-token").addEventListener("change", () => {
+    $("gh-token").type = $("gh-show-token").checked ? "text" : "password";
   });
   $("gh-close").addEventListener("click", () => $("gh-modal").classList.add("hidden"));
   $("gh-modal").addEventListener("click", (e) => {

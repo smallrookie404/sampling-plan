@@ -234,6 +234,12 @@ if (!(await page.$eval("#sync-status", (el) => el.classList.contains("hidden")))
 }
 await page.click("#btn-gh");
 await page.waitForSelector("#gh-modal:not(.hidden)");
+// Token 显示/隐藏开关
+if ((await page.getAttribute("#gh-token", "type")) !== "password") throw new Error("Token 应为密码类型");
+await page.check("#gh-show-token");
+if ((await page.getAttribute("#gh-token", "type")) !== "text") throw new Error("显示 Token 开关无效");
+await page.uncheck("#gh-show-token");
+if ((await page.getAttribute("#gh-token", "type")) !== "password") throw new Error("隐藏 Token 开关无效");
 await page.fill("#gh-repo", "testowner/sampling-plan");
 await page.fill("#gh-token", "github_pat_TEST");
 await page.click("#gh-save");
