@@ -137,9 +137,9 @@ console.log("覆盖联动校验通过 ✔");
 // 4) 危害因素页
 await page.click('.tab[data-tab="hazard"]');
 await page.waitForSelector("#hazard-body tr", { timeout: 5000 });
-const hazardRows = await page.$$eval("#hazard-body tr", (trs) => trs.length);
 const hazardStatus = await page.textContent("#hazard-status");
-if (hazardRows < 100) throw new Error("危害因素行数过少: " + hazardRows);
+const hazardCount = Number((hazardStatus.match(/共 (\d+) 条/) || [])[1] || 0);
+if (hazardCount < 100) throw new Error("危害因素数量异常: " + hazardStatus);
 console.log("危害因素页:", hazardStatus, "✔");
 await page.screenshot({ path: SHOT_DIR + "/2-hazard.png" });
 

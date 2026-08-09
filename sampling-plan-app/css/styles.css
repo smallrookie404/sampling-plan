@@ -206,6 +206,12 @@ table.grid {
   background: #dbeafe !important;
   box-shadow: inset 0 0 0 1.5px var(--primary);
 }
+.grid.hazard tbody tr.selected td { background: #dbeafe !important; }
+.grid.hazard tbody tr.selected td.rowno {
+  background: var(--primary) !important;
+  color: #fff;
+  font-weight: 700;
+}
 .grid tbody td.cur {
   position: relative;
   z-index: 2;

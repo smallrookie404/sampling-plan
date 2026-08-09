@@ -1888,6 +1888,8 @@
   const HAZARD_HEADERS = ["识别", "系统名称", "粉尘性质", "定性分析", "委外检测", "计算TWA", "计算STEL", "计算CPE", "计算MAC", "结果保留位数", "存在高毒物品", "不检测原因说明"];
   const HAZARD_KEYS = ["rec", "name", "dust", "qual", "outsource", "twa", "stel", "cpe", "mac", "digits", "highTox", "noTestReason"];
   const YESNO_COLS = new Set([3, 4, 5, 6, 7, 8, 10]);
+  const HAZARD_ROW_H = 30;
+  let lastHazardScrollTop = 0;
 
   function blankHazard() {
     const h = {};
@@ -1902,13 +1904,23 @@
 
   function renderHazard() {
     const q = $("hazard-search").value.trim();
-    const list = hazardFactors.filter((h) => !q || h.rec.includes(q) || h.name.includes(q));
+    const list = hazardFactors
+      .map((h, idx) => ({ h, idx }))
+      .filter((x) => !q || x.h.rec.includes(q) || x.h.name.includes(q));
     const body = $("hazard-body");
+    const wrap = document.querySelector(".hazard-wrap");
+    // 窗口化渲染：只生成可见行，大幅降低点击/删除/搜索时的 DOM 开销
+    const st = wrap ? wrap.scrollTop : 0;
+    const ch = wrap ? wrap.clientHeight : 600;
+    const start = Math.max(0, Math.floor(st / HAZARD_ROW_H) - 10);
+    const visible = Math.ceil(ch / HAZARD_ROW_H) + 22;
+    const end = Math.min(list.length, start + visible);
     let html = "";
-    list.forEach((h, idx) => {
-      const absIdx = hazardFactors.indexOf(h);
-      html += `<tr data-h="${absIdx}">` +
-        `<td class="rowno${absIdx === selectedHazard ? " selected" : ""}" data-h="${absIdx}">${absIdx + 1}</td>` +
+    for (let i = start; i < end; i++) {
+      const { h, idx: absIdx } = list[i];
+      const sel = absIdx === selectedHazard;
+      html += `<tr data-h="${absIdx}"${sel ? ' class="selected"' : ""}>` +
+        `<td class="rowno${sel ? " selected" : ""}" data-h="${absIdx}">${absIdx + 1}</td>` +
         HAZARD_KEYS.map((k, ci) => {
           const val = fmt(h[k]);
           let inner;
@@ -1918,10 +1930,22 @@
           else inner = `<input data-k="${k}" value="${escAttr(val)}">`;
           return `<td class="${ci === 9 ? "cell-num" : ""}">${inner}</td>`;
         }).join("") + `</tr>`;
-    });
+    }
+    const spacer = Math.max(0, list.length - end) * HAZARD_ROW_H;
+    if (spacer > 0) html += `<tr class="hazard-spacer" style="height:${spacer}px"><td colspan="${HAZARD_KEYS.length + 1}"></td></tr>`;
     body.innerHTML = html;
     $("hazard-status").textContent = `共 ${hazardFactors.length} 条 · 显示 ${list.length} 条`;
     scheduleWidths();
+  }
+
+  const hazardWrap = document.querySelector(".hazard-wrap");
+  if (hazardWrap) {
+    hazardWrap.addEventListener("scroll", () => {
+      if (Math.abs(hazardWrap.scrollTop - lastHazardScrollTop) > HAZARD_ROW_H) {
+        lastHazardScrollTop = hazardWrap.scrollTop;
+        renderHazard();
+      }
+    });
   }
 
   function optionList(options, cur) {
@@ -1943,20 +1967,31 @@
     onHazardChange();
   });
   $("hazard-body").addEventListener("click", (e) => {
-    const td = e.target.closest("td.rowno");
-    if (!td) return;
-    selectedHazard = Number(td.dataset.h);
+    const tr = e.target.closest("tr[data-h]");
+    if (!tr) return;
+    const idx = Number(tr.dataset.h);
+    selectedHazard = idx;
+    // 只切换高亮类，不重建表格，点击无卡顿
+    for (const t of $("hazard-body").querySelectorAll("tr[data-h]")) {
+      const sel = Number(t.dataset.h) === idx;
+      t.classList.toggle("selected", sel);
+      const rno = t.querySelector("td.rowno");
+      if (rno) rno.classList.toggle("selected", sel);
+    }
+  });
+  $("hazard-search").addEventListener("input", () => {
+    if (hazardWrap) hazardWrap.scrollTop = 0;
     renderHazard();
   });
-  $("hazard-search").addEventListener("input", renderHazard);
   $("hazard-add").addEventListener("click", () => {
     hazardFactors.push(blankHazard());
     selectedHazard = hazardFactors.length - 1;
+    if (hazardWrap) hazardWrap.scrollTop = hazardWrap.scrollHeight;
     renderHazard();
     onHazardChange();
   });
   $("hazard-del").addEventListener("click", () => {
-    if (selectedHazard < 0) { alert("请先点击行号选中要删除的因素。"); return; }
+    if (selectedHazard < 0) { alert("请先点击选中要删除的因素行。"); return; }
     if (!confirm(`确定删除「${hazardFactors[selectedHazard].rec || hazardFactors[selectedHazard].name || selectedHazard + 1}」？`)) return;
     hazardFactors.splice(selectedHazard, 1);
     selectedHazard = -1;
