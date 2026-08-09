@@ -292,6 +292,9 @@
     const end = Math.min(total, start + visible);
     let html = "";
     renderedRows = [];
+    // 顶部占位行：保证总高度恒定，虚拟滚动才能稳定滚动到底
+    const topSpacer = start * ROW_H;
+    if (topSpacer > 0) html += `<tr class="row-spacer" style="height:${topSpacer}px"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     for (let i = start; i < end; i++) {
       renderedRows.push(i);
       const r = rows[i];
@@ -300,7 +303,7 @@
       html += `<tr data-r="${i}"${i === selectedRow ? ' class="selected"' : ""}>${cells}</tr>`;
     }
     const spacer = Math.max(0, total - end) * ROW_H;
-    if (spacer > 0) html += `<tr style="height:${spacer}px"><td></td></tr>`;
+    if (spacer > 0) html += `<tr style="height:${spacer}px"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     gridBody.innerHTML = html;
     refreshStatus();
     updateSelectionClasses();
@@ -1916,6 +1919,9 @@
     const visible = Math.ceil(ch / HAZARD_ROW_H) + 22;
     const end = Math.min(list.length, start + visible);
     let html = "";
+    // 顶部占位行：保证表格总高度恒定（list.length × 行高），滚动位置才能稳定推进
+    const topSpacer = start * HAZARD_ROW_H;
+    if (topSpacer > 0) html += `<tr class="hazard-spacer" style="height:${topSpacer}px"><td colspan="${HAZARD_KEYS.length + 1}"></td></tr>`;
     for (let i = start; i < end; i++) {
       const { h, idx: absIdx } = list[i];
       const sel = absIdx === selectedHazard;
