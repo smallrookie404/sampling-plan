@@ -690,6 +690,16 @@
     return INPUT_COLS.length - 1;
   }
 
+  // Ctrl+A 全选整张表（当前单元格保留为锚点）
+  function selectAllCells() {
+    if (rows.length === 0) return;
+    const anchor = cur || { r: 0, c: 0 };
+    selAnchor = anchor;
+    selStart = { r: 0, c: 0 };
+    selEnd = { r: rows.length - 1, c: ALL_COLS.length - 1 };
+    updateSelectionClasses();
+  }
+
   gridBody.addEventListener("mousedown", (e) => {
     const td = e.target.closest("td[data-c]");
     if (!td) return;
@@ -784,7 +794,12 @@
         setCur(lastR, lastDataCol(lastR));
         return;
       }
-      if (["c", "v", "x", "a"].includes(key.toLowerCase())) return; // 原生复制/粘贴/剪切/全选
+      if (key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectAllCells();
+        return;
+      }
+      if (["c", "v", "x"].includes(key.toLowerCase())) return; // 原生复制/粘贴/剪切
       return;
     }
 
