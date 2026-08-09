@@ -1888,7 +1888,7 @@
   });
 
   // ---------- 危害因素库 ----------
-  const HAZARD_HEADERS = ["识别", "系统名称", "粉尘性质", "定性分析", "委外检测", "计算TWA", "计算STEL", "计算CPE", "计算MAC", "结果保留位数", "存在高毒物品", "不检测原因说明"];
+  const HAZARD_HEADERS = ["序号", "识别", "系统名称", "粉尘性质", "定性分析", "委外检测", "计算TWA", "计算STEL", "计算CPE", "计算MAC", "结果保留位数", "存在高毒物品", "不检测原因说明"];
   const HAZARD_KEYS = ["rec", "name", "dust", "qual", "outsource", "twa", "stel", "cpe", "mac", "digits", "highTox", "noTestReason"];
   const YESNO_COLS = new Set([3, 4, 5, 6, 7, 8, 10]);
   const HAZARD_ROW_H = 30;
