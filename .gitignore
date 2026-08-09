@@ -9,6 +9,10 @@ sampling-plan-app/tests/out.xlsx
 *.tmp
 *.log
 
+# 本地服务运行日志（不入库）
+sampling-plan-app/server-error.log
+sampling-plan-app/server.log
+
 # 测试用数据库文件（不入库，正式库为 data/records.json）
 sampling-plan-app/data/test-*.json
 
