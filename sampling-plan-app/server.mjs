@@ -106,7 +106,8 @@ export function startServer(opts = {}) {
   return new Promise((resolve, reject) => {
     const server = createServer(opts);
     server.once("error", reject);
-    server.listen(opts.port || DEFAULT_PORT, "127.0.0.1", () => resolve(server));
+    const port = opts.port === undefined ? DEFAULT_PORT : opts.port;
+    server.listen(port, "127.0.0.1", () => resolve(server));
   });
 }
 

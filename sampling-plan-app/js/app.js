@@ -418,6 +418,48 @@
     el.classList.toggle("hidden", !show);
   }
 
+  function setSyncStatus(state, msg) {
+    const el = $("sync-status");
+    if (!el) return;
+    const cfg = loadGithubConfig();
+    if (!cfg || !cfg.repo) {
+      el.classList.add("hidden");
+      return;
+    }
+    el.classList.remove("hidden");
+    const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    if (state === "ok") {
+      el.className = "sync-status ok";
+      el.innerHTML = `✓ 已从 GitHub 同步（${t}）：<b>${escHtml(cfg.repo)}</b>，保存的数据将直接写回 GitHub。`;
+    } else if (state === "err") {
+      el.className = "sync-status err";
+      el.innerHTML = `✕ GitHub 同步失败（${t}）：${escHtml(msg || "未知错误")}，本次使用本地数据。`;
+    } else {
+      el.className = "sync-status syncing";
+      el.innerHTML = `⟳ 正在从 GitHub 同步…（${escHtml(cfg.repo)}）`;
+    }
+  }
+
+  function hasGithubConfig() {
+    const cfg = loadGithubConfig();
+    return !!(cfg && cfg.repo && cfg.token);
+  }
+
+  // 将最新数据镜像到本地（本地文件或浏览器），作为离线兜底
+  function mirrorToLocal(list) {
+    try {
+      if (storageMode === "server") {
+        fetch("/api/records", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(list),
+        }).catch(() => {});
+      } else {
+        localStorage.setItem(RECORDS_KEY, JSON.stringify(list));
+      }
+    } catch {}
+  }
+
   function noticeHtml() {
     if (storageMode === "server") return "";
     if (storageMode === "github") {
@@ -451,6 +493,18 @@
 
   async function loadRecords() {
     await ensureMode();
+    // 配置了 GitHub：优先从 GitHub 读取，实现“打开即同步”
+    if (hasGithubConfig()) {
+      setSyncStatus("syncing");
+      try {
+        const list = await githubLoad();
+        mirrorToLocal(list);
+        setSyncStatus("ok");
+        return list;
+      } catch (e) {
+        setSyncStatus("err", e.message);
+      }
+    }
     if (storageMode === "server") {
       try {
         const res = await fetch("/api/records", { cache: "no-store" });
@@ -476,6 +530,19 @@
 
   async function persistRecords(list) {
     await ensureMode();
+    // 配置了 GitHub：优先写回 GitHub，随后镜像到本地
+    if (hasGithubConfig()) {
+      setSyncStatus("syncing");
+      try {
+        const ok = await githubPersist(list);
+        mirrorToLocal(list);
+        setSyncStatus("ok");
+        return ok;
+      } catch (e) {
+        setSyncStatus("err", e.message);
+        alert("保存到 GitHub 失败：" + e.message + "，已改存本地。");
+      }
+    }
     if (storageMode === "server") {
       try {
         const res = await fetch("/api/records", {
@@ -531,6 +598,8 @@
   }
 
   function githubRequest(cfg, method, body) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
     return fetch(githubApiUrl(cfg), {
       method,
       headers: {
@@ -540,7 +609,8 @@
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
-    });
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(timer));
   }
 
   async function githubLoad() {
@@ -561,25 +631,33 @@
   async function githubPersist(list) {
     const cfg = loadGithubConfig();
     if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
-    if (!ghSha) {
-      const res = await githubRequest(cfg, "GET");
-      if (res.status === 404) ghSha = null;
-      else if (res.ok) ghSha = (await res.json()).sha;
-      else throw new Error("HTTP " + res.status);
+    const content = L.encodeUnicodeBase64(JSON.stringify(list, null, 2));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!ghSha) {
+        const res = await githubRequest(cfg, "GET");
+        if (res.status === 404) ghSha = null;
+        else if (res.ok) ghSha = (await res.json()).sha;
+        else throw new Error("HTTP " + res.status);
+      }
+      const payload = {
+        message: "更新数据记录（采样计划软件）",
+        content,
+        ...(ghSha ? { sha: ghSha } : {}),
+        ...(cfg.branch ? { branch: cfg.branch } : {}),
+      };
+      const res = await githubRequest(cfg, "PUT", payload);
+      if (res.status === 409 && attempt === 0) {
+        ghSha = null; // 文件被其他端修改，重取 sha 后重试一次
+        continue;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error("HTTP " + res.status + "：" + (err.message || "请检查 Token 的 Contents 读/写权限"));
+      }
+      ghSha = (await res.json()).content?.sha || ghSha;
+      return true;
     }
-    const payload = {
-      message: "更新数据记录（采样计划软件）",
-      content: L.encodeUnicodeBase64(JSON.stringify(list, null, 2)),
-      ...(ghSha ? { sha: ghSha } : {}),
-      ...(cfg.branch ? { branch: cfg.branch } : {}),
-    };
-    const res = await githubRequest(cfg, "PUT", payload);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error("HTTP " + res.status + "：" + (err.message || "请检查 Token 的 Contents 读/写权限"));
-    }
-    ghSha = (await res.json()).content?.sha || ghSha;
-    return true;
+    throw new Error("更新冲突，请稍后重试");
   }
 
   function isBlankRow(r) {
@@ -645,6 +723,7 @@
     const q = $("db-search").value.trim().toLowerCase();
     const list = (await loadRecords()).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
     const shown = q ? list.filter((r) => recordSearchText(r).includes(q)) : list;
+    $("db-refresh").style.display = hasGithubConfig() ? "" : "none";
     $("db-count").textContent = `共 ${list.length} 条${q ? ` · 匹配 ${shown.length} 条` : ""}`;
     const box = $("db-list");
     if (!shown.length) {
@@ -683,6 +762,7 @@
     if (e.target.id === "db-modal") $("db-modal").classList.add("hidden");
   });
   $("db-search").addEventListener("input", () => renderDbList());
+  $("db-refresh").addEventListener("click", () => renderDbList());
 
   $("db-list").addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
@@ -789,7 +869,7 @@
       $("gh-msg").textContent = "连接失败：" + e.message;
     }
   });
-  $("gh-save").addEventListener("click", () => {
+  $("gh-save").addEventListener("click", async () => {
     const repo = $("gh-repo").value.trim();
     const token = $("gh-token").value.trim();
     if (!repo || !repo.includes("/")) {
@@ -811,7 +891,8 @@
       ghSha = null;
       setStorageNotice(false);
       $("gh-modal").classList.add("hidden");
-      alert("GitHub 配置已保存，后续保存的数据将直接写入仓库 records.json。");
+      alert("GitHub 配置已保存，正在从 GitHub 同步数据…");
+      loadRecords().catch(() => {}); // 打开即同步
     } else {
       $("gh-msg").textContent = "保存失败（浏览器存储不可用）";
     }
@@ -820,6 +901,7 @@
     if (!confirm("确定清除 GitHub 配置？")) return;
     clearGithubConfig();
     ghSha = null;
+    setSyncStatus(null);
     if (storageMode === "github") storageMode = "static-unconfigured";
     setStorageNotice(storageMode !== "server", noticeHtml());
     $("gh-msg").textContent = "已清除配置。";
@@ -1125,6 +1207,9 @@
     rebuildDatalist();
     await detectStorageMode();
     setStorageNotice(storageMode !== "server", noticeHtml());
+    if (hasGithubConfig()) {
+      loadRecords().catch(() => {}); // 打开时自动从 GitHub 同步
+    }
     L.computeRows(rows, { hazardFactors, detectionItems });
     $("hazard-count").textContent = hazardFactors.length;
     $("items-count").textContent = detectionItems.length;

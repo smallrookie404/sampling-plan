@@ -38,6 +38,7 @@
   <div id="storage-notice" class="notice hidden">
     当前为「直接打开页面」模式，数据仅暂存于浏览器。请通过「启动采样计划软件.bat」打开软件，数据将保存到项目文件夹 <b>data\records.json</b>。
   </div>
+  <div id="sync-status" class="sync-status hidden"></div>
 
   <section id="tab-main" class="tab-panel active">
     <div class="grid-toolbar">
@@ -112,6 +113,7 @@
           <li>新增/插入/复制/删除时可输入<b>自定义行数</b>，批量操作；</li>
           <li>「保存数据」可为当前数据命名并保存到<b>项目文件夹的 data\records.json</b>；「数据记录」中可按名称或内容<b>搜索</b>，一键调用（替换当前表格），减少重复录入；</li>
           <li>部署到静态网页（GitHub Pages）时，点「GitHub 配置」填写仓库与 Token，保存的数据将直接写入 GitHub 仓库中的 records.json；</li>
+          <li>配置 GitHub 后（本地版或网页版均可），软件<b>打开时自动从 GitHub 同步</b>最新数据，保存时直接写回 GitHub，本地文件仅作离线兜底；</li>
           <li>「危害因素库」页可维护因素字典（新增、删除、搜索），修改后主表自动重算；</li>
           <li>点「导出 Excel」生成<b>只包含自动计算区（W~BI 共 39 列）</b>的交付文件；「导入 Excel」可载入该导出文件，也可载入原表结构的完整文件继续编辑。</li>
         </ol>
@@ -157,6 +159,7 @@
       <div class="modal-body">
         <div class="db-toolbar">
           <input id="db-search" class="search" type="text" placeholder="搜索记录名称或内容（车间/接害因素/检测项目）…" />
+          <button id="db-refresh" class="btn small">从 GitHub 刷新</button>
           <button id="db-export" class="btn small">导出备份</button>
           <button id="db-import" class="btn small">导入备份</button>
           <span id="db-count" class="status"></span>

@@ -110,6 +110,20 @@ body {
 }
 .notice.hidden { display: none; }
 
+/* GitHub 同步状态提示条 */
+.sync-status {
+  margin: 8px 14px 0;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  border: 1px solid;
+}
+.sync-status.ok { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
+.sync-status.err { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+.sync-status.syncing { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+.sync-status.hidden { display: none; }
+
 .tab-panel { display: none; flex: 1; min-height: 0; padding: 12px 14px; }
 .tab-panel.active { display: flex; flex-direction: column; }
 

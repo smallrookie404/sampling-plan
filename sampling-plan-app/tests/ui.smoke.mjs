@@ -26,7 +26,11 @@ page.on("dialog", (d) => d.accept());
 
 const errors = [];
 page.on("console", (msg) => {
-  if (msg.type() === "error") errors.push("console: " + msg.text());
+  if (msg.type() === "error") {
+    // 测试环境无外网：GitHub 预同步请求被沙箱拦截属预期，不视为失败
+    if (msg.text().includes("ERR_NETWORK_ACCESS_DENIED")) return;
+    errors.push("console: " + msg.text());
+  }
 });
 page.on("pageerror", (err) => errors.push("pageerror: " + err.message));
 
@@ -225,6 +229,9 @@ console.log("数据记录 保存/搜索/调用/持久化/删除 校验通过 ✔
 // ---------- 9) GitHub 配置界面 ----------
 await page.click("#db-close");
 await page.waitForSelector("#db-modal.hidden", { state: "attached" });
+if (!(await page.$eval("#sync-status", (el) => el.classList.contains("hidden")))) {
+  throw new Error("未配置 GitHub 时不应显示同步状态条");
+}
 await page.click("#btn-gh");
 await page.waitForSelector("#gh-modal:not(.hidden)");
 await page.fill("#gh-repo", "testowner/sampling-plan");
@@ -253,6 +260,9 @@ if (ghCleared !== null) throw new Error("GitHub 配置未清除");
 await page.click("#gh-close");
 await page.waitForSelector("#gh-modal.hidden", { state: "attached" });
 await page.waitForTimeout(150);
+if (!(await page.$eval("#sync-status", (el) => el.classList.contains("hidden")))) {
+  throw new Error("清除配置后同步状态条应隐藏");
+}
 console.log("GitHub 配置界面校验通过 ✔");
 
 await page.screenshot({ path: SHOT_DIR + "/4-main-after-export.png" });
