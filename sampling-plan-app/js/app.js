@@ -2265,7 +2265,8 @@
     renderHazardHead();
     rebuildDatalist();
     await detectStorageMode();
-    setStorageNotice(storageMode !== "server", noticeHtml());
+    // GitHub 已配置并同步时不显示提示条，仅未配置/临时模式时提示
+    setStorageNotice(storageMode !== "server" && storageMode !== "github", noticeHtml());
     try {
       const lib = await loadLibrary();
       if (lib) {
