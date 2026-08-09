@@ -36,6 +36,81 @@
   const COMPUTED_HEADERS = COMPUTED_COLS.map((c) => HEADERS[colIdx(c)]);
   const COMPUTED_WIDTHS = COMPUTED_COLS.map((c) => COL_W[colIdx(c)]);
 
+  // ---------- 列宽自适应（按浏览器实际文字宽度测量） ----------
+  const measureCtx = (() => {
+    const c = document.createElement("canvas");
+    return c.getContext("2d");
+  })();
+  const CELL_FONT = "'Microsoft YaHei','PingFang SC','Segoe UI','Arial',sans-serif";
+
+  function measureTextWidth(text, sizePx, bold) {
+    measureCtx.font = `${bold ? "bold " : ""}${sizePx}px ${CELL_FONT}`;
+    return measureCtx.measureText(String(text)).width;
+  }
+
+  function columnWidths(cols, getHeader, getValue, rowsList, dataSize, headerSize, min, max, pad) {
+    return cols.map((_, i) => {
+      let w = measureTextWidth(getHeader(i), headerSize, true) + pad + 2;
+      for (const r of rowsList) {
+        const v = getValue(r, i);
+        if (v === "" || v === null || v === undefined) continue;
+        const t = String(v);
+        if (t.length > 60) continue; // 超长文本由省略号处理，避免列宽失控
+        const cw = measureTextWidth(t, dataSize, false) + pad;
+        if (cw > w) w = cw;
+      }
+      return Math.max(min, Math.min(max, Math.ceil(w)));
+    });
+  }
+
+  function applyGridWidths() {
+    const w = columnWidths(
+      ALL_COLS,
+      (i) => HEADERS[i],
+      (r, i) => {
+        const c = ALL_COLS[i];
+        if (c === "V") return "";
+        if (INPUT_COLS.includes(c)) return r.input[c];
+        if (MANUAL_COLS.includes(c)) return r.manual[c];
+        return r.values[c];
+      },
+      rows,
+      12,
+      11.5,
+      56,
+      380,
+      14
+    );
+    w[21] = 18; // V 列是分隔空列，保持窄
+    $("grid-cols").innerHTML =
+      "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
+  }
+
+  function applyHazardWidths() {
+    const w = columnWidths(
+      HAZARD_KEYS,
+      (i) => HAZARD_HEADERS[i],
+      (h, i) => h[HAZARD_KEYS[i]],
+      hazardFactors,
+      12,
+      12,
+      60,
+      360,
+      14
+    );
+    $("hazard-cols").innerHTML =
+      "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
+  }
+
+  let widthTimer = null;
+  function scheduleWidths() {
+    clearTimeout(widthTimer);
+    widthTimer = setTimeout(() => {
+      applyGridWidths();
+      applyHazardWidths();
+    }, 350);
+  }
+
   // ---------- 状态 ----------
   let rows = [];
   let hazardFactors = [];
@@ -86,14 +161,13 @@
   function buildHead() {
     const groupTh = (label, colSpan) =>
       `<th class="group" colspan="${colSpan}">${label}</th>`;
-    const fieldTh = (label, c) =>
-      `<th class="field" style="width:${COL_W[colIdx(c)]}ch">${label || "&nbsp;"}</th>`;
+    const fieldTh = (label) => `<th class="field">${label || "&nbsp;"}</th>`;
     let groupHtml = `<th class="corner" rowspan="2" style="width:40px">行</th>`;
     groupHtml += groupTh("录 入 区", INPUT_COLS.length);
     groupHtml += groupTh("&nbsp;", 1);
     groupHtml += groupTh("自动计算区（与原表 W~BI 列一致）", COMPUTED_COLS.length);
     let fieldHtml = "";
-    for (const c of ALL_COLS) fieldHtml += fieldTh(HEADERS[colIdx(c)], c);
+    for (const c of ALL_COLS) fieldHtml += fieldTh(HEADERS[colIdx(c)]);
     gridHead.innerHTML =
       `<tr class="group-row">${groupHtml}</tr>` +
       `<tr class="field-row">${fieldHtml}</tr>`;
@@ -243,6 +317,7 @@
     L.computeRows(rows, { hazardFactors, detectionItems });
     updateVisibleCells();
     refreshStatus();
+    scheduleWidths();
   }
 
   function updateVisibleCells() {
@@ -945,7 +1020,7 @@
 
   function renderHazardHead() {
     $("hazard-head").innerHTML =
-      `<tr>${HAZARD_HEADERS.map((h, i) => `<th style="width:${i === 0 || i === 1 ? 22 : 12}ch">${h}</th>`).join("")}</tr>`;
+      `<tr>${HAZARD_HEADERS.map((h) => `<th>${h}</th>`).join("")}</tr>`;
   }
 
   function renderHazard() {
@@ -969,6 +1044,7 @@
     });
     body.innerHTML = html;
     $("hazard-status").textContent = `共 ${hazardFactors.length} 条 · 显示 ${list.length} 条`;
+    scheduleWidths();
   }
 
   function optionList(options, cur) {
@@ -1227,6 +1303,8 @@
     $("hazard-count").textContent = hazardFactors.length;
     $("items-count").textContent = detectionItems.length;
     renderItems();
+    applyGridWidths();
+    applyHazardWidths();
     renderWindow();
   }
   init();
