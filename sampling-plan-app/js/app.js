@@ -458,6 +458,145 @@
     renderWindow();
   });
 
+  // ---------- 录入区：区域选择 / 复制 / 粘贴 ----------
+  let selStart = null;
+  let selEnd = null;
+  let selAnchor = null;
+  let selDragging = false;
+  let selFrame = false;
+
+  function selRect() {
+    if (!selStart || !selEnd) return null;
+    return {
+      r1: Math.min(selStart.r, selEnd.r),
+      r2: Math.max(selStart.r, selEnd.r),
+      c1: Math.min(selStart.c, selEnd.c),
+      c2: Math.max(selStart.c, selEnd.c),
+    };
+  }
+
+  function updateSelectionClasses() {
+    const rect = selRect();
+    for (const tr of gridBody.querySelectorAll("tr[data-r]")) {
+      const r = Number(tr.dataset.r);
+      for (const td of tr.querySelectorAll("td[data-c]")) {
+        const c = ALL_COLS.indexOf(td.dataset.c);
+        const inSel = rect && r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2;
+        td.classList.toggle("sel", inSel);
+      }
+    }
+  }
+
+  gridBody.addEventListener("mousedown", (e) => {
+    const td = e.target.closest("td[data-c]");
+    if (!td) return;
+    const r = Number(td.closest("tr").dataset.r);
+    const c = ALL_COLS.indexOf(td.dataset.c);
+    const cell = { r, c };
+    if (e.shiftKey) {
+      selStart = selAnchor || cell;
+      selEnd = cell;
+    } else {
+      selAnchor = cell;
+      selStart = cell;
+      selEnd = cell;
+    }
+    selDragging = true;
+    updateSelectionClasses();
+  });
+
+  gridBody.addEventListener("mouseover", (e) => {
+    if (!selDragging) return;
+    const td = e.target.closest("td[data-c]");
+    if (!td) return;
+    selEnd = { r: Number(td.closest("tr").dataset.r), c: ALL_COLS.indexOf(td.dataset.c) };
+    if (!selFrame) {
+      selFrame = true;
+      requestAnimationFrame(() => {
+        selFrame = false;
+        updateSelectionClasses();
+      });
+    }
+  });
+
+  document.addEventListener("mouseup", () => {
+    selDragging = false;
+  });
+
+  gridBody.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      selStart = selEnd = null;
+      updateSelectionClasses();
+    }
+  });
+
+  gridBody.addEventListener("copy", (e) => {
+    const rect = selRect();
+    if (!rect) return;
+    const lines = [];
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      const cells = [];
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        const col = ALL_COLS[c];
+        let v = "";
+        if (r < rows.length) {
+          if (col === "V") v = "";
+          else if (INPUT_COLS.includes(col)) v = rows[r].input[col];
+          else if (MANUAL_COLS.includes(col)) v = rows[r].manual[col];
+          else v = rows[r].values[col];
+        }
+        cells.push(v === null || v === undefined ? "" : String(v));
+      }
+      lines.push(cells.join("\t"));
+    }
+    if (e.clipboardData) {
+      e.clipboardData.setData("text/plain", lines.join("\n"));
+      e.preventDefault();
+    }
+  });
+
+  gridBody.addEventListener("paste", (e) => {
+    const rect = selRect();
+    if (!rect) return;
+    const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+    if (!text) return;
+    const lines = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const cells = lines[i].split("\t");
+      for (let j = 0; j < cells.length; j++) {
+        const r = rect.r1 + i;
+        const c = rect.c1 + j;
+        if (c >= ALL_COLS.length) break;
+        const col = ALL_COLS[c];
+        if (!INPUT_COLS.includes(col)) continue; // 仅写入录入区
+        while (rows.length <= r) rows.push(blankRow());
+        rows[r].input[col] = cells[j];
+        changed = true;
+      }
+    }
+    if (changed) {
+      e.preventDefault();
+      recomputeAndRefresh();
+      renderWindow();
+      updateSelectionClasses();
+    }
+  });
+
+  // ---------- 一键清空录入区 ----------
+  $("btn-clear-input").addEventListener("click", () => {
+    if (!confirm("确定清空录入区全部内容（A~U 录入列与手工填写列）？行结构保留。")) return;
+    for (const r of rows) {
+      for (const c of INPUT_COLS) r.input[c] = "";
+      for (const c of MANUAL_COLS) r.manual[c] = "";
+      r.overridden = {};
+      for (const c of OVERRIDE_COLS) r.values[c] = "";
+    }
+    selStart = selEnd = selAnchor = null;
+    recomputeAndRefresh();
+    renderWindow();
+  });
+
   // ---------- 数据记录存储：本地服务 / GitHub API / 临时模式 ----------
   const RECORDS_KEY = "samplingPlanRecords_v1"; // 仅用于“临时模式”兜底
   const GH_CONFIG_KEY = "samplingPlanGithubConfig_v1";

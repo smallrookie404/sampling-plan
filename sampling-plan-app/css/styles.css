@@ -202,6 +202,10 @@ table.grid {
 .grid tbody tr.selected td.rowno { background: var(--primary); color: #fff; font-weight: 700; }
 .grid tbody tr.selected td { background-color: #f3f7ff; }
 .grid tbody tr.selected td.computed { background-color: #e3eefb; }
+.grid tbody td.sel {
+  background: #dbeafe !important;
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+}
 
 .grid input, .grid select {
   width: 100%;

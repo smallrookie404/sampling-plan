@@ -47,6 +47,7 @@
         <button id="btn-insert" class="btn small">插入行</button>
         <button id="btn-copy" class="btn small">复制行</button>
         <button id="btn-del" class="btn small danger">删除行</button>
+        <button id="btn-clear-input" class="btn small danger">清空录入区</button>
       </div>
       <div class="right">
         <span class="legend"><i class="dot input"></i>录入区</span>
@@ -112,6 +113,7 @@
           <li>黄色列（岗位性质、接触类型、是否采样/测量、检测方式）可在下拉中选择覆盖自动值，选择「（自动计算）」即恢复；</li>
           <li>接害因素输入时有联想提示，名称必须能在「危害因素库」中查到；</li>
           <li>点击行号可选中整行，用工具栏按钮新增/插入/复制/删除行；</li>
+          <li><b>录入区支持区域选择与粘贴</b>：点击单元格定位，Shift+点击或拖动选择区域，Ctrl+C 复制、Ctrl+V 粘贴 Excel 表格内容（按行列对应填入录入区，超出自动新增行）；「清空录入区」可一键清除全部录入内容；</li>
           <li>新增/插入/复制/删除时可输入<b>自定义行数</b>，批量操作；</li>
           <li>「保存数据」可为当前数据命名并保存到<b>项目文件夹的 data\records.json</b>；「数据记录」中可按名称或内容<b>搜索</b>，一键调用（替换当前表格），减少重复录入；</li>
           <li>部署到静态网页（GitHub Pages）时，点「GitHub 配置」填写仓库与 Token，保存的数据将直接写入 GitHub 仓库中的 records.json；</li>

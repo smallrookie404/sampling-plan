@@ -73,6 +73,37 @@ await page.fill('#main-grid tr[data-r="0"] td[data-c="D"] input', "二氧化钛�
 await page.waitForTimeout(900);
 console.log("列宽自适应校验通过 ✔");
 
+// 录入区：区域选择 / 复制 / 粘贴
+await page.evaluate(() => {
+  const b = document.querySelector('#main-grid tr[data-r="0"] td[data-c="B"]');
+  b.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  const d = document.querySelector('#main-grid tr[data-r="0"] td[data-c="D"]');
+  d.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, shiftKey: true }));
+});
+const selCount = await page.$$eval('#main-grid tr[data-r="0"] td.sel', (els) => els.length);
+if (selCount !== 3) throw new Error("区域选择失败: " + selCount);
+const copied = await page.evaluate(() => {
+  const ev = new ClipboardEvent("copy", { clipboardData: new DataTransfer(), bubbles: true, cancelable: true });
+  document.querySelector('#main-grid tr[data-r="0"] td[data-c="D"]').dispatchEvent(ev);
+  return ev.clipboardData.getData("text/plain");
+});
+if (copied !== "操作工\t投料\t二氧化钛粉尘(总尘)") throw new Error("复制内容不符: " + JSON.stringify(copied));
+await page.evaluate(() => {
+  const ev = new ClipboardEvent("paste", { clipboardData: new DataTransfer(), bubbles: true, cancelable: true });
+  ev.clipboardData.setData("text/plain", "粘贴值1\t粘贴值2\t粘贴值3");
+  document.querySelector('#main-grid tr[data-r="0"] td[data-c="D"]').dispatchEvent(ev);
+});
+await page.waitForTimeout(300);
+if ((await val(0, "B")) !== "粘贴值1" || (await val(0, "C")) !== "粘贴值2" || (await val(0, "D")) !== "粘贴值3") {
+  throw new Error("粘贴未生效");
+}
+// 还原第 1 行
+await page.fill('#main-grid tr[data-r="0"] td[data-c="B"] input', "操作工");
+await page.fill('#main-grid tr[data-r="0"] td[data-c="C"] input', "投料");
+await page.fill('#main-grid tr[data-r="0"] td[data-c="D"] input', "二氧化钛粉尘(总尘)");
+await page.waitForTimeout(300);
+console.log("录入区 选择/复制/粘贴 校验通过 ✔");
+
 await page.screenshot({ path: SHOT_DIR + "/1-main.png" });
 
 // 2) 输入校验联动：把第 2 行班制改成非法值
@@ -291,6 +322,14 @@ if (!(await page.$eval("#sync-status", (el) => el.classList.contains("hidden")))
   throw new Error("清除配置后同步状态条应隐藏");
 }
 console.log("GitHub 配置界面校验通过 ✔");
+
+// ---------- 10) 一键清空录入区 ----------
+const rowsBeforeClear = await rowCountOf();
+await page.click("#btn-clear-input");
+await page.waitForTimeout(300);
+if ((await val(0, "A")) !== "" || (await val(0, "D")) !== "") throw new Error("清空录入区未生效");
+if ((await rowCountOf()) !== rowsBeforeClear) throw new Error("清空录入区不应改变行数");
+console.log("一键清空录入区校验通过 ✔");
 
 await page.screenshot({ path: SHOT_DIR + "/4-main-after-export.png" });
 
