@@ -1283,22 +1283,25 @@
     for (const el of document.querySelectorAll(".lib-status")) {
       const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       if (state === "ok") {
-        el.className = "status lib-ok";
+        el.className = "status lib-status lib-ok";
         el.textContent = `✓ 参考库已同步 GitHub（${t}）`;
       } else if (state === "local-ok") {
-        el.className = "status lib-ok";
+        el.className = "status lib-status lib-ok";
         el.textContent = `✓ 参考库已保存到本地（${t}）`;
+      } else if (state === "static-ok") {
+        el.className = "status lib-status lib-ok";
+        el.textContent = "✓ 参考库：已加载站点 library.json";
       } else if (state === "err") {
-        el.className = "status err";
+        el.className = "status lib-status err";
         el.textContent = `✕ 参考库同步失败：${msg || "未知错误"}`;
       } else if (state === "pending") {
-        el.className = "status";
+        el.className = "status lib-status";
         el.textContent = "⟳ 参考库待保存…";
       } else if (state === "github-loading") {
-        el.className = "status";
+        el.className = "status lib-status";
         el.textContent = "⟳ 正在从 GitHub 加载参考库…";
       } else {
-        el.className = "status";
+        el.className = "status lib-status";
         el.textContent = "参考库：内置数据";
       }
     }
@@ -1415,7 +1418,10 @@
           setLibStatus("ok");
           return lib;
         }
-        return null;
+        // 仓库中尚无 library.json 时，回退到站点自带的静态文件
+        const staticLib = await fetchStaticLibrary();
+        if (staticLib) setLibStatus("static-ok");
+        return staticLib || null;
       } catch (e) {
         setLibStatus("err", e.message);
       }
@@ -1428,18 +1434,27 @@
         if (lib) setLibStatus("local-ok");
         return lib;
       } catch {
-        return localLibraryLoad();
+        // 继续走下面的静态文件兜底
       }
     }
-    if (storageMode === "github") {
-      try {
-        return normalizeLibrary(await githubLibLoad());
-      } catch (e) {
-        alert("读取 GitHub 参考库失败：" + e.message);
-        return null;
-      }
+    // 静态网页模式：直接读取随仓库部署的 data/library.json（无需 Token）
+    const staticLib = await fetchStaticLibrary();
+    if (staticLib) {
+      setLibStatus("static-ok");
+      return staticLib;
     }
     return localLibraryLoad();
+  }
+
+  // 读取站点自带的静态 library.json（GitHub Pages 部署时随仓库同步更新）
+  async function fetchStaticLibrary() {
+    try {
+      const res = await fetch("data/library.json", { cache: "no-store" });
+      if (!res.ok) return null;
+      return normalizeLibrary(await res.json());
+    } catch {
+      return null;
+    }
   }
 
   async function persistLibrary() {
