@@ -279,6 +279,56 @@ table.grid.hazard td { height: 26px; }
   z-index: 50;
 }
 .modal.hidden { display: none; }
+
+/* 全屏模式：浮动操作条 */
+.fs-bar {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  justify-content: flex-start;
+  align-items: center;
+  max-width: calc(100vw - 16px);
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, .9);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+  backdrop-filter: blur(4px);
+}
+.fs-bar.hidden { display: none; }
+.fs-bar .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 4px 10px;
+  color: #f1f5f9;
+  border-color: rgba(255, 255, 255, .35);
+  background: transparent;
+}
+.fs-bar .btn:hover { background: rgba(255, 255, 255, .12); }
+.fs-bar .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.fs-bar .btn.danger-ghost { color: #fecaca; border-color: rgba(254, 202, 202, .4); }
+
+body.fullscreen-mode {
+  height: 100vh;
+  overflow: hidden;
+}
+body.fullscreen-mode .topbar,
+body.fullscreen-mode nav.tabs,
+body.fullscreen-mode .notice,
+body.fullscreen-mode .sync-status {
+  display: none !important;
+}
+body.fullscreen-mode .tab-panel.active {
+  height: 100vh;
+  padding: 66px 12px 12px;
+}
+
 .modal-box {
   background: #fff;
   border-radius: 10px;

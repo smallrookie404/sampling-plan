@@ -48,6 +48,7 @@
         <button id="btn-copy" class="btn small">复制行</button>
         <button id="btn-del" class="btn small danger">删除行</button>
         <button id="btn-clear-input" class="btn small danger">清空录入区</button>
+        <button id="btn-fs" class="btn small ghost">⛶ 全屏</button>
       </div>
       <div class="right">
         <span class="legend"><i class="dot input"></i>录入区</span>
@@ -126,6 +127,7 @@
           <li>配置 GitHub 后（本地版或网页版均可），软件<b>打开时自动从 GitHub 同步</b>最新数据，保存时直接写回 GitHub，本地文件仅作离线兜底；</li>
           <li>「危害因素库」「检测项目参考」页可维护字典（新增、删除、搜索），修改后主表自动重算，并自动同步保存（本地版存到 data\library.json，GitHub 版直接写回仓库）；</li>
           <li>点「导出 Excel」生成<b>只包含自动计算区（W~BI 共 39 列）</b>的交付文件，行数到「检测项目」列最后一个非空单元格为止；「导入 Excel」可载入该导出文件，也可载入原表结构的完整文件继续编辑。</li>
+          <li>点工具栏「⛶ 全屏」可将表格放大到浏览器全屏，导入、导出、保存等操作按钮浮动在表格顶部，按 Esc 或点「退出全屏」返回；</li>
         </ol>
         <h3>自动计算规则（与原表公式一致）</h3>
         <ul>
@@ -206,6 +208,17 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <div id="fs-bar" class="fs-bar hidden">
+    <button id="fs-import" class="btn small">导入 Excel</button>
+    <button id="fs-export" class="btn small primary">导出 Excel</button>
+    <button id="fs-csv" class="btn small">导出 CSV</button>
+    <button id="fs-save" class="btn small">保存数据</button>
+    <button id="fs-db" class="btn small">数据记录</button>
+    <button id="fs-gh" class="btn small ghost">GitHub 配置</button>
+    <button id="fs-reset" class="btn small danger-ghost">清空表格</button>
+    <button id="fs-exit" class="btn small ghost">退出全屏</button>
   </div>
 
   <script src="js/jszip.min.js"></script>

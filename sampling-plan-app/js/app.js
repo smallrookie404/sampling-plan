@@ -997,6 +997,70 @@
     renderWindow();
   });
 
+  // ---------- 全屏显示：主表铺满浏览器窗口，操作按钮浮动在顶部 ----------
+  const FS_BTN = $("btn-fs");
+  const FS_BAR = $("fs-bar");
+
+  function isFsActive() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+
+  function enterFullscreen() {
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req) req.call(el);
+    else {
+      // 浏览器不支持 Fullscreen API 时降级为铺满视口
+      document.body.classList.add("fullscreen-mode");
+      FS_BAR.classList.remove("hidden");
+      FS_BTN.textContent = "退出全屏";
+    }
+  }
+
+  function exitFullscreen() {
+    const ex = document.exitFullscreen || document.webkitExitFullscreen;
+    if (ex && (document.fullscreenElement || document.webkitFullscreenElement)) ex.call(document);
+    else {
+      document.body.classList.remove("fullscreen-mode");
+      FS_BAR.classList.add("hidden");
+      FS_BTN.textContent = "⛶ 全屏";
+    }
+  }
+
+  function syncFsUi() {
+    const fs = isFsActive();
+    document.body.classList.toggle("fullscreen-mode", fs);
+    FS_BAR.classList.toggle("hidden", !fs);
+    FS_BTN.textContent = fs ? "退出全屏" : "⛶ 全屏";
+  }
+
+  FS_BTN.addEventListener("click", () => {
+    if (isFsActive()) exitFullscreen();
+    else enterFullscreen();
+  });
+  document.addEventListener("fullscreenchange", syncFsUi);
+  document.addEventListener("webkitfullscreenchange", syncFsUi);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isFsActive() && !document.querySelector(".modal:not(.hidden)")) {
+      exitFullscreen();
+    }
+  });
+
+  // 浮动操作条按钮转发到顶部同名按钮，复用原有逻辑
+  const fsActions = {
+    "fs-import": "btn-import",
+    "fs-export": "btn-export",
+    "fs-csv": "btn-csv",
+    "fs-save": "btn-save",
+    "fs-db": "btn-db",
+    "fs-gh": "btn-gh",
+    "fs-reset": "btn-reset",
+  };
+  for (const [fsId, origId] of Object.entries(fsActions)) {
+    $(fsId).addEventListener("click", () => $(origId).click());
+  }
+  $("fs-exit").addEventListener("click", exitFullscreen);
+
   // ---------- 数据记录与参考库存储：本地服务 / GitHub API / 临时模式 ----------
   const RECORDS_KEY = "samplingPlanRecords_v1"; // 仅用于“临时模式”兜底
   const LIBRARY_KEY = "samplingPlanLibrary_v1";
