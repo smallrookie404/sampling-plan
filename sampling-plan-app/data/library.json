@@ -8177,20 +8177,6 @@
       "noTestReason": ""
     },
     {
-      "rec": "其他粉尘(其他)",
-      "name": "其他粉尘(其他)",
-      "dust": "总尘",
-      "qual": "否",
-      "outsource": "否",
-      "twa": "是",
-      "stel": "否",
-      "cpe": "是",
-      "mac": "否",
-      "digits": 1,
-      "highTox": "否",
-      "noTestReason": ""
-    },
-    {
       "rec": "其他粉尘(纸屑)",
       "name": "其他粉尘(纸屑)",
       "dust": "总尘",
