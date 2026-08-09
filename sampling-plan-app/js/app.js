@@ -2143,13 +2143,7 @@
     X.downloadBlob(blob, "系统测点布局调查_自动计算区.csv");
   });
 
-  // ---------- 导入 ----------
-  const HEADER_ALIAS = {
-    识别: "rec", 系统名称: "name", 职业卫生检测管理系统: "name", 粉尘性质: "dust",
-    定性分析: "qual", 委外检测: "outsource", 计算TWA: "twa", 计算STEL: "stel",
-    计算CPE: "cpe", 计算MAC: "mac", 结果保留位数: "digits", 存在高毒物品: "highTox",
-    不检测原因说明: "noTestReason",
-  };
+  // ---------- 导入（仅主表测点布局，不导入危害因素库/检测项目） ----------
 
   $("btn-import").addEventListener("click", () => $("file-input").click());
   $("file-input").addEventListener("change", async (e) => {
@@ -2161,36 +2155,31 @@
       const byName = {};
       for (const s of sheets) byName[s.name] = X.sheetToArray(s);
 
-      // 危害因素库
-      if (byName["危害因素"]) {
-        const arr = byName["危害因素"];
-        const hdr = arr[0] || [];
-        const map = hdr.map((h) => HEADER_ALIAS[String(h).trim()] || null);
-        const lib = arr.slice(1).filter((r) => r.some((v) => v !== "" && v !== null && v !== undefined));
-        const parsed = lib.map((r) => {
-          const h = blankHazard();
-          map.forEach((k, i) => { if (k) h[k] = r[i] ?? ""; });
-          return h;
-        });
-        if (parsed.length) hazardFactors = parsed;
+      // 测点布局：优先按常用表名匹配，找不到时按表头智能识别（含“*检测项目”列的工作表即主表）
+      let mainSheetName = byName["测点布局情况调查"] ? "测点布局情况调查"
+        : byName["劳动定员和职业病危害因素接触情况调查"] ? "劳动定员和职业病危害因素接触情况调查" : null;
+      if (!mainSheetName) {
+        for (const name of Object.keys(byName)) {
+          const hdr = (byName[name][0] || []).map((h) => String(h ?? "").trim());
+          if (hdr.includes("*检测项目")) { mainSheetName = name; break; }
+        }
       }
-
-      // 检测项目
-      if (byName["检测项目"]) {
-        const arr = byName["检测项目"];
-        const items = arr.slice(1).map((r) => r[0]).filter((v) => v !== "" && v !== null && v !== undefined);
-        if (items.length) detectionItems = items.map(fmt);
-      }
-
-      // 测点布局
-      if (byName["测点布局情况调查"]) {
-        const arr = byName["测点布局情况调查"];
+      const mainArr = mainSheetName ? byName[mainSheetName] : null;
+      if (mainArr) {
+        const arr = mainArr;
         const hdr = arr[0] || [];
         const idx = {};
         hdr.forEach((h, i) => { if (h !== null && h !== undefined && h !== "") idx[String(h).trim()] = i; });
         // 录入区独有的表头（自动计算区不含这些名称），用于区分“完整结构”与“仅自动计算区”文件
         const UNIQUE_INPUT_HEADERS = ["车间", "接害因素", "接触时间h/d", "人数"];
         const hasInput = UNIQUE_INPUT_HEADERS.some((h) => h in idx);
+        // 仅自动计算区文件：把计算列反推回录入列（与计算引擎推导方向相反），
+        // 导入后录入区可继续编辑，计算区随之联动重算
+        const COMPUTED_TO_INPUT = {
+          W: "A", X: "B", AL: "C", AN: "D", AZ: "E", AH: "F", AG: "G", AA: "H", BA: "I",
+          AM: "J", BE: "K", AC: "L", AO: "M", AR: "N", Y: "O", BC: "P", AQ: "Q",
+          AD: "R", AE: "S", AF: "T", AW: "U",
+        };
         const imported = [];
         const importedVals = [];
         for (const r of arr.slice(1)) {
@@ -2202,14 +2191,31 @@
               const h = HEADERS[colIdx(c)];
               if (h in idx) row.input[c] = fmt(r[idx[h]]);
             }
+          } else {
+            for (const [comp, inp] of Object.entries(COMPUTED_TO_INPUT)) {
+              const h = HEADERS[colIdx(comp)];
+              const v = h in idx ? r[idx[h]] : "";
+              if (v !== "" && v !== null && v !== undefined) row.input[inp] = fmt(v);
+            }
+            // AE 的自动默认值“长白班”不是录入区 S 列的合法下拉值，跳过反推（引擎会自动重算出来）
+            if (row.input.S === "长白班") row.input.S = "";
+            // 接害因素：优先用库内“识别名”，其次用系统名对应的识别名，保证导入后能反查出检测项目
+            const anText = row.input.D;
+            if (anText) {
+              const byName = hazardFactors.find((x) => x.name === anText);
+              const byRec = hazardFactors.find((x) => x.rec === anText);
+              row.input.D = byName && !byRec ? byName.rec : anText;
+            }
           }
           for (const c of MANUAL_COLS) {
             const h = HEADERS[colIdx(c)];
             if (h in idx) row.manual[c] = fmt(r[idx[h]]);
           }
-          for (const c of COMPUTED_COLS) {
-            const h = HEADERS[colIdx(c)];
-            if (h in idx) vals[c] = fmt(r[idx[h]]);
+          if (hasInput) {
+            for (const c of COMPUTED_COLS) {
+              const h = HEADERS[colIdx(c)];
+              if (h in idx) vals[c] = fmt(r[idx[h]]);
+            }
           }
           imported.push(row);
           importedVals.push(vals);
@@ -2217,30 +2223,31 @@
         if (imported.length) {
           rows = imported;
           L.computeRows(rows, { hazardFactors, detectionItems });
-          rows.forEach((row, i) => {
-            const cols = hasInput ? OVERRIDE_COLS : COMPUTED_COLS;
-            for (const c of cols) {
-              const importedV = importedVals[i][c];
-              if (importedV !== undefined && importedV !== "" && importedV !== row.values[c]) {
-                row.values[c] = importedV;
-                row.overridden[c] = true;
-              } else {
-                delete row.overridden[c];
+          if (hasInput) {
+            // 完整结构文件：保留文件里的覆盖值
+            rows.forEach((row, i) => {
+              for (const c of OVERRIDE_COLS) {
+                const importedV = importedVals[i][c];
+                if (importedV !== undefined && importedV !== "" && importedV !== row.values[c]) {
+                  row.values[c] = importedV;
+                  row.overridden[c] = true;
+                } else {
+                  delete row.overridden[c];
+                }
               }
-            }
-          });
-          L.computeRows(rows, { hazardFactors, detectionItems });
+            });
+            L.computeRows(rows, { hazardFactors, detectionItems });
+          }
           selectedRow = -1;
         }
       }
-      onHazardChange();
-      rebuildDatalist();
+      rebuildDatalist(); // 参考库不随导入变化，仅重建录入区的联想列表
       renderItems();
       renderWindow();
       activeTab = "main";
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
-      alert(`导入成功：测点 ${rows.length} 行。${byName["危害因素"] ? `危害因素 ${hazardFactors.length} 条，` : "危害因素库保持现有，"}${byName["检测项目"] ? `检测项目 ${detectionItems.length} 项。` : "检测项目保持现有。"}`);
+      alert(`导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库与检测项目保持现有）。`);
     } catch (err) {
       console.error(err);
       alert("导入失败：" + err.message);
