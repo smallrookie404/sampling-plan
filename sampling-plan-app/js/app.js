@@ -36,6 +36,7 @@
   const COMPUTED_COLS = L.COMPUTED_COLS; // W..BI
   const MANUAL_COLS = L.MANUAL_COLS;
   const OVERRIDE_COLS = L.OVERRIDE_COLS;
+  const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "R", "S", "U", "AI", "AJ", "BH"]); // 下拉单元格列
   const NUM_COLS = new Set(["E", "F", "G", "H", "I", "AA", "AB", "AG", "AH", "AY", "AZ", "BA", "BB"]);
   const ALL_COLS = [...INPUT_COLS, "V", ...COMPUTED_COLS]; // 61 列（A..BI）
   const HEADERS = DEFAULT_DATA.mainHeaders; // 61 项
@@ -115,6 +116,8 @@
       14
     );
     w[21] = 18; // V 列是分隔空列，保持窄
+    // 下拉单元格额外预留右侧箭头空间，文字完整显示不被截断
+    ALL_COLS.forEach((c, i) => { if (SELECT_COLS.has(c)) w[i] += 24; });
     $("grid-cols").innerHTML =
       "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
   }
@@ -131,6 +134,8 @@
       360,
       14
     );
+    // 下拉单元格（粉尘性质、是/否 等）额外预留箭头空间
+    w.forEach((x, i) => { if (i === 2 || (i >= 3 && i <= 8) || i === 10) w[i] += 24; });
     $("hazard-cols").innerHTML =
       "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
   }
