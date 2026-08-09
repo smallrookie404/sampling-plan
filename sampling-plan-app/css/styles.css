@@ -302,6 +302,9 @@ table.grid.hazard td { height: 26px; }
   margin: 8px 0 2px;
   cursor: pointer;
 }
+.gh-saved { font-size: 12px; margin: 2px 0 4px; line-height: 1.6; }
+.gh-saved.ok { color: #065f46; }
+.gh-saved.warn { color: #92400e; }
 
 /* 数据记录 */
 .db-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }

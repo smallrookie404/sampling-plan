@@ -836,6 +836,14 @@
     $("gh-token").value = cfg.token || "";
     $("gh-show-token").checked = false;
     $("gh-token").type = "password";
+    const hint = $("gh-saved-hint");
+    if (cfg.token) {
+      hint.className = "gh-saved ok";
+      hint.textContent = "本机已保存 Token（末尾 " + cfg.token.slice(-6) + "），勾选「显示 Token」可查看完整值。";
+    } else {
+      hint.className = "gh-saved warn";
+      hint.textContent = "本机浏览器中未找到已保存的 Token：请在下框粘贴 Token 后点「保存配置」；仅点「测试连接」不会保存。";
+    }
     $("gh-msg").textContent = "";
     $("gh-modal").classList.remove("hidden");
   });
@@ -863,9 +871,9 @@
     try {
       const res = await githubRequest(cfg, "GET");
       if (res.status === 404) {
-        $("gh-msg").textContent = "连接成功：数据文件尚不存在，首次保存时自动创建。";
+        $("gh-msg").textContent = "连接成功：数据文件尚不存在，首次保存时自动创建。仍需点「保存配置」才会保存并启用。";
       } else if (res.ok) {
-        $("gh-msg").textContent = "连接成功：可读写 data/records.json。";
+        $("gh-msg").textContent = "连接成功：可读写 data/records.json。仍需点「保存配置」才会保存并启用。";
       } else {
         const err = await res.json().catch(() => ({}));
         $("gh-msg").textContent = "连接失败：" + res.status + " " + (err.message || "");

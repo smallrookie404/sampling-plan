@@ -234,6 +234,8 @@ if (!(await page.$eval("#sync-status", (el) => el.classList.contains("hidden")))
 }
 await page.click("#btn-gh");
 await page.waitForSelector("#gh-modal:not(.hidden)");
+const hint0 = await page.textContent("#gh-saved-hint");
+if (!hint0.includes("未找到")) throw new Error("未配置时应提示未找到 Token");
 // Token 显示/隐藏开关
 if ((await page.getAttribute("#gh-token", "type")) !== "password") throw new Error("Token 应为密码类型");
 await page.check("#gh-show-token");
@@ -257,6 +259,10 @@ if (!(await page.$eval("#storage-notice", (el) => el.classList.contains("hidden"
 // 清除配置
 await page.click("#btn-gh");
 await page.waitForSelector("#gh-modal:not(.hidden)");
+const hint1 = await page.textContent("#gh-saved-hint");
+if (!hint1.includes("已保存") || !hint1.includes("t_TEST")) {
+  throw new Error("保存后应显示已保存 Token 状态: " + hint1);
+}
 await page.click("#gh-clear");
 await page.waitForTimeout(200);
 const ghMsg2 = await page.textContent("#gh-msg");
