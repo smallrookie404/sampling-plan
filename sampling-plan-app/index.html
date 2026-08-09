@@ -77,6 +77,7 @@
       <div class="right">
         <input id="hazard-search" class="search" type="text" placeholder="搜索危害因素…" />
         <span id="hazard-status" class="status"></span>
+        <span class="status lib-status"></span>
       </div>
     </div>
     <div class="hazard-wrap">
@@ -91,9 +92,14 @@
   <section id="tab-items" class="tab-panel">
     <div class="grid-toolbar">
       <div class="left">
-        <input id="items-search" class="search" type="text" placeholder="搜索检测项目…" />
+        <button id="items-add" class="btn small">+ 新增项目</button>
+        <button id="items-del" class="btn small danger">删除选中项目</button>
       </div>
-      <div class="right"><span id="items-status" class="status"></span></div>
+      <div class="right">
+        <input id="items-search" class="search" type="text" placeholder="搜索检测项目…" />
+        <span id="items-status" class="status"></span>
+        <span class="status lib-status"></span>
+      </div>
     </div>
     <div id="items-list" class="items-list"></div>
   </section>
@@ -116,9 +122,9 @@
           <li><b>录入区支持 Excel 式编辑</b>：点击单元格定位（显示高亮框），方向键移动光标，Enter 下移、Tab 右移（Shift+Enter/Tab 反向），F2 或双击进入编辑，直接输入会替换原内容，Delete/Backspace 清空选中的内容、Esc 还原；Shift+方向键、Shift+点击或拖动可扩展选择区域，Ctrl+A 全选整张表，Ctrl+C 复制、Ctrl+V 粘贴 Excel 表格内容（按行列对应填入录入区，超出自动新增行）；「清空录入区」可一键清除全部录入内容；</li>
           <li>新增/插入/复制/删除时可输入<b>自定义行数</b>，批量操作；</li>
           <li>「保存数据」可为当前数据命名并保存到<b>项目文件夹的 data\records.json</b>；「数据记录」中可按名称或内容<b>搜索</b>，一键调用（替换当前表格），减少重复录入；</li>
-          <li>部署到静态网页（GitHub Pages）时，点「GitHub 配置」填写仓库与 Token，保存的数据将直接写入 GitHub 仓库中的 records.json；</li>
+<li>部署到静态网页（GitHub Pages）时，点「GitHub 配置」填写仓库与 Token，保存的数据与参考库将直接写入 GitHub 仓库中的 records.json / library.json；</li>
           <li>配置 GitHub 后（本地版或网页版均可），软件<b>打开时自动从 GitHub 同步</b>最新数据，保存时直接写回 GitHub，本地文件仅作离线兜底；</li>
-          <li>「危害因素库」页可维护因素字典（新增、删除、搜索），修改后主表自动重算；</li>
+          <li>「危害因素库」「检测项目参考」页可维护字典（新增、删除、搜索），修改后主表自动重算，并自动同步保存（本地版存到 data\library.json，GitHub 版直接写回仓库）；</li>
           <li>点「导出 Excel」生成<b>只包含自动计算区（W~BI 共 39 列）</b>的交付文件；「导入 Excel」可载入该导出文件，也可载入原表结构的完整文件继续编辑。</li>
         </ol>
         <h3>自动计算规则（与原表公式一致）</h3>
@@ -180,7 +186,7 @@
         <button id="gh-close" class="btn small ghost">×</button>
       </div>
       <div class="modal-body">
-        <p class="prompt-hint">部署在 GitHub Pages 等静态网页时，数据通过 GitHub API 读写仓库中的 records.json，请填写以下信息（Token 仅保存在本机浏览器，不会写入仓库）。</p>
+<p class="prompt-hint">部署在 GitHub Pages 等静态网页时，数据（records.json）与参考库（危害因素库/检测项目，library.json）都通过 GitHub API 读写仓库，请填写以下信息（Token 仅保存在本机浏览器，不会写入仓库）。</p>
         <label class="field-label">仓库（用户名/仓库名）</label>
         <input id="gh-repo" class="search prompt-input" type="text" placeholder="例如：yourname/sampling-plan" />
         <label class="field-label">分支</label>

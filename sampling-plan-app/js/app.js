@@ -997,12 +997,16 @@
     renderWindow();
   });
 
-  // ---------- 数据记录存储：本地服务 / GitHub API / 临时模式 ----------
+  // ---------- 数据记录与参考库存储：本地服务 / GitHub API / 临时模式 ----------
   const RECORDS_KEY = "samplingPlanRecords_v1"; // 仅用于“临时模式”兜底
+  const LIBRARY_KEY = "samplingPlanLibrary_v1";
   const GH_CONFIG_KEY = "samplingPlanGithubConfig_v1";
   const GH_PATH_DEFAULT = "sampling-plan-app/data/records.json";
+  const GH_LIB_PATH_DEFAULT = "sampling-plan-app/data/library.json";
   let storageMode = "detecting";
   let ghSha = null;
+  let libSha = null;
+  let libSyncTimer = null;
 
   function loadGithubConfig() {
     try {
@@ -1272,6 +1276,222 @@
       return true;
     }
     throw new Error("更新冲突，请稍后重试");
+  }
+
+  // ---------- 危害因素库 / 检测项目参考库：加载、保存与自动同步 ----------
+  function setLibStatus(state, msg) {
+    for (const el of document.querySelectorAll(".lib-status")) {
+      const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      if (state === "ok") {
+        el.className = "status lib-ok";
+        el.textContent = `✓ 参考库已同步 GitHub（${t}）`;
+      } else if (state === "local-ok") {
+        el.className = "status lib-ok";
+        el.textContent = `✓ 参考库已保存到本地（${t}）`;
+      } else if (state === "err") {
+        el.className = "status err";
+        el.textContent = `✕ 参考库同步失败：${msg || "未知错误"}`;
+      } else if (state === "pending") {
+        el.className = "status";
+        el.textContent = "⟳ 参考库待保存…";
+      } else if (state === "github-loading") {
+        el.className = "status";
+        el.textContent = "⟳ 正在从 GitHub 加载参考库…";
+      } else {
+        el.className = "status";
+        el.textContent = "参考库：内置数据";
+      }
+    }
+  }
+
+  function normalizeLibrary(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    const hf = Array.isArray(obj.hazardFactors) ? obj.hazardFactors.filter((h) => h && typeof h === "object") : null;
+    const di = Array.isArray(obj.detectionItems) ? obj.detectionItems.map(String) : null;
+    if (!hf && !di) return null;
+    const lib = {};
+    if (hf) lib.hazardFactors = hf;
+    if (di) lib.detectionItems = di;
+    return lib;
+  }
+
+  function libraryObject() {
+    return {
+      hazardFactors: hazardFactors.map((h) => ({ ...h })),
+      detectionItems: detectionItems.slice(),
+    };
+  }
+
+  function localLibraryLoad() {
+    try {
+      const s = localStorage.getItem(LIBRARY_KEY);
+      return s ? normalizeLibrary(JSON.parse(s)) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function localLibraryPersist(lib) {
+    try {
+      localStorage.setItem(LIBRARY_KEY, JSON.stringify(lib));
+      return true;
+    } catch (e) {
+      alert("参考库本地保存失败：" + e.message);
+      return false;
+    }
+  }
+
+  function mirrorLibraryToLocal(lib) {
+    try {
+      if (storageMode === "server") {
+        fetch("/api/library", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(lib),
+        }).catch(() => {});
+      } else {
+        localStorage.setItem(LIBRARY_KEY, JSON.stringify(lib));
+      }
+    } catch {}
+  }
+
+  function githubLibConfig() {
+    const cfg = loadGithubConfig();
+    if (!cfg) return null;
+    return { ...cfg, path: cfg.libPath || GH_LIB_PATH_DEFAULT };
+  }
+
+  async function githubLibLoad() {
+    const cfg = githubLibConfig();
+    if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
+    const res = await githubRequest(cfg, "GET");
+    if (res.status === 404) { libSha = null; return null; }
+    if (!res.ok) throw new Error("HTTP " + res.status + "（请检查仓库名与 Token 权限）");
+    const data = await res.json();
+    libSha = data.sha;
+    return JSON.parse(L.decodeUnicodeBase64(data.content));
+  }
+
+  async function githubLibPersist(lib) {
+    const cfg = githubLibConfig();
+    if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
+    const content = L.encodeUnicodeBase64(JSON.stringify(lib, null, 2));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!libSha) {
+        const res = await githubRequest(cfg, "GET");
+        if (res.status === 404) libSha = null;
+        else if (res.ok) libSha = (await res.json()).sha;
+        else throw new Error("HTTP " + res.status);
+      }
+      const payload = {
+        message: "更新参考库（危害因素/检测项目）",
+        content,
+        ...(libSha ? { sha: libSha } : {}),
+        ...(cfg.branch ? { branch: cfg.branch } : {}),
+      };
+      const res = await githubRequest(cfg, "PUT", payload);
+      if (res.status === 409 && attempt === 0) {
+        libSha = null; // 文件被其他端修改，重取 sha 后重试一次
+        continue;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error("HTTP " + res.status + "：" + (err.message || "请检查 Token 的 Contents 读/写权限"));
+      }
+      libSha = (await res.json()).content?.sha || libSha;
+      return true;
+    }
+    throw new Error("更新冲突，请稍后重试");
+  }
+
+  async function loadLibrary() {
+    await ensureMode();
+    if (hasGithubConfig()) {
+      setLibStatus("github-loading");
+      try {
+        const lib = normalizeLibrary(await githubLibLoad());
+        if (lib) {
+          mirrorLibraryToLocal(lib);
+          setLibStatus("ok");
+          return lib;
+        }
+        return null;
+      } catch (e) {
+        setLibStatus("err", e.message);
+      }
+    }
+    if (storageMode === "server") {
+      try {
+        const res = await fetch("/api/library", { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const lib = normalizeLibrary(await res.json());
+        if (lib) setLibStatus("local-ok");
+        return lib;
+      } catch {
+        return localLibraryLoad();
+      }
+    }
+    if (storageMode === "github") {
+      try {
+        return normalizeLibrary(await githubLibLoad());
+      } catch (e) {
+        alert("读取 GitHub 参考库失败：" + e.message);
+        return null;
+      }
+    }
+    return localLibraryLoad();
+  }
+
+  async function persistLibrary() {
+    await ensureMode();
+    const lib = libraryObject();
+    if (hasGithubConfig()) {
+      try {
+        const ok = await githubLibPersist(lib);
+        mirrorLibraryToLocal(lib);
+        setLibStatus("ok");
+        return ok;
+      } catch (e) {
+        setLibStatus("err", e.message);
+      }
+    }
+    if (storageMode === "server") {
+      try {
+        const res = await fetch("/api/library", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(lib),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        setLibStatus("local-ok");
+        return true;
+      } catch (e) {
+        setLibStatus("err", e.message);
+        return localLibraryPersist(lib);
+      }
+    }
+    if (storageMode === "github") {
+      try {
+        const ok = await githubLibPersist(lib);
+        setLibStatus("ok");
+        return ok;
+      } catch (e) {
+        setLibStatus("err", e.message);
+        return false;
+      }
+    }
+    const ok = localLibraryPersist(lib);
+    setLibStatus(ok ? "local-ok" : "err", ok ? "" : "本地保存失败");
+    return ok;
+  }
+
+  // 参考库变更后防抖自动同步（新增/删除/修改后约 1.2 秒写回）
+  function scheduleLibrarySync() {
+    clearTimeout(libSyncTimer);
+    setLibStatus("pending");
+    libSyncTimer = setTimeout(() => {
+      persistLibrary().catch(() => {});
+    }, 1200);
   }
 
   function isBlankRow(r) {
@@ -1637,19 +1857,51 @@
     rebuildDatalist();
     $("hazard-count").textContent = hazardFactors.length;
     recomputeAndRefresh();
+    scheduleLibrarySync();
   }
 
   // ---------- 检测项目 ----------
+  let selectedItem = -1;
+
   function renderItems() {
     const q = $("items-search").value.trim();
     const dups = new Set(L.findDuplicates(detectionItems));
-    const list = detectionItems.filter((it) => !q || it.includes(q));
+    const list = detectionItems
+      .map((it, idx) => ({ it, idx }))
+      .filter((x) => !q || x.it.includes(q));
     $("items-list").innerHTML = list
-      .map((it) => `<div class="item${dups.has(it) ? " dup" : ""}">${escHtml(it)}${dups.has(it) ? "（重复）" : ""}</div>`)
+      .map((x) => `<div class="item${x.idx === selectedItem ? " selected" : ""}${dups.has(x.it) ? " dup" : ""}" data-idx="${x.idx}">${escHtml(x.it)}${dups.has(x.it) ? "（重复）" : ""}</div>`)
       .join("");
     $("items-status").textContent = `共 ${detectionItems.length} 项 · 显示 ${list.length} 项${dups.size ? " · 重复 " + dups.size + " 项" : ""}`;
   }
   $("items-search").addEventListener("input", renderItems);
+  $("items-list").addEventListener("click", (e) => {
+    const div = e.target.closest(".item");
+    if (!div) return;
+    selectedItem = Number(div.dataset.idx);
+    renderItems();
+  });
+  $("items-add").addEventListener("click", async () => {
+    const v = await askInput({ title: "新增检测项目", hint: "输入标准化检测项目名称" });
+    if (v === null) return;
+    const name = v.trim();
+    if (!name) { alert("名称不能为空。"); return; }
+    detectionItems.push(name);
+    selectedItem = detectionItems.length - 1;
+    renderItems();
+    $("items-count").textContent = detectionItems.length;
+    scheduleLibrarySync();
+  });
+  $("items-del").addEventListener("click", () => {
+    if (selectedItem < 0) { alert("请先点击选择要删除的项目。"); return; }
+    const name = detectionItems[selectedItem];
+    if (!confirm(`确定删除检测项目「${name}」？`)) return;
+    detectionItems.splice(selectedItem, 1);
+    selectedItem = -1;
+    renderItems();
+    $("items-count").textContent = detectionItems.length;
+    scheduleLibrarySync();
+  });
 
   // ---------- 联想提示 ----------
   function rebuildDatalist() {
@@ -1835,12 +2087,21 @@
     rebuildDatalist();
     await detectStorageMode();
     setStorageNotice(storageMode !== "server", noticeHtml());
+    try {
+      const lib = await loadLibrary();
+      if (lib) {
+        if (lib.hazardFactors) hazardFactors = lib.hazardFactors.map((h) => ({ ...h }));
+        if (lib.detectionItems) detectionItems = lib.detectionItems.map(String);
+      }
+    } catch {}
+    rebuildDatalist();
     if (hasGithubConfig()) {
       loadRecords().catch(() => {}); // 打开时自动从 GitHub 同步
     }
     L.computeRows(rows, { hazardFactors, detectionItems });
     $("hazard-count").textContent = hazardFactors.length;
     $("items-count").textContent = detectionItems.length;
+    renderHazard();
     renderItems();
     applyGridWidths();
     applyHazardWidths();

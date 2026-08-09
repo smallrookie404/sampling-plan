@@ -24,8 +24,9 @@
 - **录入区 Excel 式编辑**：点击单元格定位（高亮框为当前单元格），方向键移动光标，Enter 下移、Tab 右移（Shift 反向），F2 或双击进入编辑，直接输入替换原内容，Delete/Backspace 清空选中的内容、Esc 还原；Shift+方向键、Shift+点击或拖动扩展选择区域，Ctrl+A 全选整张表；Ctrl+C 复制、Ctrl+V 粘贴 Excel 表格内容（按行列对应填入录入区，超出区域自动新增行）；「清空录入区」可一键清除全部录入内容。
 - 行操作支持**自定义行数**：新增 / 插入 / 复制 / 删除时可输入批量行数（1~1000）。
 - **数据记录**：点「保存数据」为当前数据命名并保存到 `data\records.json`（项目文件夹内）；「数据记录」中可按名称或内容（车间 / 接害因素 / 检测项目）搜索，一键「调用」替换当前表格，减少重复输入；支持 JSON 备份导出与导入，同名记录导入时自动覆盖。
-- **GitHub 配置**：部署到静态网页（GitHub Pages）时，在此填写仓库与 Token，保存的数据将通过 GitHub API 直接写入仓库中的 `data/records.json`，实现“数据库在 GitHub 上”。
-- **GitHub 同步**：配置 GitHub 后（本地版或网页版均可），打开软件时自动从 GitHub 同步最新数据；「保存数据」直接写回 GitHub，本地文件仅作离线兜底；「数据记录」中可手动「从 GitHub 刷新」。
+- **参考库同步**：危害因素库与检测项目参考的新增、删除、修改会自动同步保存（防抖约 1.2 秒）——本地版存到项目文件夹的 `data\library.json`，GitHub 版直接写回仓库中的 `sampling-plan-app/data/library.json`；打开软件时自动从已同步处加载。
+- **GitHub 配置**：部署到静态网页（GitHub Pages）时，在此填写仓库与 Token，保存的数据与参考库将通过 GitHub API 直接写入仓库中的 `data/records.json` 与 `data/library.json`，实现“数据库在 GitHub 上”。
+- **GitHub 同步**：配置 GitHub 后（本地版或网页版均可），打开软件时自动从 GitHub 同步最新数据与参考库；「保存数据」直接写回 GitHub，本地文件仅作离线兜底；「数据记录」中可手动「从 GitHub 刷新」。
 
 ## 与原 Excel 的功能对应
 

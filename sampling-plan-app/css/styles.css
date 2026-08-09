@@ -258,8 +258,15 @@ table.grid.hazard td { height: 26px; }
   padding: 2px 4px;
   border-bottom: 1px dashed #e5e7eb;
   font-size: 12px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.items-list .item.selected {
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 1.5px var(--primary);
 }
 .items-list .item.dup { color: #b3261e; font-weight: 600; }
+.lib-ok { color: #067647 !important; }
 
 /* 弹窗 */
 .modal {

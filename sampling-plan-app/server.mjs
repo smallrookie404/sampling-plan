@@ -36,11 +36,28 @@ export function createServer(opts = {}) {
     }
   }
 
+  function writeJson(filePath, obj) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tmp = filePath + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), "utf8");
+    fs.renameSync(tmp, filePath);
+  }
+
   function writeRecords(list) {
-    fs.mkdirSync(path.dirname(dataFile), { recursive: true });
-    const tmp = dataFile + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(list, null, 2), "utf8");
-    fs.renameSync(tmp, dataFile);
+    writeJson(dataFile, list);
+  }
+
+  function readLibrary() {
+    try {
+      const lib = JSON.parse(fs.readFileSync(path.join(appDir, "data", "library.json"), "utf8"));
+      return lib && typeof lib === "object" ? lib : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeLibrary(lib) {
+    writeJson(path.join(appDir, "data", "library.json"), lib);
   }
 
   function sendJson(res, code, obj) {
@@ -68,6 +85,29 @@ export function createServer(opts = {}) {
             if (!Array.isArray(list)) return sendJson(res, 400, { error: "数据格式错误" });
             writeRecords(list);
             return sendJson(res, 200, { ok: true, count: list.length });
+          } catch {
+            return sendJson(res, 400, { error: "JSON 解析失败" });
+          }
+        }
+        return sendJson(res, 405, { error: "不支持的方法" });
+      }
+
+      if (pathname === "/api/library") {
+        if (req.method === "GET") {
+          const lib = readLibrary();
+          return sendJson(res, 200, lib || {});
+        }
+        if (req.method === "PUT" || req.method === "POST") {
+          let body = "";
+          for await (const chunk of req) {
+            body += chunk;
+            if (body.length > 50 * 1024 * 1024) return sendJson(res, 413, { error: "数据过大" });
+          }
+          try {
+            const lib = JSON.parse(body);
+            if (!lib || typeof lib !== "object") return sendJson(res, 400, { error: "数据格式错误" });
+            writeLibrary(lib);
+            return sendJson(res, 200, { ok: true });
           } catch {
             return sendJson(res, 400, { error: "JSON 解析失败" });
           }

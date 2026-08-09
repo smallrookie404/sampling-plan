@@ -9,7 +9,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-git add "sampling-plan-app/data/records.json"
+git add "sampling-plan-app/data/records.json" "sampling-plan-app/data/library.json"
 if errorlevel 1 (
   echo Failed to stage records.json.
   pause
