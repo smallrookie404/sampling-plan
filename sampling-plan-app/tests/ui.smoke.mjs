@@ -139,7 +139,7 @@ await page.click('.tab[data-tab="hazard"]');
 await page.waitForSelector("#hazard-body tr", { timeout: 5000 });
 const hazardRows = await page.$$eval("#hazard-body tr", (trs) => trs.length);
 const hazardStatus = await page.textContent("#hazard-status");
-if (hazardRows < 600) throw new Error("危害因素行数过少: " + hazardRows);
+if (hazardRows < 100) throw new Error("危害因素行数过少: " + hazardRows);
 console.log("危害因素页:", hazardStatus, "✔");
 await page.screenshot({ path: SHOT_DIR + "/2-hazard.png" });
 

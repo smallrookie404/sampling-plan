@@ -2,8 +2,34 @@
   "use strict";
 
   const L = window.SamplingLogic;
-  const X = window.SamplingXlsx;
   const DEFAULT_DATA = window.SamplingData;
+
+  // xlsx 读写模块（jszip + xlsxio）改为按需加载：首次导入/导出时才加载，加快页面启动
+  let X = null;
+  let xlsxPromise = null;
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("脚本加载失败：" + src));
+      document.head.appendChild(s);
+    });
+  }
+  function ensureXlsx() {
+    if (X) return Promise.resolve(X);
+    if (window.SamplingXlsx) { X = window.SamplingXlsx; return Promise.resolve(X); }
+    if (!xlsxPromise) {
+      xlsxPromise = (async () => {
+        await loadScript("js/jszip.min.js");
+        await loadScript("js/xlsxio.js");
+        X = window.SamplingXlsx;
+        if (!X) throw new Error("xlsx 模块加载失败");
+        return X;
+      })();
+    }
+    return xlsxPromise;
+  }
 
   // ---------- 列定义 ----------
   const INPUT_COLS = L.INPUT_COLS; // A..U
@@ -42,10 +68,17 @@
     return c.getContext("2d");
   })();
   const CELL_FONT = "'Microsoft YaHei','PingFang SC','Segoe UI','Arial',sans-serif";
+  const measureCache = new Map(); // 列宽测量缓存：同一文本只测量一次
 
   function measureTextWidth(text, sizePx, bold) {
+    const key = (bold ? "b" : "n") + "|" + sizePx + "|" + String(text);
+    const hit = measureCache.get(key);
+    if (hit !== undefined) return hit;
     measureCtx.font = `${bold ? "bold " : ""}${sizePx}px ${CELL_FONT}`;
-    return measureCtx.measureText(String(text)).width;
+    const w = measureCtx.measureText(String(text)).width;
+    if (measureCache.size > 30000) measureCache.clear(); // 防缓存无限增长
+    measureCache.set(key, w);
+    return w;
   }
 
   function columnWidths(cols, getHeader, getValue, rowsList, dataSize, headerSize, min, max, pad) {
@@ -105,9 +138,14 @@
   let widthTimer = null;
   function scheduleWidths() {
     clearTimeout(widthTimer);
-    widthTimer = setTimeout(() => {
+    const run = () => {
       applyGridWidths();
       applyHazardWidths();
+    };
+    widthTimer = setTimeout(() => {
+      // 列宽自适应不是关键路径，放到浏览器空闲时执行，避免阻塞输入
+      if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 400 });
+      else run();
     }, 350);
   }
 
@@ -1707,6 +1745,7 @@
   $("db-export").addEventListener("click", async () => {
     const list = await loadRecords();
     if (!list.length) { alert("数据库为空，无需备份。"); return; }
+    await ensureXlsx();
     const blob = new Blob(
       [JSON.stringify({ app: "采样计划软件", version: 1, exportedAt: new Date().toISOString(), records: list }, null, 2)],
       { type: "application/json" }
@@ -2016,7 +2055,8 @@
     return lastAn >= 0 ? lastAn : lastContent;
   }
 
-  function exportWorkbook() {
+  async function exportWorkbook() {
+    await ensureXlsx();
     // 仅导出自动计算区（W~BI 共 39 列）
     const mainRows = [COMPUTED_HEADERS];
     const end = lastExportRow() + 1;
@@ -2040,7 +2080,8 @@
     X.downloadBlob(blob, "系统测点布局调查_自动计算区.xlsx");
   });
 
-  $("btn-csv").addEventListener("click", () => {
+  $("btn-csv").addEventListener("click", async () => {
+    await ensureXlsx();
     const sep = ",";
     const q = (v) => {
       const s = fmt(v);
@@ -2074,6 +2115,7 @@
     const file = e.target.files[0];
     if (!file) return;
     try {
+      await ensureXlsx();
       const sheets = await X.readWorkbook(await file.arrayBuffer());
       const byName = {};
       for (const s of sheets) byName[s.name] = X.sheetToArray(s);
