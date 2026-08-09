@@ -8359,20 +8359,6 @@
       "noTestReason": ""
     },
     {
-      "rec": "其他粉尘(燃烧尘)(总尘)",
-      "name": "其他粉尘(燃烧尘)",
-      "dust": "总尘",
-      "qual": "否",
-      "outsource": "否",
-      "twa": "是",
-      "stel": "否",
-      "cpe": "是",
-      "mac": "否",
-      "digits": 1,
-      "highTox": "否",
-      "noTestReason": ""
-    },
-    {
       "rec": "聚乙烯粉尘(总尘)",
       "name": "聚丙烯粉尘",
       "dust": "总尘",
