@@ -634,18 +634,28 @@
     updateVisibleCells();
   }
 
-  function clearCell(r, cIdx) {
-    const col = ALL_COLS[cIdx];
-    const row = rows[r];
-    if (INPUT_COLS.includes(col)) row.input[col] = "";
-    else if (MANUAL_COLS.includes(col)) row.manual[col] = "";
-    else if (OVERRIDE_COLS.includes(col)) {
-      row.values[col] = "";
-      delete row.overridden[col];
-    } else return;
-    editing = false;
-    editOriginal = null;
-    recomputeAndRefresh();
+  // 清空选区内的可编辑内容（Delete/Backspace）
+  function clearRange(rect) {
+    if (!rect) return false;
+    let cleared = false;
+    for (let rr = rect.r1; rr <= Math.min(rect.r2, rows.length - 1); rr++) {
+      const row = rows[rr];
+      for (let cc = rect.c1; cc <= rect.c2; cc++) {
+        const col = ALL_COLS[cc];
+        if (INPUT_COLS.includes(col)) {
+          if (row.input[col] !== "") { row.input[col] = ""; cleared = true; }
+        } else if (MANUAL_COLS.includes(col)) {
+          if (row.manual[col] !== "") { row.manual[col] = ""; cleared = true; }
+        } else if (OVERRIDE_COLS.includes(col)) {
+          if (row.values[col] !== "" || row.overridden[col]) {
+            row.values[col] = "";
+            delete row.overridden[col];
+            cleared = true;
+          }
+        }
+      }
+    }
+    return cleared;
   }
 
   function clampCur() {
@@ -690,6 +700,7 @@
     editing = false;
     editOriginal = null;
     if (e.shiftKey) {
+      // Shift+点击扩展选区：当前单元格保持在锚点（Excel 行为）
       if (!cur) selAnchor = cell;
       else if (!selAnchor) selAnchor = cur;
       selStart = selAnchor;
@@ -698,8 +709,8 @@
       selAnchor = cell;
       selStart = cell;
       selEnd = cell;
+      cur = { r, c };
     }
-    cur = { r, c };
     selDragging = true;
     updateSelectionClasses();
   });
@@ -869,9 +880,13 @@
       moveCur(-page, 0, { extend: shift });
       return;
     }
-    if ((key === "Delete" || key === "Backspace") && editableCellAt(r, c)) {
-      e.preventDefault();
-      clearCell(r, c);
+    if (key === "Delete" || key === "Backspace") {
+      if (clearRange(selRect())) {
+        e.preventDefault();
+        editing = false;
+        editOriginal = null;
+        recomputeAndRefresh();
+      }
       return;
     }
     // 下拉框输入首字符快速选中（Excel 行为）
