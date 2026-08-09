@@ -265,6 +265,7 @@
     if (spacer > 0) html += `<tr style="height:${spacer}px"><td></td></tr>`;
     gridBody.innerHTML = html;
     refreshStatus();
+    updateSelectionClasses();
   }
 
   gridWrap.addEventListener("scroll", () => {
@@ -420,6 +421,7 @@
     const ins = [];
     for (let i = 0; i < n; i++) ins.push(blankRow());
     rows.splice(at, 0, ...ins);
+    if (cur && cur.r >= at) cur.r += n;
     selectedRow = at;
     recomputeAndRefresh();
     renderWindow();
@@ -434,6 +436,7 @@
     const copies = [];
     for (let i = 0; i < n; i++) copies.push(cloneRow(src));
     rows.splice(at + 1, 0, ...copies);
+    if (cur && cur.r > at) cur.r += n;
     selectedRow = at + n;
     recomputeAndRefresh();
     renderWindow();
@@ -447,6 +450,7 @@
     if (!confirm(`确定删除从第 ${selectedRow + 1} 行起的 ${cnt} 行？`)) return;
     rows.splice(selectedRow, cnt);
     selectedRow = -1;
+    clampCur();
     recomputeAndRefresh();
     renderWindow();
   });
@@ -454,16 +458,41 @@
     if (!confirm("清空测点表格（保留危害因素库与检测项目）？")) return;
     emptyGrid(20);
     selectedRow = -1;
+    selStart = selEnd = selAnchor = null;
+    cur = null;
     recomputeAndRefresh();
     renderWindow();
   });
 
-  // ---------- 录入区：区域选择 / 复制 / 粘贴 ----------
+  // ---------- 录入区：Excel 式编辑（单元格光标 / 键盘导航 / 区域选择 / 复制粘贴） ----------
   let selStart = null;
   let selEnd = null;
   let selAnchor = null;
   let selDragging = false;
   let selFrame = false;
+  let cur = null;       // 当前单元格 { r, c }，c 为 ALL_COLS 索引
+  let editing = false;  // 是否处于单元格编辑模式（F2 / 双击 / 直接输入）
+  let editOriginal = null; // 进入编辑时的原始值，Esc 还原用
+  let lastMouse = null; // 最近一次鼠标位置，双击时用于放置光标
+
+  function editableCellAt(r, cIdx) {
+    if (cIdx < 0 || cIdx >= ALL_COLS.length) return false;
+    const col = ALL_COLS[cIdx];
+    return INPUT_COLS.includes(col) || MANUAL_COLS.includes(col);
+  }
+
+  function findTd(r, cIdx) {
+    return gridBody.querySelector(`tr[data-r="${r}"] > td[data-c="${ALL_COLS[cIdx]}"]`);
+  }
+
+  function getCellModelValue(r, cIdx) {
+    if (!rows[r]) return "";
+    const col = ALL_COLS[cIdx];
+    if (col === "V") return "";
+    if (INPUT_COLS.includes(col)) return rows[r].input[col] ?? "";
+    if (MANUAL_COLS.includes(col)) return rows[r].manual[col] ?? "";
+    return rows[r].values[col] ?? "";
+  }
 
   function selRect() {
     if (!selStart || !selEnd) return null;
@@ -483,8 +512,172 @@
         const c = ALL_COLS.indexOf(td.dataset.c);
         const inSel = rect && r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2;
         td.classList.toggle("sel", inSel);
+        td.classList.toggle("cur", !!(cur && r === cur.r && c === cur.c));
       }
     }
+  }
+
+  // 把当前单元格滚动到可见区域（虚拟滚动下按需重渲染）
+  function revealCell(r, cIdx) {
+    const wrap = gridWrap;
+    const headH = gridHead.offsetHeight || 60; // sticky 表头高度
+    const rowTop = headH + r * ROW_H;
+    const ch = wrap.clientHeight;
+    if (rowTop < wrap.scrollTop + headH) wrap.scrollTop = Math.max(0, rowTop - headH);
+    else if (rowTop + ROW_H > wrap.scrollTop + ch) wrap.scrollTop = rowTop + ROW_H - ch;
+    if (!renderedRows.includes(r)) renderWindow();
+    const td = findTd(r, cIdx);
+    if (!td) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const tdRect = td.getBoundingClientRect();
+    const left = tdRect.left - wrapRect.left + wrap.scrollLeft;
+    const right = tdRect.right - wrapRect.left + wrap.scrollLeft;
+    if (left < wrap.scrollLeft) wrap.scrollLeft = left;
+    else if (right > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = right - wrap.clientWidth;
+    if (!renderedRows.includes(r)) renderWindow();
+    updateSelectionClasses();
+  }
+
+  function focusCurrentCell() {
+    if (!cur) return;
+    const td = findTd(cur.r, cur.c);
+    if (!td) return;
+    const el = td.querySelector("input,select");
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    if (el.tagName === "INPUT") {
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch {}
+    }
+  }
+
+  // 移动/设置当前单元格；extend=true 表示 Shift+方向键扩展选区
+  function setCur(r, cIdx, opts = {}) {
+    if (rows.length === 0) return;
+    const { extend = false, focus = true } = opts;
+    r = Math.max(0, Math.min(r, rows.length - 1));
+    cIdx = Math.max(0, Math.min(cIdx, ALL_COLS.length - 1));
+    const prev = cur;
+    cur = { r, c: cIdx };
+    editing = false;
+    editOriginal = null;
+    if (extend && (selAnchor || prev)) {
+      if (!selAnchor && prev) selAnchor = prev;
+      selStart = selAnchor;
+      selEnd = { r, c: cIdx };
+    } else {
+      selAnchor = { r, c: cIdx };
+      selStart = { r, c: cIdx };
+      selEnd = { r, c: cIdx };
+    }
+    revealCell(r, cIdx);
+    if (focus) focusCurrentCell();
+  }
+
+  function moveCur(dr, dc, opts = {}) {
+    if (!cur || rows.length === 0) return;
+    let r = cur.r + dr;
+    let c = cur.c + dc;
+    if (opts.wrap) {
+      while (c >= ALL_COLS.length) { c -= ALL_COLS.length; r += 1; }
+      while (c < 0) { c += ALL_COLS.length; r -= 1; }
+      if (r < 0) { r = 0; c = 0; }
+    }
+    if (opts.grow && r > rows.length - 1) {
+      if (rows.length >= 5000) r = rows.length - 1;
+      else while (rows.length < 5000 && r > rows.length - 1) rows.push(blankRow());
+    }
+    setCur(r, c, opts);
+  }
+
+  function commitCurrent() {
+    if (!cur) return;
+    const td = findTd(cur.r, cur.c);
+    if (!td) return;
+    const el = td.querySelector("input,select");
+    if (!el) return;
+    const col = ALL_COLS[cur.c];
+    const row = rows[cur.r];
+    if (el.tagName === "SELECT") {
+      if (OVERRIDE_COLS.includes(col)) {
+        row.values[col] = el.value;
+        if (el.value === "") delete row.overridden[col];
+        else row.overridden[col] = true;
+      } else if (MANUAL_COLS.includes(col)) {
+        row.manual[col] = el.value;
+      } else {
+        row.input[col] = el.value;
+      }
+    } else if (INPUT_COLS.includes(col)) {
+      row.input[col] = el.value;
+    } else if (MANUAL_COLS.includes(col)) {
+      row.manual[col] = el.value;
+    }
+    editing = false;
+    recomputeAndRefresh();
+    editOriginal = null;
+  }
+
+  function revertCurrent() {
+    if (!cur) return;
+    const restore = editOriginal === null ? getCellModelValue(cur.r, cur.c) : editOriginal;
+    const col = ALL_COLS[cur.c];
+    const row = rows[cur.r];
+    if (INPUT_COLS.includes(col)) row.input[col] = restore;
+    else if (MANUAL_COLS.includes(col)) row.manual[col] = restore;
+    const td = findTd(cur.r, cur.c);
+    if (td) {
+      const el = td.querySelector("input");
+      if (el) el.value = restore;
+    }
+    editing = false;
+    editOriginal = null;
+    updateVisibleCells();
+  }
+
+  function clearCell(r, cIdx) {
+    const col = ALL_COLS[cIdx];
+    const row = rows[r];
+    if (INPUT_COLS.includes(col)) row.input[col] = "";
+    else if (MANUAL_COLS.includes(col)) row.manual[col] = "";
+    else if (OVERRIDE_COLS.includes(col)) {
+      row.values[col] = "";
+      delete row.overridden[col];
+    } else return;
+    editing = false;
+    editOriginal = null;
+    recomputeAndRefresh();
+  }
+
+  function clampCur() {
+    if (!cur) return;
+    if (rows.length === 0) { cur = null; return; }
+    cur.r = Math.max(0, Math.min(cur.r, rows.length - 1));
+    cur.c = Math.max(0, Math.min(cur.c, ALL_COLS.length - 1));
+  }
+
+  function lastDataRow() {
+    for (let r = rows.length - 1; r >= 0; r--) {
+      const row = rows[r];
+      const has =
+        INPUT_COLS.some((col) => (row.input[col] ?? "") !== "") ||
+        MANUAL_COLS.some((col) => (row.manual[col] ?? "") !== "");
+      if (has) return r;
+    }
+    return 0;
+  }
+
+  function lastDataCol(rowIdx) {
+    const r = rowIdx === undefined ? (cur ? cur.r : 0) : rowIdx;
+    const row = rows[r];
+    if (!row) return INPUT_COLS.length - 1;
+    for (let c = ALL_COLS.length - 1; c >= 0; c--) {
+      const col = ALL_COLS[c];
+      if (col === "V") continue;
+      if (INPUT_COLS.includes(col) && (row.input[col] ?? "") !== "") return c;
+      if (MANUAL_COLS.includes(col) && (row.manual[col] ?? "") !== "") return c;
+      if ((row.values[col] ?? "") !== "") return c;
+    }
+    return INPUT_COLS.length - 1;
   }
 
   gridBody.addEventListener("mousedown", (e) => {
@@ -493,14 +686,20 @@
     const r = Number(td.closest("tr").dataset.r);
     const c = ALL_COLS.indexOf(td.dataset.c);
     const cell = { r, c };
+    lastMouse = { x: e.clientX, y: e.clientY };
+    editing = false;
+    editOriginal = null;
     if (e.shiftKey) {
-      selStart = selAnchor || cell;
+      if (!cur) selAnchor = cell;
+      else if (!selAnchor) selAnchor = cur;
+      selStart = selAnchor;
       selEnd = cell;
     } else {
       selAnchor = cell;
       selStart = cell;
       selEnd = cell;
     }
+    cur = { r, c };
     selDragging = true;
     updateSelectionClasses();
   });
@@ -523,10 +722,178 @@
     selDragging = false;
   });
 
+  gridBody.addEventListener("dblclick", (e) => {
+    const td = e.target.closest("td[data-c]");
+    if (!td) return;
+    const r = Number(td.closest("tr[data-r]").dataset.r);
+    const c = ALL_COLS.indexOf(td.dataset.c);
+    cur = { r, c };
+    selAnchor = selStart = selEnd = { r, c };
+    if (editableCellAt(r, c)) {
+      editOriginal = getCellModelValue(r, c);
+      editing = true;
+      const el = td.querySelector("input");
+      if (el) {
+        el.focus({ preventScroll: true });
+        let pos = el.value.length;
+        if (lastMouse && document.caretRangeFromPoint) {
+          const range = document.caretRangeFromPoint(lastMouse.x, lastMouse.y);
+          if (range && range.startContainer === el) pos = range.startOffset;
+        }
+        try { el.setSelectionRange(pos, pos); } catch {}
+      }
+    }
+    updateSelectionClasses();
+  });
+
+  gridBody.addEventListener("focusout", () => {
+    editing = false;
+  });
+
   gridBody.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      selStart = selEnd = null;
+    const td = e.target && e.target.closest ? e.target.closest("td[data-c]") : null;
+    if (!td) return; // 行号列、工具栏等不参与
+    const tr = td.closest("tr[data-r]");
+    if (!tr) return;
+    const r = Number(tr.dataset.r);
+    const c = ALL_COLS.indexOf(td.dataset.c);
+    const key = e.key;
+    const isInput = e.target.tagName === "INPUT";
+    const isSelect = e.target.tagName === "SELECT";
+    const mod = e.ctrlKey || e.metaKey;
+    const shift = e.shiftKey;
+    if (e.isComposing || key === "Process") return; // 中文输入法组合中不拦截
+
+    if (mod) {
+      if (editing) return; // 编辑中保留浏览器原生快捷键
+      if (key === "Home") { e.preventDefault(); setCur(0, 0); return; }
+      if (key === "End") {
+        e.preventDefault();
+        const lastR = lastDataRow();
+        setCur(lastR, lastDataCol(lastR));
+        return;
+      }
+      if (["c", "v", "x", "a"].includes(key.toLowerCase())) return; // 原生复制/粘贴/剪切/全选
+      return;
+    }
+
+    // F2：进入编辑模式
+    if (key === "F2") {
+      e.preventDefault();
+      if (isInput && editableCellAt(r, c)) {
+        editOriginal = getCellModelValue(r, c);
+        editing = true;
+        try { e.target.setSelectionRange(e.target.value.length, e.target.value.length); } catch {}
+      }
+      return;
+    }
+
+    // 编辑模式下：Enter/Tab 提交并移动，Escape 还原，其余按键交给输入框
+    if (editing) {
+      if (key === "Enter") {
+        e.preventDefault();
+        commitCurrent();
+        moveCur(shift ? -1 : 1, 0, { grow: true, select: false });
+        return;
+      }
+      if (key === "Tab") {
+        e.preventDefault();
+        commitCurrent();
+        moveCur(0, shift ? -1 : 1, { grow: true, select: false, wrap: true });
+        return;
+      }
+      if (key === "Escape") {
+        e.preventDefault();
+        revertCurrent();
+        return;
+      }
+      return; // 方向键 / Home / End / 退格等在编辑时走原生行为
+    }
+
+    // 非编辑模式：单元格光标移动
+    if (key === "Enter") {
+      e.preventDefault();
+      moveCur(shift ? -1 : 1, 0, { grow: true });
+      return;
+    }
+    if (key === "Tab") {
+      e.preventDefault();
+      moveCur(0, shift ? -1 : 1, { grow: true, wrap: true });
+      return;
+    }
+    if (key === "Escape") {
+      selStart = selEnd = selAnchor = null;
       updateSelectionClasses();
+      return;
+    }
+    if (key === "ArrowDown") {
+      if (isSelect && e.altKey) return; // Alt+↓ 打开下拉框
+      e.preventDefault();
+      moveCur(1, 0, { extend: shift });
+      return;
+    }
+    if (key === "ArrowUp") {
+      e.preventDefault();
+      moveCur(-1, 0, { extend: shift });
+      return;
+    }
+    if (key === "ArrowRight") {
+      e.preventDefault();
+      moveCur(0, 1, { extend: shift });
+      return;
+    }
+    if (key === "ArrowLeft") {
+      e.preventDefault();
+      moveCur(0, -1, { extend: shift });
+      return;
+    }
+    if (key === "Home") {
+      e.preventDefault();
+      setCur(r, 0);
+      return;
+    }
+    if (key === "End") {
+      e.preventDefault();
+      setCur(r, lastDataCol());
+      return;
+    }
+    if (key === "PageDown") {
+      e.preventDefault();
+      const page = Math.max(1, Math.floor(gridWrap.clientHeight / ROW_H) - 1);
+      moveCur(page, 0, { extend: shift });
+      return;
+    }
+    if (key === "PageUp") {
+      e.preventDefault();
+      const page = Math.max(1, Math.floor(gridWrap.clientHeight / ROW_H) - 1);
+      moveCur(-page, 0, { extend: shift });
+      return;
+    }
+    if ((key === "Delete" || key === "Backspace") && editableCellAt(r, c)) {
+      e.preventDefault();
+      clearCell(r, c);
+      return;
+    }
+    // 下拉框输入首字符快速选中（Excel 行为）
+    if (isSelect && key.length === 1 && !shift) {
+      const opts = Array.from(e.target.options).filter((o) => o.value && o.value !== "");
+      const hit = opts.find((o) => o.text.trim().toLowerCase().startsWith(key.toLowerCase()));
+      if (hit) {
+        e.preventDefault();
+        e.target.value = hit.value;
+        e.target.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return;
+    }
+    // 直接输入字符：替换当前单元格内容
+    if (isInput && editableCellAt(r, c) && key.length === 1) {
+      e.preventDefault();
+      const el = e.target;
+      editOriginal = getCellModelValue(r, c);
+      el.value = key;
+      editing = true;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch {}
     }
   });
 
@@ -577,6 +944,8 @@
     }
     if (changed) {
       e.preventDefault();
+      cur = { r: rect.r1, c: rect.c1 };
+      selAnchor = { r: rect.r1, c: rect.c1 };
       recomputeAndRefresh();
       renderWindow();
       updateSelectionClasses();
@@ -593,6 +962,7 @@
       for (const c of OVERRIDE_COLS) r.values[c] = "";
     }
     selStart = selEnd = selAnchor = null;
+    cur = null;
     recomputeAndRefresh();
     renderWindow();
   });

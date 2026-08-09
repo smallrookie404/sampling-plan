@@ -206,6 +206,11 @@ table.grid {
   background: #dbeafe !important;
   box-shadow: inset 0 0 0 1.5px var(--primary);
 }
+.grid tbody td.cur {
+  position: relative;
+  z-index: 2;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
 
 .grid input, .grid select {
   width: 100%;
