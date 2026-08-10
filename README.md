@@ -82,3 +82,12 @@ git push -u origin main
 > 注意：`wrangler pages deploy` 的旧式参数（`--branch`、`--commit-dirty`）会关闭 Functions 编译，本脚本已避免使用；若手动部署请保持 `wrangler pages deploy .wrangler\pages-dist --project-name sampling-plan` 的写法。
 
 > 提示：Cloudflare KV 为最终一致，保存后建议刷新「数据记录」确认；如需强一致数据库可改用 D1（SQLite），需要时我可以再适配。
+
+### 自动部署（GitHub Actions）
+
+仓库已包含 `.github/workflows/deploy-cloudflare.yml`：每次 push 到 `main` 分支会自动编译 Functions 并部署到 Cloudflare Pages。首次使用前需要在 GitHub 仓库添加两个 Actions 密钥：
+
+1. 打开仓库 → **Settings → Secrets and variables → Actions → New repository secret**；
+2. 添加 `CLOUDFLARE_API_TOKEN`（Cloudflare API Token，需 Pages 编辑权限）；
+3. 添加 `CLOUDFLARE_ACCOUNT_ID`（Cloudflare 账号 ID）；
+4. 之后每次 push 到 `main` 都会自动部署，也可在 Actions 页面手动触发（Run workflow）。

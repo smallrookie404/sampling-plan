@@ -1,0 +1,48 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check Cloudflare secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::仓库缺少 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID，请在 GitHub 仓库 Settings → Secrets and variables → Actions 添加后重新运行本工作流。"
+            exit 1
+          fi
+
+      - name: Build Pages Functions
+        working-directory: sampling-plan-app
+        run: npx --yes wrangler@4.120.0 pages functions build --outdir ../.wrangler/worker-build
+
+      - name: Assemble deployment directory
+        run: |
+          mkdir -p .wrangler/pages-dist/css .wrangler/pages-dist/js .wrangler/pages-dist/data
+          cp sampling-plan-app/index.html .wrangler/pages-dist/
+          cp .wrangler/worker-build/index.js .wrangler/pages-dist/_worker.js
+          cp -r sampling-plan-app/css/. .wrangler/pages-dist/css/
+          cp -r sampling-plan-app/js/. .wrangler/pages-dist/js/
+          cp -r sampling-plan-app/data/. .wrangler/pages-dist/data/
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.120.0 pages deploy .wrangler/pages-dist --project-name sampling-plan
