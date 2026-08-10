@@ -73,11 +73,12 @@ git push -u origin main
 
 部署步骤（首次需要你的 Cloudflare 账号登录一次）：
 
-1. 双击 **部署到Cloudflare.bat**，按提示在浏览器中完成 Cloudflare 登录；
-2. 脚本会创建 KV 命名空间 `SAMPLING_RECORDS`，把返回的 `id` 填入 `wrangler.jsonc`；
-3. 在 Cloudflare 控制台：Pages → sampling-plan → Settings → Functions → **KV namespace bindings**，添加名为 `SAMPLING_RECORDS` 的绑定；
-4. 脚本最后执行 `npx wrangler pages deploy "sampling-plan-app" --project-name sampling-plan`，完成后访问 `https://sampling-plan.pages.dev`。
+1. 双击 **部署到Cloudflare.bat**，按提示在浏览器中完成 Cloudflare 登录（或先设置环境变量 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`，可跳过登录）；
+2. 若 `wrangler.jsonc` 中的 KV id 仍是占位符，脚本会创建 KV 命名空间 `SAMPLING_RECORDS` 并提示你填入；
+3. 脚本把 `sampling-plan-app/functions/` 编译成 Worker（`_worker.js`），并把静态页面与 `data/` 组装到 `.wrangler\pages-dist`；
+4. 脚本执行 `npx wrangler pages deploy .wrangler\pages-dist --project-name sampling-plan`，`wrangler.jsonc` 中的 KV 绑定（`SAMPLING_RECORDS`）会自动生效；
+5. 完成后访问 `https://sampling-plan.pages.dev`，软件会自动识别「服务模式」：数据记录保存到 Cloudflare KV，打开页面时自动同步读取。
 
-也可以只做静态部署（不带函数）：`npx wrangler pages deploy "sampling-plan-app" --project-name sampling-plan`，此时数据仍通过「GitHub 配置」写回 GitHub 仓库。
+> 注意：`wrangler pages deploy` 的旧式参数（`--branch`、`--commit-dirty`）会关闭 Functions 编译，本脚本已避免使用；若手动部署请保持 `wrangler pages deploy .wrangler\pages-dist --project-name sampling-plan` 的写法。
 
 > 提示：Cloudflare KV 为最终一致，保存后建议刷新「数据记录」确认；如需强一致数据库可改用 D1（SQLite），需要时我可以再适配。

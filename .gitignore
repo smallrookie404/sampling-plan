@@ -18,3 +18,10 @@ sampling-plan-app/data/test-*.json
 
 # 原版 Excel 模板（含调查数据，默认不入库；如需入库请删除下面一行）
 0.系统测点布局调查*.xlsx
+
+# Cloudflare wrangler 构建产物（不入库）
+.wrangler/
+.cf-build/
+sampling-plan-app/_worker.js
+sampling-plan-app/index.js
+sampling-plan-app/_routes.json

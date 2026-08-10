@@ -1,0 +1,8 @@
+# 部署到 Cloudflare Pages 时排除的文件（函数目录 functions/ 除外）
+tests/
+scripts/
+*.log
+server.mjs
+*.bat
+README.md
+data/
