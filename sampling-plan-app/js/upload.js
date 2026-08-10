@@ -9,7 +9,16 @@
   'use strict';
 
   // ------------------- 配置区 -------------------
-  const API_BASE = 'http://223.93.144.122:27800';
+  // HTTPS 页面（Cloudflare Pages 部署，如 sampling-plan.pages.dev）走同源代理 /api/platform，
+  // 避免浏览器混合内容拦截 http:// 平台接口；本地 http/file 打开时直连平台。
+  const API_BASE = (function () {
+    try {
+      if (typeof location !== 'undefined' && location.protocol === 'https:' && /pages\.dev$/i.test(location.hostname)) {
+        return '/api/platform';
+      }
+    } catch (e) {}
+    return 'http://223.93.144.122:27800';
+  })();
   const RSA_PUB_B64 = 'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANL378k3RiZHWx5AfJqdH9xRNBmD9wGD2iRe41HdTNF8RUhNnHit5NpMNtGL0NPTSSpPjjI1kJfVorRvaQerUgkCAwEAAQ==';
   const SESSION_KEY = 'xcdc_session_v1';       // 登录会话（sessionStorage，关闭浏览器失效）
   const REM_KEY = 'xcdc_upload_remember';
@@ -415,7 +424,14 @@
         $('captcha').value = '';
         loginMsg.textContent = '';
       } catch (e) {
-        loginMsg.textContent = e.message;
+        let msg = e.message;
+        // GitHub Pages 等 HTTPS 静态托管无法直连平台 HTTP 接口，给出明确指引
+        try {
+          if (location.protocol === 'https:' && !/pages\.dev$/i.test(location.hostname)) {
+            msg = 'HTTPS 页面无法直连平台 HTTP 接口（被浏览器拦截）。请使用 Cloudflare Pages 部署：https://sampling-plan.pages.dev';
+          }
+        } catch (e2) {}
+        loginMsg.textContent = msg;
       }
     }
 

@@ -47,6 +47,11 @@ git push -u origin main
 4. 点软件右上角「**GitHub 配置**」，填写仓库（用户名/仓库名）、分支、以及一个 **Fine-grained PAT**（仅授予该仓库 Contents 读/写权限）；
 5. 之后「保存数据」会直接更新 GitHub 仓库里的 `records.json`，与本机版的文件夹存储行为一致。
 
+> ⚠️ 平台接口限制：GitHub Pages 为 HTTPS 纯静态托管，浏览器会拦截 HTTPS 页面调用 `http://223.93.144.122:27800`（混合内容），
+> 因此 **「数据上传 / 统一登录」在 GitHub Pages 上无法使用**（验证码、登录、上传均不可用）。
+> 请改用 **Cloudflare Pages 部署**（`https://sampling-plan.pages.dev`）：页面会自动走同源代理 `/api/platform`
+> 转发平台 HTTP 接口，验证码/登录/上传均可正常使用（本地 http/file 打开仍直连平台）。
+
 > 安全提示：
 > - Token 只保存在你本机的浏览器中，**切勿提交到仓库或告诉他人**；
 > - 公开仓库请谨慎存放企业调查数据；
