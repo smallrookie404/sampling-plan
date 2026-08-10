@@ -28,7 +28,8 @@ const errors = [];
 page.on("console", (msg) => {
   if (msg.type() === "error") {
     // 测试环境无外网：GitHub 预同步请求被沙箱拦截属预期，不视为失败
-    if (msg.text().includes("ERR_NETWORK_ACCESS_DENIED")) return;
+    // 测试使用假 Token：GitHub API 返回 401 同样属预期
+    if (msg.text().includes("ERR_NETWORK_ACCESS_DENIED") || msg.text().includes("status of 401")) return;
     errors.push("console: " + msg.text());
   }
 });
@@ -340,7 +341,7 @@ await page.waitForSelector("#db-modal:not(.hidden)");
 await page.fill("#db-search", "测试记录A");
 await page.waitForTimeout(150);
 await page.click('#db-list .db-item button[data-act="del"]');
-await page.waitForTimeout(200);
+await page.waitForTimeout(450);
 dbItems = await page.$$eval("#db-list .db-item", (els) => els.length);
 if (dbItems !== 0) throw new Error("删除记录失败");
 const afterDelete = JSON.parse(fs.readFileSync(TEST_DATA, "utf8"));

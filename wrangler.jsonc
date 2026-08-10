@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "sampling-plan",
+  "compatibility_date": "2024-11-01",
+  "pages_build_output_dir": "sampling-plan-app",
+  // Cloudflare KV 命名空间：先用以下命令创建，再把返回的 id 填到下方
+  //   npx wrangler kv namespace create SAMPLING_RECORDS
+  "kv_namespaces": [
+    {
+      "binding": "SAMPLING_RECORDS",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID",
+      "preview_id": "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
+    }
+  ]
+}

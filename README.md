@@ -60,3 +60,24 @@ git push -u origin main
 - 「保存数据」直接写回 GitHub 仓库的 `sampling-plan-app/data/records.json`，同时镜像到本地作为离线兜底；
 - 「数据记录」弹窗中的「从 GitHub 刷新」可手动拉取最新数据；
 - Token 仅保存在本机浏览器中，请勿提交到仓库或泄露。
+
+## 部署到 Cloudflare（dash.cloudflare.com）
+
+软件可以部署到 Cloudflare Pages，数据记录存入 **Cloudflare KV**（不需要依赖 GitHub）。
+
+仓库已包含：
+
+- `sampling-plan-app/functions/`：Cloudflare Pages Functions（`/api/health`、`/api/records`，读写 KV）；
+- `wrangler.jsonc`：Pages 部署配置（含 KV 绑定占位）；
+- `部署到Cloudflare.bat`：一键登录、创建 KV、部署脚本。
+
+部署步骤（首次需要你的 Cloudflare 账号登录一次）：
+
+1. 双击 **部署到Cloudflare.bat**，按提示在浏览器中完成 Cloudflare 登录；
+2. 脚本会创建 KV 命名空间 `SAMPLING_RECORDS`，把返回的 `id` 填入 `wrangler.jsonc`；
+3. 在 Cloudflare 控制台：Pages → sampling-plan → Settings → Functions → **KV namespace bindings**，添加名为 `SAMPLING_RECORDS` 的绑定；
+4. 脚本最后执行 `npx wrangler pages deploy "sampling-plan-app" --project-name sampling-plan`，完成后访问 `https://sampling-plan.pages.dev`。
+
+也可以只做静态部署（不带函数）：`npx wrangler pages deploy "sampling-plan-app" --project-name sampling-plan`，此时数据仍通过「GitHub 配置」写回 GitHub 仓库。
+
+> 提示：Cloudflare KV 为最终一致，保存后建议刷新「数据记录」确认；如需强一致数据库可改用 D1（SQLite），需要时我可以再适配。
