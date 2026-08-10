@@ -154,6 +154,31 @@ await page.fill('#main-grid tr[data-r="3"] td[data-c="B"] input', "");
 await page.waitForTimeout(300);
 console.log("录入区 整片填充/平铺粘贴 校验通过 ✔");
 
+// 粘贴后无需重新点击，可直接 Delete 清空粘贴区域
+await page.evaluate(() => {
+  const b0 = document.querySelector('#main-grid tr[data-r="0"] td[data-c="B"]');
+  b0.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  const d0 = document.querySelector('#main-grid tr[data-r="0"] td[data-c="D"]');
+  d0.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, shiftKey: true }));
+});
+await page.evaluate(() => {
+  const ev = new ClipboardEvent("paste", { clipboardData: new DataTransfer(), bubbles: true, cancelable: true });
+  ev.clipboardData.setData("text/plain", "待删A\t待删B\t待删C");
+  document.querySelector('#main-grid tr[data-r="0"] td[data-c="D"]').dispatchEvent(ev);
+});
+await page.waitForTimeout(300);
+if ((await val(0, "B")) !== "待删A") throw new Error("Delete 测试前置粘贴未生效");
+await page.keyboard.press("Delete");
+await page.waitForTimeout(300);
+if ((await val(0, "B")) !== "" || (await val(0, "C")) !== "" || (await val(0, "D")) !== "") {
+  throw new Error("粘贴后未重新点击，Delete 应直接清空粘贴区域");
+}
+await page.fill('#main-grid tr[data-r="0"] td[data-c="B"] input', "操作工");
+await page.fill('#main-grid tr[data-r="0"] td[data-c="C"] input', "投料");
+await page.fill('#main-grid tr[data-r="0"] td[data-c="D"] input', "二氧化钛粉尘(总尘)");
+await page.waitForTimeout(300);
+console.log("粘贴后立即 Delete 清空校验通过 ✔");
+
 await page.screenshot({ path: SHOT_DIR + "/1-main.png" });
 
 // 2) 输入校验联动：把第 2 行班制改成非法值

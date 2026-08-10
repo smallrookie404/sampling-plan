@@ -1028,7 +1028,10 @@
       selAnchor = { r: rect.r1, c: rect.c1 };
       recomputeAndRefresh();
       renderWindow();
+      // 粘贴后恢复焦点到区域左上角，保证可立即用 Delete/方向键继续操作
+      revealCell(rect.r1, rect.c1);
       updateSelectionClasses();
+      focusCurrentCell();
     }
   });
 
