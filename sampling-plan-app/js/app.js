@@ -1103,7 +1103,7 @@
   const fsActions = {
     "fs-import": "btn-import",
     "fs-export": "btn-export",
-    "fs-csv": "btn-csv",
+    "fs-upload": "btn-upload",
     "fs-save": "btn-save",
     "fs-db": "btn-db",
     "fs-gh": "btn-gh",
@@ -2149,6 +2149,13 @@
     return X.writeWorkbook({ mainRows, mainWidths: COMPUTED_WIDTHS });
   }
 
+  // 供上传模块（js/upload.js）复用的导出能力
+  window.SamplingApp = {
+    exportWorkbookBytes: exportWorkbook,
+    exportName: () => "系统测点布局调查_自动计算区.xlsx",
+    countErrors: () => L.countErrors(rows).total,
+  };
+
   $("btn-export").addEventListener("click", async () => {
     const { total } = L.countErrors(rows);
     if (total > 0 && !confirm(`当前有 ${total} 处校验错误，仍要导出吗？`)) return;
@@ -2157,26 +2164,16 @@
     X.downloadBlob(blob, "系统测点布局调查_自动计算区.xlsx");
   });
 
-  $("btn-csv").addEventListener("click", async () => {
-    await ensureXlsx();
-    const sep = ",";
-    const q = (v) => {
-      const s = fmt(v);
-      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const lines = [COMPUTED_HEADERS.map(q).join(sep)];
-    const end = lastExportRow() + 1;
-    for (let i = 0; i < end; i++) {
-      const r = rows[i];
-      const line = [];
-      for (const c of COMPUTED_COLS) {
-        if (MANUAL_COLS.includes(c)) line.push(r.manual[c]);
-        else line.push(r.values[c]);
-      }
-      lines.push(line.map(q).join(sep));
-    }
-    const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
-    X.downloadBlob(blob, "系统测点布局调查_自动计算区.csv");
+  // 数据上传：切换到上传视图（登录/选项目/上传当前表格导出的 Excel）
+  $("btn-upload").addEventListener("click", () => {
+    if (window.SamplingUpload && window.SamplingUpload.show) window.SamplingUpload.show();
+    else alert("上传模块未加载，请刷新页面后重试。");
+  });
+
+  // 退出登录（主页面顶栏）
+  $("btn-logout").addEventListener("click", () => {
+    if (window.SamplingUpload && window.SamplingUpload.logout) window.SamplingUpload.logout();
+    else alert("登录模块未加载，请刷新页面后重试。");
   });
 
   // ---------- 导入（仅主表测点布局，不导入危害因素库/检测项目） ----------

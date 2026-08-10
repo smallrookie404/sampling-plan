@@ -23,6 +23,14 @@ process.on("exit", () => {
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 page.on("dialog", (d) => d.accept());
+// 预置统一登录会话，跳过登录遮罩（真实登录需要平台账号，无法自动化）
+await page.addInitScript(() => {
+  sessionStorage.setItem("xcdc_session_v1", JSON.stringify({
+    token: "test-token",
+    orgId: "1",
+    userInfo: { userName: "测试账号", userCode: "TEST", organization: { organizationId: "1" } },
+  }));
+});
 
 const errors = [];
 page.on("console", (msg) => {
@@ -254,19 +262,18 @@ if (xlArr[0].length !== 39 || String(xlArr[0][0]) !== "*单元/工作场所") {
 if (String(xlArr[1][17]) !== "二氧化钛粉尘") throw new Error("导出首行 AN 值不符");
 console.log("导出内容校验（仅自动计算区）通过 ✔");
 
-// CSV 导出同样仅含自动计算区
-const [csvDownload] = await Promise.all([
-  page.waitForEvent("download", { timeout: 15000 }),
-  page.click("#btn-csv"),
-]);
-const csvPath = SHOT_DIR + "/exported.csv";
-await csvDownload.saveAs(csvPath);
-const csvText = fs.readFileSync(csvPath, "utf8");
-const csvHead = csvText.replace(/^\ufeff/, "").split("\r\n")[0].split(",");
-if (csvHead.length !== 39 || csvHead[0] !== "*单元/工作场所" || csvHead.includes("车间")) {
-  throw new Error("CSV 应只含自动计算区 39 列");
-}
-console.log("CSV 导出校验（仅自动计算区）通过 ✔");
+// 数据上传：切换到上传视图，自动生成当前表格导出文件
+await page.click("#btn-upload");
+await page.waitForSelector("#xcdc-upload:not(.hidden)", { timeout: 15000 });
+await page.waitForSelector("#fileName:not(:empty)", { timeout: 15000 });
+const uploadGreeting = await page.textContent("#greeting");
+const uploadFileName = await page.textContent("#fileName");
+if (!uploadGreeting.includes("已登录")) throw new Error("上传视图未显示登录信息: " + uploadGreeting);
+if (!uploadFileName.includes("系统测点布局调查_自动计算区.xlsx")) throw new Error("上传文件未自动生成: " + uploadFileName);
+console.log("数据上传视图校验通过 ✔（文件：" + uploadFileName + "）");
+await page.click("#xcdcBack");
+await page.waitForSelector("#xcdc-upload.hidden", { state: "attached" });
+console.log("返回采样计划校验通过 ✔");
 
 // ---------- 7) 行操作支持自定义行数 ----------
 const statusText = async () => page.textContent("#grid-status");
