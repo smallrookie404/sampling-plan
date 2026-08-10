@@ -1526,41 +1526,78 @@
 
   async function loadLibrary() {
     await ensureMode();
+    const cands = [];
     if (hasGithubConfig()) {
       setLibStatus("github-loading");
       try {
-        const lib = normalizeLibrary(await githubLibLoad());
-        if (lib) {
-          mirrorLibraryToLocal(lib);
-          setLibStatus("ok");
-          return lib;
-        }
-        // 仓库中尚无 library.json 时，回退到站点自带的静态文件
-        const staticLib = await fetchStaticLibrary();
-        if (staticLib) setLibStatus("static-ok");
-        return staticLib || null;
+        const lib = await githubLibLoad();
+        if (lib) cands.push({ src: "github", lib });
       } catch (e) {
         setLibStatus("err", e.message);
       }
     }
     if (storageMode === "server") {
       try {
-        const res = await fetch("/api/library", { cache: "no-store" });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const lib = normalizeLibrary(await res.json());
-        if (lib) setLibStatus("local-ok");
-        return lib;
+        const lib = await cloudLibLoad();
+        if (lib) cands.push({ src: "cloud", lib });
       } catch {
-        // 继续走下面的静态文件兜底
+        // Cloudflare KV 不可用时忽略，继续其它来源
       }
     }
-    // 静态网页模式：直接读取随仓库部署的 data/library.json（无需 Token）
+    if (cands.length) {
+      cands.sort((a, b) => libTimestamp(b.lib) - libTimestamp(a.lib));
+      const winner = cands[0];
+      const lib = normalizeLibrary(winner.lib);
+      if (lib) {
+        const loser = cands[1];
+        // GitHub 与 Cloudflare 双端都可用时：取较新一端，并把它同步到较旧一端（失败不阻塞）
+        if (loser && libTimestamp(loser.lib) < libTimestamp(winner.lib)) {
+          const syncTo =
+            winner.src === "cloud"
+              ? () => githubLibPersist(winner.lib)
+              : () => cloudLibPersist(winner.lib);
+          syncTo().catch(() => {});
+        }
+        mirrorLibraryToLocal(winner.lib);
+        setLibStatus("ok");
+        return lib;
+      }
+    }
+    // 没有可用的远端参考库时，回退到站点自带的静态文件
     const staticLib = await fetchStaticLibrary();
     if (staticLib) {
       setLibStatus("static-ok");
       return staticLib;
     }
     return localLibraryLoad();
+  }
+
+  // 参考库版本时间戳：用于 GitHub 与 Cloudflare 双端“取最新”
+  function libTimestamp(lib) {
+    const t = lib && lib.updatedAt;
+    const ts = t ? new Date(t).getTime() : NaN;
+    return isNaN(ts) ? 0 : ts;
+  }
+
+  function withLibTimestamp(lib) {
+    return { ...lib, updatedAt: new Date().toISOString() };
+  }
+
+  async function cloudLibLoad() {
+    const res = await fetch("/api/library", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    return normalizeLibrary(data) ? data : null;
+  }
+
+  async function cloudLibPersist(lib) {
+    const res = await fetch("/api/library", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(lib),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return true;
   }
 
   // 读取站点自带的静态 library.json（GitHub Pages 部署时随仓库同步更新）
@@ -1576,45 +1613,32 @@
 
   async function persistLibrary() {
     await ensureMode();
-    const lib = libraryObject();
-    if (hasGithubConfig()) {
+    const stamped = withLibTimestamp(libraryObject());
+    const targets = [];
+    if (hasGithubConfig()) targets.push({ name: "GitHub", fn: () => githubLibPersist(stamped) });
+    if (storageMode === "server") targets.push({ name: "Cloudflare", fn: () => cloudLibPersist(stamped) });
+    if (!targets.length) {
+      const ok = localLibraryPersist(stamped);
+      setLibStatus(ok ? "local-ok" : "err", ok ? "" : "本地保存失败");
+      return ok;
+    }
+    const errors = [];
+    let anyOk = false;
+    for (const t of targets) {
       try {
-        const ok = await githubLibPersist(lib);
-        mirrorLibraryToLocal(lib);
-        setLibStatus("ok");
-        return ok;
+        await t.fn();
+        anyOk = true;
       } catch (e) {
-        setLibStatus("err", e.message);
+        errors.push(t.name + "：" + e.message);
       }
     }
-    if (storageMode === "server") {
-      try {
-        const res = await fetch("/api/library", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(lib),
-        });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        setLibStatus("local-ok");
-        return true;
-      } catch (e) {
-        setLibStatus("err", e.message);
-        return localLibraryPersist(lib);
-      }
+    if (errors.length) {
+      setLibStatus("err", errors.join("；"));
+      const localOk = localLibraryPersist(stamped);
+      return anyOk || localOk;
     }
-    if (storageMode === "github") {
-      try {
-        const ok = await githubLibPersist(lib);
-        setLibStatus("ok");
-        return ok;
-      } catch (e) {
-        setLibStatus("err", e.message);
-        return false;
-      }
-    }
-    const ok = localLibraryPersist(lib);
-    setLibStatus(ok ? "local-ok" : "err", ok ? "" : "本地保存失败");
-    return ok;
+    setLibStatus("ok");
+    return true;
   }
 
   // 参考库变更后防抖自动同步（新增/删除/修改后约 1.2 秒写回）

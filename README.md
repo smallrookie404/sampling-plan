@@ -81,6 +81,10 @@ git push -u origin main
 
 > 注意：`wrangler pages deploy` 的旧式参数（`--branch`、`--commit-dirty`）会关闭 Functions 编译，本脚本已避免使用；若手动部署请保持 `wrangler pages deploy .wrangler\pages-dist --project-name sampling-plan` 的写法。
 
+服务模式下，「数据记录」保存在 KV 的 `records` 键；**危害因素库与检测项目参考**保存在 KV 的 `library` 键（含 `updatedAt` 时间戳），修改后约 1 秒自动写回云端。
+
+如果同一浏览器里同时配置了 GitHub（「GitHub 配置」弹窗）并打开 Cloudflare 页面，软件会读取两端参考库并比较 `updatedAt`：**取较新的一端作为当前库，并自动把最新内容同步到较旧的一端**，保证两边一致；只配置其中一端时则只读写该端。
+
 > 提示：Cloudflare KV 为最终一致，保存后建议刷新「数据记录」确认；如需强一致数据库可改用 D1（SQLite），需要时我可以再适配。
 
 ### 自动部署（GitHub Actions）
