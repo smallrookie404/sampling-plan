@@ -1004,17 +1004,21 @@
     const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
     if (!text) return;
     const lines = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    // 去掉末尾空行（复制内容末尾常带换行）
+    while (lines.length && lines[lines.length - 1] === "") lines.pop();
+    const srcRows = lines.map((l) => l.split("\t"));
+    const srcH = Math.max(srcRows.length, 1);
+    const srcW = srcRows.reduce((m, r) => Math.max(m, r.length), 1);
     let changed = false;
-    for (let i = 0; i < lines.length; i++) {
-      const cells = lines[i].split("\t");
-      for (let j = 0; j < cells.length; j++) {
-        const r = rect.r1 + i;
-        const c = rect.c1 + j;
+    // 将复制内容按行列规律重复填充到整个选中区域（复制单值则整片填入）
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      for (let c = rect.c1; c <= rect.c2; c++) {
         if (c >= ALL_COLS.length) break;
         const col = ALL_COLS[c];
         if (!INPUT_COLS.includes(col)) continue; // 仅写入录入区
+        const val = (srcRows[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
         while (rows.length <= r) rows.push(blankRow());
-        rows[r].input[col] = cells[j];
+        rows[r].input[col] = val;
         changed = true;
       }
     }

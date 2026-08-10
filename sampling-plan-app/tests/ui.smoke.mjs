@@ -104,6 +104,56 @@ await page.fill('#main-grid tr[data-r="0"] td[data-c="D"] input', "二氧化钛�
 await page.waitForTimeout(300);
 console.log("录入区 选择/复制/粘贴 校验通过 ✔");
 
+// 粘贴填充：复制单个内容 → 整片选中区域全部填入
+await page.evaluate(() => {
+  const b0 = document.querySelector('#main-grid tr[data-r="0"] td[data-c="B"]');
+  b0.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  const c1 = document.querySelector('#main-grid tr[data-r="1"] td[data-c="C"]');
+  c1.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, shiftKey: true }));
+});
+await page.evaluate(() => {
+  const ev = new ClipboardEvent("paste", { clipboardData: new DataTransfer(), bubbles: true, cancelable: true });
+  ev.clipboardData.setData("text/plain", "填充值");
+  document.querySelector('#main-grid tr[data-r="1"] td[data-c="C"]').dispatchEvent(ev);
+});
+await page.waitForTimeout(300);
+if (
+  (await val(0, "B")) !== "填充值" ||
+  (await val(0, "C")) !== "填充值" ||
+  (await val(1, "B")) !== "填充值" ||
+  (await val(1, "C")) !== "填充值"
+) {
+  throw new Error("单值整片填充未生效");
+}
+await page.fill('#main-grid tr[data-r="0"] td[data-c="B"] input', "操作工");
+await page.fill('#main-grid tr[data-r="0"] td[data-c="C"] input', "投料");
+await page.fill('#main-grid tr[data-r="1"] td[data-c="B"] input', "操作工");
+await page.fill('#main-grid tr[data-r="1"] td[data-c="C"] input', "投料");
+await page.waitForTimeout(300);
+
+// 粘贴平铺：多格内容按行列规律重复填充到选中区域
+await page.evaluate(() => {
+  const b0 = document.querySelector('#main-grid tr[data-r="0"] td[data-c="B"]');
+  b0.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  const b3 = document.querySelector('#main-grid tr[data-r="3"] td[data-c="B"]');
+  b3.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, shiftKey: true }));
+});
+await page.evaluate(() => {
+  const ev = new ClipboardEvent("paste", { clipboardData: new DataTransfer(), bubbles: true, cancelable: true });
+  ev.clipboardData.setData("text/plain", "甲\n乙");
+  document.querySelector('#main-grid tr[data-r="3"] td[data-c="B"]').dispatchEvent(ev);
+});
+await page.waitForTimeout(300);
+const bvals = [];
+for (let i = 0; i <= 3; i++) bvals.push(await val(i, "B"));
+if (bvals.join(",") !== "甲,乙,甲,乙") throw new Error("平铺填充未生效: " + bvals.join(","));
+for (let i = 0; i <= 2; i++) {
+  await page.fill(`#main-grid tr[data-r="${i}"] td[data-c="B"] input`, "操作工");
+}
+await page.fill('#main-grid tr[data-r="3"] td[data-c="B"] input', "");
+await page.waitForTimeout(300);
+console.log("录入区 整片填充/平铺粘贴 校验通过 ✔");
+
 await page.screenshot({ path: SHOT_DIR + "/1-main.png" });
 
 // 2) 输入校验联动：把第 2 行班制改成非法值
