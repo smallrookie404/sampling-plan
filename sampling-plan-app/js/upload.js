@@ -150,9 +150,6 @@
     return top || nested || null;
   }
 
-  function orgDisplayName(user) {
-    return (user && user.organization && user.organization.organizationName) || '';
-  }
 
   const searchCache = new Map(); // 搜索结果缓存：key -> { time, data }
   const yearCache = new Map();   // 年份范围缓存：key -> { time, data }
@@ -360,11 +357,8 @@
     }
 
     function greetingText() {
-      const orgName = orgDisplayName(userInfo);
       const who = userInfo ? (userInfo.userName + '（' + userInfo.userCode + '）') : '';
-      let orgPart = '机构ID：' + (orgId || '未知');
-      if (orgName) orgPart += '（' + orgName + '）';
-      return '已登录：' + who + '  ' + orgPart;
+      return '已登录：' + who;
     }
 
     // 是否运行在 Cloudflare Pages（HTTPS 部署）：团队配置云端同步仅在 pages.dev 上可用
