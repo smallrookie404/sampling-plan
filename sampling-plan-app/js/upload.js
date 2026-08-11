@@ -335,10 +335,51 @@
       return 'xcdc_team_v1_' + code;
     }
 
-    function loadTeamSettings() {
+    function teamAccountKey() {
+      return userInfo && (userInfo.userCode || userInfo.id) ? String(userInfo.userCode || userInfo.id) : 'anonymous';
+    }
+
+    // 是否运行在 Cloudflare Pages（HTTPS 部署）：团队配置云端同步仅在 pages.dev 上可用
+    function isCloudDeploy() {
+      try {
+        return typeof location !== 'undefined' && location.protocol === 'https:' && /pages\.dev$/i.test(location.hostname);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function normalizeTeamConfig(obj) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+      const has = Array.isArray(obj.memberIds) || obj.investigatorId || obj.reviewerId || obj.investigateDate;
+      return has ? obj : null;
+    }
+
+    // 同源云端接口（/api/team，Cloudflare Pages Function 读写 KV）
+    async function cloudTeamRequest(method, query, body) {
+      const resp = await fetch('/api/team' + (query ? '?' + query : ''), {
+        method: method,
+        headers: body ? { 'Content-Type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      let data = null;
+      try { data = await resp.json(); } catch (e) {}
+      return { status: resp.status, data: data };
+    }
+
+    // 加载本账号团队配置：云端优先（换电脑可读取），本地 localStorage 兜底
+    async function loadTeamSettings() {
+      if (isCloudDeploy()) {
+        try {
+          const r = await cloudTeamRequest('GET', 'account=' + encodeURIComponent(teamAccountKey()));
+          if (r.status === 200) {
+            const cfg = normalizeTeamConfig(r.data);
+            if (cfg) return cfg;
+          }
+        } catch (e) {}
+      }
       try {
         const s = localStorage.getItem(teamStorageKey());
-        return s ? JSON.parse(s) : null;
+        return s ? normalizeTeamConfig(JSON.parse(s)) : null;
       } catch (e) {
         return null;
       }
@@ -386,14 +427,16 @@
     }
 
     // 上传视图：打开/关闭
-    function showUpload() {
+    async function showUpload() {
       if (!token) { showLogin(); return; }
       if (uploadOverlay) uploadOverlay.classList.remove('hidden');
       if ($('greeting') && userInfo) {
         $('greeting').textContent = '已登录：' + userInfo.userName + '（' + userInfo.userCode + '）  机构ID：' + orgId;
       }
-      if (userList.length === 0 && token && orgId) loadUserList();
-      else if (teamSaved) applyTeamSettings(teamSaved); // 重新打开上传视图时恢复已确认的团队配置
+      if (userList.length === 0 && token && orgId) await loadUserList();
+      // 打开上传视图时从云端刷新，换电脑也能读到最新团队配置
+      teamSaved = await loadTeamSettings();
+      if (teamSaved) applyTeamSettings(teamSaved);
       generateExportFile();
     }
 
@@ -466,7 +509,7 @@
         orgId = userInfo.organization.organizationId;
         session = { token: token, orgId: orgId, userInfo: userInfo };
         saveSession();
-        teamSaved = loadTeamSettings(); // 按登录账号恢复已确认的团队设置
+        teamSaved = await loadTeamSettings(); // 按登录账号恢复已确认的团队设置（云端优先）
         teamDirty = !!teamSaved;
         // 记住账号密码
         try {
@@ -612,17 +655,17 @@
       renderMemberTags();
       rebuildRoleOptions();
       updateMemberCount();
-      saveTeamSettings();
+      saveTeamSettings().catch(function () {});
       log('已移除成员：' + (u ? u.userName + '（' + (u.userCode || '') + '）' : id));
     }
 
-    function confirmMembers(quiet, markDirty) {
+    async function confirmMembers(quiet, markDirty) {
       confirmedMemberIds = checkedMemberIds();
       if (markDirty) {
         teamDirty = true;
         memberSearch.value = '';
         filterMemberList();
-        saveTeamSettings(); // 确认后按当前登录账号保存，不再清空
+        await saveTeamSettings(); // 确认后按当前登录账号保存（云端），不再清空
       }
       renderMemberTags();
       rebuildRoleOptions();
@@ -630,8 +673,9 @@
       if (!quiet) log('已确认项目成员 ' + confirmedMemberIds.length + ' 人');
     }
 
-    // 按账号保存/恢复已确认的团队设置（成员/调查人/复核人/日期）
-    function saveTeamSettings() {
+    // 按账号保存已确认的团队设置（成员/调查人/复核人/日期）：
+    // 本地始终留一份兜底，部署在 Cloudflare Pages 时同步到云端（跨电脑读取）
+    async function saveTeamSettings() {
       const data = {
         memberIds: confirmedMemberIds.slice(),
         investigatorId: investigatorSelect ? investigatorSelect.value : '',
@@ -639,10 +683,23 @@
         investigateDate: investigateDate ? investigateDate.value : '',
         savedAt: Date.now()
       };
+      teamSaved = data;
       try {
         localStorage.setItem(teamStorageKey(), JSON.stringify(data));
       } catch (e) {}
-      teamSaved = data;
+      if (isCloudDeploy()) {
+        try {
+          const r = await cloudTeamRequest('PUT', '', { account: teamAccountKey(), config: data });
+          if (r.status === 200 && r.data && r.data.ok) {
+            log('团队配置已同步到云端');
+          } else {
+            log('团队配置云端同步失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
+          }
+        } catch (e) {
+          log('团队配置云端同步失败：' + e.message);
+        }
+      }
+      return data;
     }
 
     function applyTeamSettings(data) {
@@ -695,7 +752,8 @@
       try {
         userList = await fetchUsers(token, orgId);
         renderMemberList();
-        if (teamSaved) applyTeamSettings(teamSaved); // 登录/刷新后立即恢复本账号已确认的团队配置
+        teamSaved = await loadTeamSettings(); // 云端优先，登录/刷新后立即恢复本账号已确认的团队配置
+        if (teamSaved) applyTeamSettings(teamSaved);
         log('已加载人员列表：' + userList.length + ' 人');
         if (selectedProject) loadProjectTeam(selectedProject.id);
       } catch (e) {
@@ -861,10 +919,10 @@
     });
     memberSearch.addEventListener('input', filterMemberList);
     memberList.addEventListener('change', updateMemberCount);
-    btnMemberConfirm.addEventListener('click', function () { confirmMembers(false, true); });
-    investigatorSelect.addEventListener('change', function () { teamDirty = true; saveTeamSettings(); });
-    reviewerSelect.addEventListener('change', function () { teamDirty = true; saveTeamSettings(); });
-    investigateDate.addEventListener('change', function () { teamDirty = true; saveTeamSettings(); });
+    btnMemberConfirm.addEventListener('click', function () { confirmMembers(false, true).catch(function () {}); });
+    investigatorSelect.addEventListener('change', function () { teamDirty = true; saveTeamSettings().catch(function () {}); });
+    reviewerSelect.addEventListener('change', function () { teamDirty = true; saveTeamSettings().catch(function () {}); });
+    investigateDate.addEventListener('change', function () { teamDirty = true; saveTeamSettings().catch(function () {}); });
     document.addEventListener('click', function (e) {
       if (e.target !== unitInput && e.target !== codeInput && !suggestBox.contains(e.target)) {
         suggestBox.classList.add('hidden');
@@ -956,13 +1014,15 @@
     };
 
     // 启动：有会话直接进入（登录遮罩保持隐藏），否则显示登录
-    if (session && token) {
-      teamSaved = loadTeamSettings();
-      teamDirty = !!teamSaved;
-      enterApp();
-    } else {
-      showLogin();
-    }
+    (async function () {
+      if (session && token) {
+        teamSaved = await loadTeamSettings(); // 云端优先恢复本账号团队配置
+        teamDirty = !!teamSaved;
+        enterApp();
+      } else {
+        showLogin();
+      }
+    })();
   }
 
   if (typeof document !== 'undefined') {
