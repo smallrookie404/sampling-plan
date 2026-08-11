@@ -156,7 +156,13 @@
   const searchInFlight = new Map(); // 进行中的搜索请求：key -> Promise
   const yearInFlight = new Map();   // 进行中的年份范围请求：key -> Promise
   const CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+  const CACHE_TTL_YEAR = 30 * 60 * 1000; // 年份项目列表缓存 30 分钟
   const CACHE_MAX = 30;
+  const YEAR_SS_PREFIX = 'xcdc_year_projects_v1:';
+
+  function yearSsKey(yearPrefix, unitName) {
+    return YEAR_SS_PREFIX + (yearPrefix || '') + '|' + (unitName || '');
+  }
 
   async function searchProjects(token, keyword, signal) {
     const params = [];
@@ -198,12 +204,25 @@
   async function fetchYearProjects(token, yearPrefix, unitName, signal) {
     const key = yearPrefix + '|' + (unitName || '');
     const cached = yearCache.get(key);
-    if (cached && Date.now() - cached.time < CACHE_TTL) {
+    if (cached && Date.now() - cached.time < CACHE_TTL_YEAR) {
       return cached.data;
     }
     if (yearInFlight.has(key)) {
       return yearInFlight.get(key);
     }
+    // sessionStorage 兜底：页面刷新后免重新拉取整年项目
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        const ssRaw = sessionStorage.getItem(yearSsKey(yearPrefix, unitName));
+        if (ssRaw) {
+          const ss = JSON.parse(ssRaw);
+          if (ss && ss.time && Array.isArray(ss.data) && Date.now() - ss.time < CACHE_TTL_YEAR) {
+            yearCache.set(key, ss);
+            return ss.data;
+          }
+        }
+      }
+    } catch (e) {}
     const p = (async function () {
       const params = ['code=' + encodeURIComponent(yearPrefix)];
       if (unitName) params.push('belongInspectName=' + encodeURIComponent(String(unitName).trim()));
@@ -211,7 +230,13 @@
       const r = await apiRequest('GET', '/api/projectInfo?pageNumber=1&pageSize=2000&' + params.join('&'), { token: token, signal: signal, timeout: 90000 });
       if (r.status !== 200) throw new Error('搜索项目失败(HTTP ' + r.status + ')');
       const records = (r.data && r.data.body && r.data.body.records) || [];
-      yearCache.set(key, { time: Date.now(), data: records });
+      const entry = { time: Date.now(), data: records };
+      yearCache.set(key, entry);
+      try {
+        if (typeof sessionStorage !== 'undefined') {
+          sessionStorage.setItem(yearSsKey(yearPrefix, unitName), JSON.stringify(entry));
+        }
+      } catch (e) {}
       if (yearCache.size > 20) {
         const oldest = yearCache.keys().next().value;
         yearCache.delete(oldest);
@@ -887,9 +912,17 @@
         let promise;
         if (unitName) {
           // 受检单位走服务端模糊匹配（小请求），避免每敲一个字都拉取整年项目
-          promise = searchProjects(token, { code: code || yearPrefix, unitName: unitName }, currentAbort.signal);
+          promise = searchProjects(token, { code: code || yearPrefix, unitName: unitName }, currentAbort.signal)
+            .then(function (list) {
+              let filtered = list;
+              // 未带年份前缀的编号片段：在服务端结果内再做本地包含匹配
+              if (code && !typedHasYearPrefix) {
+                filtered = list.filter(function (p) { return p.code && String(p.code).indexOf(code) >= 0; });
+              }
+              return filtered.slice(0, 15);
+            });
         } else if (yearPrefix && !typedHasYearPrefix) {
-          // 仅按年份浏览：拉取当年范围（5 分钟缓存），本地按编号关键字过滤
+          // 仅按年份/编号片段浏览：拉取当年范围（30 分钟缓存 + sessionStorage），本地按编号过滤
           promise = fetchYearProjects(token, yearPrefix, '', currentAbort.signal)
             .then(function (list) {
               let filtered = list;
