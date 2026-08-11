@@ -175,6 +175,7 @@ export async function onRequest(context) {
     ["content-type", "Content-Type"],
     ["user-agent", "User-Agent"],
     ["accept", "Accept"],
+    ["cookie", "Cookie"],
   ];
   const headerLines = [];
   for (const [src, dst] of headerMap) {
@@ -197,9 +198,36 @@ export async function onRequest(context) {
     });
   }
 
-  const respHeaders = {
-    "Content-Type": result.headers["content-type"] || "application/octet-stream",
-    ...CORS_HEADERS,
-  };
-  return new Response(result.body, { status: result.status || 502, headers: respHeaders });
+  // 透传平台响应头（跳过 hop-by-hop 头），确保 Set-Cookie / Content-Disposition 等不被丢弃
+  const hopByHop = new Set([
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+  ]);
+  let bodyBytes = result.body;
+  const respHeaders = {};
+  for (const [k, v] of Object.entries(result.headers)) {
+    if (hopByHop.has(k)) continue;
+    if (k === "content-length" || k === "content-encoding") continue; // 后面按实际内容处理
+    respHeaders[k] = v;
+  }
+  const enc = (result.headers["content-encoding"] || "").toLowerCase();
+  if (enc.includes("gzip") && typeof DecompressionStream !== "undefined") {
+    try {
+      const ds = new DecompressionStream("gzip");
+      const stream = new Blob([bodyBytes]).stream().pipeThrough(ds);
+      bodyBytes = new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch {
+      // 解压失败时保留原样并去掉编码声明，避免浏览器解析错误
+      respHeaders["content-encoding"] = result.headers["content-encoding"];
+    }
+  }
+  respHeaders["content-type"] = result.headers["content-type"] || "application/octet-stream";
+  for (const [k, v] of Object.entries(CORS_HEADERS)) respHeaders[k] = v;
+  return new Response(bodyBytes, { status: result.status || 502, headers: respHeaders });
 }
