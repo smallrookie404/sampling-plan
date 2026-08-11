@@ -134,6 +134,26 @@
     });
   }
 
+  // 登录后获取权威用户信息（与平台网站一致），用于解析真实机构
+  async function fetchAuthInfo(token) {
+    const r = await apiRequest('GET', '/auth/info', { token: token });
+    if (r.status === 200 && r.data && r.data.user) return r.data.user;
+    return null;
+  }
+
+  // 机构 ID 解析：优先用户顶层的 organizationId（管理员切换机构后的当前机构），
+  // 其次 user.organization.organizationId
+  function resolveOrgId(user) {
+    if (!user) return null;
+    const top = user.organizationId;
+    const nested = user.organization && user.organization.organizationId;
+    return top || nested || null;
+  }
+
+  function orgDisplayName(user) {
+    return (user && user.organization && user.organization.organizationName) || '';
+  }
+
   const searchCache = new Map(); // 搜索结果缓存：key -> { time, data }
   const yearCache = new Map();   // 年份范围缓存：key -> { time, data }
   const searchInFlight = new Map(); // 进行中的搜索请求：key -> Promise
@@ -339,6 +359,14 @@
       return userInfo && (userInfo.userCode || userInfo.id) ? String(userInfo.userCode || userInfo.id) : 'anonymous';
     }
 
+    function greetingText() {
+      const orgName = orgDisplayName(userInfo);
+      const who = userInfo ? (userInfo.userName + '（' + userInfo.userCode + '）') : '';
+      let orgPart = '机构ID：' + (orgId || '未知');
+      if (orgName) orgPart += '（' + orgName + '）';
+      return '已登录：' + who + '  ' + orgPart;
+    }
+
     // 是否运行在 Cloudflare Pages（HTTPS 部署）：团队配置云端同步仅在 pages.dev 上可用
     function isCloudDeploy() {
       try {
@@ -430,9 +458,7 @@
     async function showUpload() {
       if (!token) { showLogin(); return; }
       if (uploadOverlay) uploadOverlay.classList.remove('hidden');
-      if ($('greeting') && userInfo) {
-        $('greeting').textContent = '已登录：' + userInfo.userName + '（' + userInfo.userCode + '）  机构ID：' + orgId;
-      }
+      if ($('greeting')) $('greeting').textContent = greetingText();
       if (userList.length === 0 && token && orgId) await loadUserList();
       // 打开上传视图时从云端刷新，换电脑也能读到最新团队配置
       teamSaved = await loadTeamSettings();
@@ -505,8 +531,17 @@
           throw new Error(msg);
         }
         token = r.data.token;
-        userInfo = r.data.user.user;
-        orgId = userInfo.organization.organizationId;
+        userInfo = r.data.user.user || {};
+        // 登录后调用 auth/info 获取权威用户信息（与平台网站一致），解析真实机构
+        try {
+          const full = await fetchAuthInfo(token);
+          if (full) {
+            userInfo = Object.assign({}, userInfo, full);
+            if (full.userName) userInfo.userName = full.userName;
+            if (full.userCode) userInfo.userCode = full.userCode;
+          }
+        } catch (e) {}
+        orgId = resolveOrgId(userInfo) || (userInfo.organization && userInfo.organization.organizationId) || null;
         session = { token: token, orgId: orgId, userInfo: userInfo };
         saveSession();
         teamSaved = await loadTeamSettings(); // 按登录账号恢复已确认的团队设置（云端优先）
@@ -523,7 +558,7 @@
             localStorage.removeItem(PWD_KEY);
           }
         } catch (e) { }
-        $('greeting').textContent = '已登录：' + userInfo.userName + '（' + userInfo.userCode + '）  机构ID：' + orgId;
+        $('greeting').textContent = greetingText();
         enterApp();
         log('登录成功：' + userInfo.userName + '（' + userInfo.userCode + '），上传主体为当前账号');
         prefetchYear();
@@ -1018,6 +1053,18 @@
       if (session && token) {
         teamSaved = await loadTeamSettings(); // 云端优先恢复本账号团队配置
         teamDirty = !!teamSaved;
+        // 会话恢复时刷新一次权威用户信息，确保机构与平台网站一致
+        try {
+          const full = await fetchAuthInfo(token);
+          if (full) {
+            userInfo = Object.assign({}, userInfo || {}, full);
+            const freshOrg = resolveOrgId(userInfo);
+            if (freshOrg) {
+              orgId = freshOrg;
+              saveSession();
+            }
+          }
+        } catch (e) {}
         enterApp();
       } else {
         showLogin();
