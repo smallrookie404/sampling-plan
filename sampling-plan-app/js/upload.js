@@ -883,8 +883,12 @@
         setSearching(true);
         const typedHasYearPrefix = /^BTC\d{2}/i.test(code);
         let promise;
-        if (yearPrefix && !typedHasYearPrefix) {
-          promise = fetchYearProjects(token, yearPrefix, unitName, currentAbort.signal)
+        if (unitName) {
+          // 受检单位走服务端模糊匹配（小请求），避免每敲一个字都拉取整年项目
+          promise = searchProjects(token, { code: code || yearPrefix, unitName: unitName }, currentAbort.signal);
+        } else if (yearPrefix && !typedHasYearPrefix) {
+          // 仅按年份浏览：拉取当年范围（5 分钟缓存），本地按编号关键字过滤
+          promise = fetchYearProjects(token, yearPrefix, '', currentAbort.signal)
             .then(function (list) {
               let filtered = list;
               if (code) {
