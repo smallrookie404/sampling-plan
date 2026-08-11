@@ -176,7 +176,8 @@
       return searchInFlight.get(cacheKey);
     }
     const p = (async function () {
-      const r = await apiRequest('GET', '/api/projectInfo?pageNumber=1&pageSize=50&' + cacheKey, { token: token, signal: signal });
+      // 平台接口经 Cloudflare 代理转发较慢，搜索超时放宽到 60 秒
+      const r = await apiRequest('GET', '/api/projectInfo?pageNumber=1&pageSize=50&' + cacheKey, { token: token, signal: signal, timeout: 60000 });
       if (r.status !== 200) throw new Error('搜索项目失败(HTTP ' + r.status + ')');
       const records = (r.data && r.data.body && r.data.body.records) || [];
       searchCache.set(cacheKey, { time: Date.now(), data: records });
@@ -206,7 +207,8 @@
     const p = (async function () {
       const params = ['code=' + encodeURIComponent(yearPrefix)];
       if (unitName) params.push('belongInspectName=' + encodeURIComponent(String(unitName).trim()));
-      const r = await apiRequest('GET', '/api/projectInfo?pageNumber=1&pageSize=2000&' + params.join('&'), { token: token, signal: signal });
+      // 整年项目批量拉取可能更慢，超时放宽到 90 秒
+      const r = await apiRequest('GET', '/api/projectInfo?pageNumber=1&pageSize=2000&' + params.join('&'), { token: token, signal: signal, timeout: 90000 });
       if (r.status !== 200) throw new Error('搜索项目失败(HTTP ' + r.status + ')');
       const records = (r.data && r.data.body && r.data.body.records) || [];
       yearCache.set(key, { time: Date.now(), data: records });
@@ -912,7 +914,7 @@
             if (seq !== searchSeq) return;
             suggestBox.classList.add('hidden');
             if (e && e.name === 'AbortError') {
-              log('搜索超时或被新搜索取消，请重试');
+              log('搜索超时，请稍后重试');
             } else {
               log('搜索失败：' + e.message);
             }
