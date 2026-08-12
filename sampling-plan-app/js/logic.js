@@ -42,6 +42,8 @@
   const MANUAL_COLS = ["AI", "AJ", "AX", "BE", "BF", "BG", "BH"];
   // 表中有下拉、可覆盖自动值的列
   const OVERRIDE_COLS = ["Y", "Z", "AO", "AR"];
+  // 自动计算区内默认自动生成、但允许手动编辑覆盖的列（编辑后保留手动值）
+  const TEXT_OVERRIDE_COLS = ["BI"];
 
   // ---------- 工具函数 ----------
   function toNum(v) {
@@ -384,6 +386,7 @@
     COMPUTED_COLS,
     MANUAL_COLS,
     OVERRIDE_COLS,
+    TEXT_OVERRIDE_COLS,
     fillDown,
     toNum,
     computeRows,

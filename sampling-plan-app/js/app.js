@@ -36,6 +36,7 @@
   const COMPUTED_COLS = L.COMPUTED_COLS; // W..BI
   const MANUAL_COLS = L.MANUAL_COLS;
   const OVERRIDE_COLS = L.OVERRIDE_COLS;
+  const TEXT_OVERRIDE_COLS = L.TEXT_OVERRIDE_COLS || ["BI"];
   const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "R", "S", "U", "AI", "AJ", "BH"]); // 下拉单元格列
   const NUM_COLS = new Set(["E", "F", "G", "H", "I", "AA", "AB", "AG", "AH", "AY", "AZ", "BA", "BB"]);
   const ALL_COLS = [...INPUT_COLS, "V", ...COMPUTED_COLS]; // 61 列（A..BI）
@@ -219,6 +220,7 @@
   // ---------- 单元格渲染 ----------
   function cellClass(col) {
     if (OVERRIDE_COLS.includes(col)) return "override";
+    if (TEXT_OVERRIDE_COLS.includes(col)) return "override";
     if (MANUAL_COLS.includes(col)) return "manual";
     if (COMPUTED_COLS.includes(col)) return "computed";
     return "";
@@ -240,6 +242,8 @@
       } else {
         inner = `<input data-c="${col}" value="${escAttr(fmt(row.manual[col]))}">`;
       }
+    } else if (TEXT_OVERRIDE_COLS.includes(col)) {
+      inner = `<input data-c="${col}" value="${escAttr(fmt(row.values[col]))}">`;
     } else if (COMPUTED_COLS.includes(col)) {
       inner = `<input readonly data-c="${col}" value="${escAttr(fmt(row.values[col]))}">`;
     } else {
@@ -330,6 +334,10 @@
     const c = el.dataset.c;
     const row = rows[r];
     if (INPUT_COLS.includes(c)) row.input[c] = el.value;
+    else if (TEXT_OVERRIDE_COLS.includes(c)) {
+      row.values[c] = el.value;
+      row.overridden[c] = true;
+    }
     recomputeAndRefresh();
   });
 
@@ -446,6 +454,7 @@
     for (const k of MANUAL_COLS) c.manual[k] = src.manual[k] ?? "";
     c.overridden = { ...(src.overridden || {}) };
     for (const k of OVERRIDE_COLS) c.values[k] = src.values[k] ?? "";
+    for (const k of TEXT_OVERRIDE_COLS) c.values[k] = src.values[k] ?? "";
     return c;
   }
 
@@ -524,7 +533,7 @@
   function editableCellAt(r, cIdx) {
     if (cIdx < 0 || cIdx >= ALL_COLS.length) return false;
     const col = ALL_COLS[cIdx];
-    return INPUT_COLS.includes(col) || MANUAL_COLS.includes(col);
+    return INPUT_COLS.includes(col) || MANUAL_COLS.includes(col) || TEXT_OVERRIDE_COLS.includes(col);
   }
 
   function findTd(r, cIdx) {
@@ -653,6 +662,9 @@
       } else {
         row.input[col] = el.value;
       }
+    } else if (TEXT_OVERRIDE_COLS.includes(col)) {
+      row.values[col] = el.value;
+      row.overridden[col] = true;
     } else if (INPUT_COLS.includes(col)) {
       row.input[col] = el.value;
     } else if (MANUAL_COLS.includes(col)) {
@@ -670,6 +682,7 @@
     const row = rows[cur.r];
     if (INPUT_COLS.includes(col)) row.input[col] = restore;
     else if (MANUAL_COLS.includes(col)) row.manual[col] = restore;
+    else if (TEXT_OVERRIDE_COLS.includes(col)) row.values[col] = restore;
     const td = findTd(cur.r, cur.c);
     if (td) {
       const el = td.querySelector("input");
@@ -696,6 +709,12 @@
           if (row.values[col] !== "" || row.overridden[col]) {
             row.values[col] = "";
             delete row.overridden[col];
+            cleared = true;
+          }
+        } else if (TEXT_OVERRIDE_COLS.includes(col)) {
+          if (row.values[col] !== "" || row.overridden[col]) {
+            row.values[col] = "";
+            row.overridden[col] = true;
             cleared = true;
           }
         }
@@ -1043,6 +1062,7 @@
       for (const c of MANUAL_COLS) r.manual[c] = "";
       r.overridden = {};
       for (const c of OVERRIDE_COLS) r.values[c] = "";
+      for (const c of TEXT_OVERRIDE_COLS) { r.values[c] = ""; delete r.overridden[c]; }
     }
     selStart = selEnd = selAnchor = null;
     cur = null;
@@ -2259,13 +2279,25 @@
           if (hasInput) {
             // 完整结构文件：保留文件里的覆盖值
             rows.forEach((row, i) => {
-              for (const c of OVERRIDE_COLS) {
+              for (const c of [...OVERRIDE_COLS, ...TEXT_OVERRIDE_COLS]) {
                 const importedV = importedVals[i][c];
                 if (importedV !== undefined && importedV !== "" && importedV !== row.values[c]) {
                   row.values[c] = importedV;
                   row.overridden[c] = true;
                 } else {
                   delete row.overridden[c];
+                }
+              }
+            });
+            L.computeRows(rows, { hazardFactors, detectionItems });
+          } else {
+            // 仅自动计算区文件：备注列（BI）允许手动编辑，导入时保留手动值
+            rows.forEach((row, i) => {
+              for (const c of TEXT_OVERRIDE_COLS) {
+                const importedV = importedVals[i][c];
+                if (importedV !== undefined && importedV !== "" && importedV !== row.values[c]) {
+                  row.values[c] = importedV;
+                  row.overridden[c] = true;
                 }
               }
             });

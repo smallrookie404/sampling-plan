@@ -158,6 +158,25 @@ if (!errs.AN || errs.AN !== "接害因素在危害因素库中未找到，请检
 const dup = logic.findDuplicates(data.detectionItems);
 if (dup.length) throw new Error("检测项目不应有重复: " + dup.join(","));
 
+// 备注列（BI）：默认自动生成，手动编辑后保留手动值
+if (!Array.isArray(logic.TEXT_OVERRIDE_COLS) || !logic.TEXT_OVERRIDE_COLS.includes("BI")) {
+  throw new Error("TEXT_OVERRIDE_COLS 应包含 BI");
+}
+const remarkRow = {
+  input: { A: "1车间", B: "操作工", C: "投料", D: "碘" },
+  manual: {}, overridden: {}, values: {}, errors: {},
+};
+logic.computeRows([remarkRow], data);
+if (remarkRow.values.BI !== "无合适外包机构") {
+  throw new Error("备注列未自动生成: " + JSON.stringify(remarkRow.values.BI));
+}
+remarkRow.overridden.BI = true;
+remarkRow.values.BI = "手动备注";
+logic.computeRows([remarkRow], data);
+if (remarkRow.values.BI !== "手动备注") {
+  throw new Error("备注列手动值被覆盖: " + JSON.stringify(remarkRow.values.BI));
+}
+
 // Unicode 安全 base64 往返（GitHub API 数据读写用）
 const demoJson = JSON.stringify({ name: "测试记录", rows: [{ A: "3号车间", D: "二氧化钛粉尘(总尘)" }] });
 if (logic.decodeUnicodeBase64(logic.encodeUnicodeBase64(demoJson)) !== demoJson) {
