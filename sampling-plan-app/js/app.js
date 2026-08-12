@@ -333,8 +333,14 @@
     const r = Number(tr.dataset.r);
     const c = el.dataset.c;
     const row = rows[r];
-    if (INPUT_COLS.includes(c)) row.input[c] = el.value;
-    else if (TEXT_OVERRIDE_COLS.includes(c)) {
+    if (INPUT_COLS.includes(c)) {
+      row.input[c] = el.value;
+      // 接害因素重新录入时，备注列按数据库重新自动生成
+      if (c === "D") {
+        delete row.overridden.BI;
+        row.values.BI = "";
+      }
+    } else if (TEXT_OVERRIDE_COLS.includes(c)) {
       row.values[c] = el.value;
       row.overridden[c] = true;
     }
@@ -1034,10 +1040,20 @@
       for (let c = rect.c1; c <= rect.c2; c++) {
         if (c >= ALL_COLS.length) break;
         const col = ALL_COLS[c];
-        if (!INPUT_COLS.includes(col)) continue; // 仅写入录入区
+        if (!INPUT_COLS.includes(col) && !TEXT_OVERRIDE_COLS.includes(col)) continue;
         const val = (srcRows[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
         while (rows.length <= r) rows.push(blankRow());
-        rows[r].input[col] = val;
+        if (INPUT_COLS.includes(col)) {
+          rows[r].input[col] = val;
+          // 接害因素粘贴变化时，备注列按数据库重新自动生成
+          if (col === "D") {
+            delete rows[r].overridden.BI;
+            rows[r].values.BI = "";
+          }
+        } else {
+          rows[r].values[col] = val;
+          rows[r].overridden[col] = true;
+        }
         changed = true;
       }
     }

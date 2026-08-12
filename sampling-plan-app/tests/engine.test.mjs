@@ -176,6 +176,14 @@ logic.computeRows([remarkRow], data);
 if (remarkRow.values.BI !== "手动备注") {
   throw new Error("备注列手动值被覆盖: " + JSON.stringify(remarkRow.values.BI));
 }
+// 接害因素重新录入时（清除备注覆盖后），备注列按数据库重新自动生成
+remarkRow.input.D = "苯";
+delete remarkRow.overridden.BI;
+remarkRow.values.BI = "";
+logic.computeRows([remarkRow], data);
+if (remarkRow.values.BI !== "" || remarkRow.overridden.BI) {
+  throw new Error("接害因素变化后备注未重新生成: " + JSON.stringify(remarkRow.values.BI));
+}
 
 // Unicode 安全 base64 往返（GitHub API 数据读写用）
 const demoJson = JSON.stringify({ name: "测试记录", rows: [{ A: "3号车间", D: "二氧化钛粉尘(总尘)" }] });
