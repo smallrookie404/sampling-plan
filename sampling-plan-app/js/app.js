@@ -966,7 +966,36 @@
       moveCur(-page, 0, { extend: shift });
       return;
     }
-    if (key === "Delete" || key === "Backspace") {
+    if (key === "Backspace") {
+      // 文本单元格：进入编辑状态并逐字删除（不清空整格），与录入区编辑一致
+      const el = e.target;
+      if (el && el.tagName === "INPUT" && editableCellAt(r, c)) {
+        e.preventDefault();
+        editing = true;
+        if (editOriginal === null) editOriginal = getCellModelValue(r, c);
+        const start = el.selectionStart ?? el.value.length;
+        const end = el.selectionEnd ?? el.value.length;
+        let caret;
+        if (start !== end) {
+          el.value = el.value.slice(0, start) + el.value.slice(end);
+          caret = start;
+        } else {
+          el.value = el.value.slice(0, Math.max(0, start - 1)) + el.value.slice(start);
+          caret = Math.max(0, start - 1);
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        try { el.setSelectionRange(caret, caret); } catch {}
+        return;
+      }
+      if (clearRange(selRect())) {
+        e.preventDefault();
+        editing = false;
+        editOriginal = null;
+        recomputeAndRefresh();
+      }
+      return;
+    }
+    if (key === "Delete") {
       if (clearRange(selRect())) {
         e.preventDefault();
         editing = false;
