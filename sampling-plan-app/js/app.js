@@ -1015,15 +1015,17 @@
       }
       return;
     }
-    // 直接输入字符：替换当前单元格内容
+    // 直接输入字符：在光标处插入（有选中区域则替换选中内容），不清空原有内容
     if (isInput && editableCellAt(r, c) && key.length === 1) {
       e.preventDefault();
       const el = e.target;
       editOriginal = getCellModelValue(r, c);
-      el.value = key;
+      const start = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? el.value.length;
+      el.value = el.value.slice(0, start) + key + el.value.slice(end);
       editing = true;
       el.dispatchEvent(new Event("input", { bubbles: true }));
-      try { el.setSelectionRange(el.value.length, el.value.length); } catch {}
+      try { el.setSelectionRange(start + key.length, start + key.length); } catch {}
     }
   });
 
