@@ -633,7 +633,6 @@
   function getCellModelValue(r, cIdx) {
     if (!rows[r]) return "";
     const col = ALL_COLS[cIdx];
-    if (col === "V") return "";
     if (INPUT_COLS.includes(col)) return rows[r].input[col] ?? "";
     if (MANUAL_COLS.includes(col)) return rows[r].manual[col] ?? "";
     return rows[r].values[col] ?? "";
@@ -1199,8 +1198,7 @@
         const col = ALL_COLS[c];
         let v = "";
         if (r < rows.length) {
-          if (col === "V") v = "";
-          else if (INPUT_COLS.includes(col)) v = rows[r].input[col];
+          if (INPUT_COLS.includes(col)) v = rows[r].input[col];
           else if (MANUAL_COLS.includes(col)) v = rows[r].manual[col];
           else v = rows[r].values[col];
         }
