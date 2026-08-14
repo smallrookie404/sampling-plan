@@ -192,6 +192,7 @@
     rows = [];
     for (let i = 0; i < n; i++) rows.push(blankRow());
     rowHeights = rows.map(() => ROW_H);
+    rowOffsets = null;
   }
 
   // ---------- 表头 ----------
@@ -292,17 +293,29 @@
   // ---------- 虚拟滚动渲染 ----------
   let renderedRows = [];
   let scrollRenderQueued = false;
+  let rowOffsets = null; // 行高前缀和缓存（行高变更时置空重建）
+  let lastRenderedStart = -1;
 
   function rowHeightAt(i) {
     const h = rowHeights[i];
     return typeof h === "number" && h > 0 ? h : ROW_H;
   }
 
-  // 第 i 行顶边的累计 Y 偏移（0 起点）
+  function buildRowOffsets() {
+    const arr = new Array(rows.length + 1);
+    let acc = 0;
+    arr[0] = 0;
+    for (let i = 0; i < rows.length; i++) {
+      acc += rowHeightAt(i);
+      arr[i + 1] = acc;
+    }
+    rowOffsets = arr;
+  }
+
+  // 第 i 行顶边的累计 Y 偏移（0 起点），基于缓存前缀和
   function rowOffsetAt(i) {
-    let y = 0;
-    for (let k = 0; k < i; k++) y += rowHeightAt(k);
-    return y;
+    if (!rowOffsets) buildRowOffsets();
+    return rowOffsets[i] ?? 0;
   }
 
   function totalGridHeight() {
@@ -311,13 +324,16 @@
 
   // 由滚动位置找到对应的行号（行高不一致时按累计高度定位）
   function rowIndexAt(y) {
-    let acc = 0;
-    for (let i = 0; i < rows.length; i++) {
-      const h = rowHeightAt(i);
-      if (y < acc + h) return i;
-      acc += h;
+    if (!rowOffsets) buildRowOffsets();
+    if (rows.length === 0) return 0;
+    let lo = 0;
+    let hi = rows.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (rowOffsets[mid] <= y) lo = mid;
+      else hi = mid - 1;
     }
-    return rows.length > 0 ? rows.length - 1 : 0;
+    return lo;
   }
 
   function renderWindow() {
@@ -334,6 +350,7 @@
     }
     let html = "";
     renderedRows = [];
+    lastRenderedStart = start;
     // 顶部占位行：保证总高度恒定，虚拟滚动才能稳定滚动到底
     const topSpacer = rowOffsetAt(start);
     if (topSpacer > 0) html += `<tr class="row-spacer" style="height:${topSpacer}px"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
@@ -357,11 +374,23 @@
     scrollRenderQueued = true;
     requestAnimationFrame(() => {
       scrollRenderQueued = false;
-      renderWindow();
+      // 顶部可见行未变化（小距离滚动）时无需重建整个表格
+      const start = Math.max(0, rowIndexAt(gridWrap.scrollTop) - 8);
+      if (start !== lastRenderedStart) renderWindow();
     });
   });
 
   // ---------- 输入联动 ----------
+  let recomputeTimer = null;
+  // 输入过程中合并重算请求，避免每次按键都全量计算（离散操作仍走同步 recomputeAndRefresh）
+  function scheduleRecompute() {
+    if (recomputeTimer) clearTimeout(recomputeTimer);
+    recomputeTimer = setTimeout(() => {
+      recomputeTimer = null;
+      recomputeAndRefresh();
+    }, 120);
+  }
+
   gridBody.addEventListener("input", (e) => {
     const el = e.target;
     if (el.tagName !== "INPUT") return;
@@ -380,7 +409,7 @@
       row.values[c] = el.value;
       row.overridden[c] = true;
     }
-    recomputeAndRefresh();
+    scheduleRecompute();
   });
 
   gridBody.addEventListener("change", (e) => {
@@ -399,7 +428,7 @@
     } else {
       row.input[c] = el.value;
     }
-    recomputeAndRefresh();
+    scheduleRecompute();
   });
 
   gridBody.addEventListener("click", (e) => {
@@ -413,6 +442,7 @@
   });
 
   function recomputeAndRefresh() {
+    if (recomputeTimer) { clearTimeout(recomputeTimer); recomputeTimer = null; }
     L.computeRows(rows, { hazardFactors, detectionItems });
     updateVisibleCells();
     refreshStatus();
@@ -508,6 +538,7 @@
     if (rows.length + n > 5000) { alert("总行数不能超过 5000。"); return; }
     for (let i = 0; i < n; i++) rows.push(blankRow());
     rowHeights.push(...Array(n).fill(ROW_H));
+    rowOffsets = null;
     recomputeAndRefresh();
     gridWrap.scrollTop = gridWrap.scrollHeight;
     renderWindow();
@@ -521,6 +552,7 @@
     for (let i = 0; i < n; i++) ins.push(blankRow());
     rows.splice(at, 0, ...ins);
     rowHeights.splice(at, 0, ...Array(n).fill(ROW_H));
+    rowOffsets = null;
     if (cur && cur.r >= at) cur.r += n;
     selectedRow = at;
     recomputeAndRefresh();
@@ -537,6 +569,7 @@
     for (let i = 0; i < n; i++) copies.push(cloneRow(src));
     rows.splice(at + 1, 0, ...copies);
     rowHeights.splice(at + 1, 0, ...Array(n).fill(ROW_H));
+    rowOffsets = null;
     if (cur && cur.r > at) cur.r += n;
     selectedRow = at + n;
     recomputeAndRefresh();
@@ -547,6 +580,7 @@
     colWidths = computeGridWidths();
     applyGridWidths();
     for (let i = 0; i < rows.length; i++) rowHeights[i] = ROW_H;
+    rowOffsets = null;
     recomputeAndRefresh();
     renderWindow();
   });
@@ -559,6 +593,7 @@
     if (!confirm(`确定删除从第 ${selectedRow + 1} 行起的 ${cnt} 行？`)) return;
     rows.splice(selectedRow, cnt);
     rowHeights.splice(selectedRow, cnt);
+    rowOffsets = null;
     selectedRow = -1;
     clampCur();
     recomputeAndRefresh();
@@ -709,6 +744,7 @@
       if (rows.length >= 5000) r = rows.length - 1;
       else while (rows.length < 5000 && r > rows.length - 1) { rows.push(blankRow()); rowHeights.push(ROW_H); }
     }
+    rowOffsets = null;
     setCur(r, c, opts);
   }
 
@@ -853,6 +889,7 @@
     const h = Math.max(MIN_ROW_H, Math.min(MAX_ROW_H, Math.round(resizingRow.startH + (e.clientY - resizingRow.startY))));
     if (h !== rowHeights[resizingRow.r]) {
       rowHeights[resizingRow.r] = h;
+      rowOffsets = null;
       renderWindow();
     }
   });
@@ -1202,6 +1239,7 @@
         if (!INPUT_COLS.includes(col) && !TEXT_OVERRIDE_COLS.includes(col)) continue;
         const val = (srcRows[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
         while (rows.length <= r) { rows.push(blankRow()); rowHeights.push(ROW_H); }
+        rowOffsets = null;
         if (INPUT_COLS.includes(col)) {
           rows[r].input[col] = val;
           // 接害因素粘贴变化时，备注列按数据库重新自动生成
@@ -1961,6 +1999,7 @@
       if (hasData && !confirm(`将用「${rec.name}」（${rec.rows.length} 行）替换当前表格，是否继续？`)) return;
       rows = L.restoreRows(rec.rows);
       rowHeights = rows.map(() => ROW_H);
+      rowOffsets = null;
       selectedRow = -1;
       recomputeAndRefresh();
       renderWindow();
@@ -2464,6 +2503,7 @@
         if (imported.length) {
           rows = imported;
           rowHeights = rows.map(() => ROW_H);
+          rowOffsets = null;
           L.computeRows(rows, { hazardFactors, detectionItems });
           if (hasInput) {
             // 完整结构文件：保留文件里的覆盖值

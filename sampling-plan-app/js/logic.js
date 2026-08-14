@@ -124,6 +124,24 @@
     const n = rows.length;
     const last = n - 1;
 
+    // 危害因素查找索引：一次构建，逐行 O(1) 查询（语义与原 find 一致：保留首个匹配）
+    const hazardRecMap = new Map();
+    const hazardNameMap = new Map();
+    for (const h of ref.hazardFactors) {
+      const rec = str(h.rec);
+      if (rec && !hazardRecMap.has(rec)) hazardRecMap.set(rec, h);
+      const name = str(h.name);
+      if (name && !hazardNameMap.has(name)) hazardNameMap.set(name, h);
+    }
+    const findRec = (d) => {
+      const k = str(d);
+      return k ? hazardRecMap.get(k) || null : null;
+    };
+    const findName = (n) => {
+      const k = str(n);
+      return k ? hazardNameMap.get(k) || null : null;
+    };
+
     // 提取各输入列
     const col = (c) => rows.map((r, i) => (i <= last ? r.input[c] ?? "" : ""));
     const A = col("A"), B = col("B"), C = col("C"), D = col("D"), E = col("E");
@@ -171,58 +189,67 @@
     });
 
     // AD/AE/AF 班制：组内回填，无则单班/长白班
+    // 分组信息单遍预计算，避免逐行扫描造成 O(n²)
+    const groupHasRounds = {};
+    const groupSHit = {};
+    const groupTHit = {};
+    for (let i = 0; i < n; i++) {
+      const g = groupId[i];
+      if (contains("轮班", R[i])) groupHasRounds[g] = true;
+      if (groupSHit[g] === undefined && S[i] !== "") groupSHit[g] = S[i];
+      if (groupTHit[g] === undefined && T[i] !== "") groupTHit[g] = T[i];
+    }
     const AD = R.map((v, i) => {
       if (v !== "") return v;
-      const g = groupId[i];
-      const other = R.some((rv, j) => j !== i && groupId[j] === g && contains("轮班", rv));
-      return other ? "轮班" : "单班";
+      return groupHasRounds[groupId[i]] ? "轮班" : "单班";
     });
     const AE = S.map((v, i) => {
       if (v !== "") return v;
-      const g = groupId[i];
-      const hit = S.find((sv, j) => groupId[j] === g && sv !== "");
+      const hit = groupSHit[groupId[i]];
       return hit === undefined || hit === "" ? "长白班" : hit;
     });
     const AF = T.map((v, i) => {
       if (v !== "") return v;
-      const g = groupId[i];
-      const hit = T.find((tv, j) => groupId[j] === g && tv !== "");
-      return hit ?? "";
+      return groupTHit[groupId[i]] ?? "";
     });
 
     // AV 噪声源：噪声+定点 时，同车间同岗位存在“个体”噪声采样 → 是
     const AR = rows.map((r, i) => (r.overridden && r.overridden.AR ? r.values.AR : ARbase[i]));
     const ANpre = D.map((d) => {
-      const h = findHazardByRec(ref, d);
+      const h = findRec(d);
       return h ? h.name : "";
     });
+    const groupHasNoiseInd = {};
+    for (let i = 0; i < n; i++) {
+      const g = groupId[i];
+      if (ANpre[i] === "噪声" && AR[i] === "个体") groupHasNoiseInd[g] = true;
+    }
     const AV = ANpre.map((an, i) => {
       if (an !== "噪声" || AR[i] !== "定点") return "否";
-      const g = groupId[i];
-      return ANpre.some((an2, j) => groupId[j] === g && an2 === "噪声" && AR[j] === "个体") ? "是" : "否";
+      return groupHasNoiseInd[groupId[i]] ? "是" : "否";
     });
 
     // 3) 危害因素表查找列
     const AN = ANpre;
     const AP = D.map((d) => {
-      const h = findHazardByRec(ref, d);
+      const h = findRec(d);
       return h ? h.qual : "";
     });
     const AT = D.map((d) => {
-      const h = findHazardByRec(ref, d);
+      const h = findRec(d);
       return h ? h.outsource : "";
     });
     const AU = D.map((d) => {
-      const h = findHazardByRec(ref, d);
+      const h = findRec(d);
       return h ? h.dust : "";
     });
     const BI = AN.map((an) => {
-      const h = findHazardByName(ref, an);
+      const h = findName(an);
       return h ? h.noTestReason : "";
     });
     const AObase = M.map((v, i) => {
       if (v !== "") return v;
-      const h = findHazardByName(ref, AN[i]);
+      const h = findName(AN[i]);
       return h && h.noTestReason !== "" ? "否" : "是";
     });
     const AO = rows.map((r, i) => (r.overridden && r.overridden.AO ? r.values.AO : AObase[i]));
