@@ -185,6 +185,15 @@ table.grid {
 .grid thead tr.group-row th { background: var(--group-bg); font-weight: 600; font-size: 12px; }
 .grid thead th.corner { background: var(--primary-dark); }
 .grid thead th.field { top: 30px; }
+#main-grid thead th.field::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 6px;
+  cursor: col-resize;
+}
 .grid tbody td { height: 30px; background: var(--input-bg); }
 .grid tbody td.computed { background: var(--computed-bg); }
 .grid tbody td.manual { background: var(--manual-bg); }
@@ -198,6 +207,15 @@ table.grid {
   font-size: 11px;
   user-select: none;
   width: 40px;
+}
+#main-grid tbody td.rowno::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
 }
 .grid tbody tr.selected td.rowno { background: var(--primary); color: #fff; font-weight: 700; }
 .grid tbody tr.selected td { background-color: #f3f7ff; }
@@ -223,10 +241,12 @@ table.grid {
 .grid thead th.sticky-col-a { left: var(--sticky-a, 42px); z-index: 7; }
 .grid thead th.sticky-col-b { left: var(--sticky-b, 120px); z-index: 7; }
 .grid thead th.sticky-col-c { left: var(--sticky-c, 200px); z-index: 7; }
+.grid thead th.sticky-col-d { left: var(--sticky-d, 282px); z-index: 7; }
 .grid tbody td.sticky-corner,
 .grid tbody td.sticky-col-a,
 .grid tbody td.sticky-col-b,
-.grid tbody td.sticky-col-c {
+.grid tbody td.sticky-col-c,
+.grid tbody td.sticky-col-d {
   position: sticky;
   z-index: 3;
 }
@@ -234,6 +254,7 @@ table.grid {
 .grid tbody td.sticky-col-a { left: var(--sticky-a, 42px); }
 .grid tbody td.sticky-col-b { left: var(--sticky-b, 120px); }
 .grid tbody td.sticky-col-c { left: var(--sticky-c, 200px); }
+.grid tbody td.sticky-col-d { left: var(--sticky-d, 282px); }
 
 .grid input, .grid select {
   width: 100%;

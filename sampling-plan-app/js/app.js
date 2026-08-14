@@ -54,6 +54,10 @@
     ...MAIN_HEADERS.slice(22),
   ]; // 61 项，与 ALL_COLS 一一对应
   const ROW_H = 30;
+  const MIN_ROW_H = 24;
+  const MAX_ROW_H = 300;
+  const MIN_COL_W = 30;
+  const MAX_COL_W = 600;
 
   const colIdx = (letter) => ALL_COLS.indexOf(letter);
   // 各列宽度（Excel 字符单位近似）
@@ -106,7 +110,8 @@
     });
   }
 
-  function applyGridWidths() {
+  // 按内容计算主表各列所需宽度（“自动调整”按钮使用）
+  function computeGridWidths() {
     const w = columnWidths(
       ALL_COLS,
       (i) => HEADERS[i],
@@ -125,13 +130,20 @@
     );
     // 下拉单元格额外预留右侧箭头空间，文字完整显示不被截断
     ALL_COLS.forEach((c, i) => { if (SELECT_COLS.has(c)) w[i] += 24; });
+    return w;
+  }
+
+  // 应用当前列宽（手动拖动或自动调整后的缓存值；首次启动按内容计算一次）
+  function applyGridWidths() {
+    const w = colWidths || (colWidths = computeGridWidths());
     $("grid-cols").innerHTML =
       "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
-    // 前三列（车间/岗位/工种/点位）与行号列锁定：设置各锁定列的 left 偏移
+    // 前四列（车间/岗位/工种/点位/接害因素）与行号列锁定：设置各锁定列的 left 偏移
     const rownoW = 42;
     gridWrap.style.setProperty("--sticky-a", rownoW + "px");
     gridWrap.style.setProperty("--sticky-b", rownoW + w[0] + "px");
     gridWrap.style.setProperty("--sticky-c", rownoW + w[0] + w[1] + "px");
+    gridWrap.style.setProperty("--sticky-d", rownoW + w[0] + w[1] + w[2] + "px");
   }
 
   function applyHazardWidths() {
@@ -152,22 +164,10 @@
       "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
   }
 
-  let widthTimer = null;
-  function scheduleWidths() {
-    clearTimeout(widthTimer);
-    const run = () => {
-      applyGridWidths();
-      applyHazardWidths();
-    };
-    widthTimer = setTimeout(() => {
-      // 列宽自适应不是关键路径，放到浏览器空闲时执行，避免阻塞输入
-      if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 400 });
-      else run();
-    }, 350);
-  }
-
   // ---------- 状态 ----------
   let rows = [];
+  let rowHeights = []; // 每行高度（px），与 rows 一一对应；默认 ROW_H，可手动拖动或“自适应行距”调整
+  let colWidths = null; // 列宽（px），与 ALL_COLS 一一对应；手动拖动或“自动调整”时更新
   let hazardFactors = [];
   let detectionItems = [];
   let selectedRow = -1;
@@ -191,20 +191,21 @@
   function emptyGrid(n = 50) {
     rows = [];
     for (let i = 0; i < n; i++) rows.push(blankRow());
+    rowHeights = rows.map(() => ROW_H);
   }
 
   // ---------- 表头 ----------
   function buildHead() {
     const groupTh = (label, colSpan) =>
       `<th class="group" colspan="${colSpan}">${label}</th>`;
-    const fieldTh = (label, cls) => `<th class="field${cls ? " " + cls : ""}">${label || "&nbsp;"}</th>`;
+    const fieldTh = (label, cls, col) => `<th class="field${cls ? " " + cls : ""}"${col ? ` data-c="${col}"` : ""}>${label || "&nbsp;"}</th>`;
     let groupHtml = `<th class="corner sticky-corner" rowspan="2" style="width:40px">行</th>`;
     groupHtml += groupTh("录 入 区", INPUT_COLS.length);
     groupHtml += groupTh("自动计算区（与原表 W~BI 列一致）", COMPUTED_COLS.length);
     let fieldHtml = "";
     for (const c of ALL_COLS) {
-      const cls = c === "A" ? "sticky-col-a" : c === "B" ? "sticky-col-b" : c === "C" ? "sticky-col-c" : "";
-      fieldHtml += fieldTh(HEADERS[colIdx(c)], cls);
+      const cls = c === "A" ? "sticky-col-a" : c === "B" ? "sticky-col-b" : c === "C" ? "sticky-col-c" : c === "D" ? "sticky-col-d" : "";
+      fieldHtml += fieldTh(HEADERS[colIdx(c)], cls, c);
     }
     gridHead.innerHTML =
       `<tr class="group-row">${groupHtml}</tr>` +
@@ -225,6 +226,7 @@
     if (col === "A") cls += " sticky-col-a";
     else if (col === "B") cls += " sticky-col-b";
     else if (col === "C") cls += " sticky-col-c";
+    else if (col === "D") cls += " sticky-col-d";
     const num = NUM_COLS.has(col) ? " cell-num" : "";
     let inner;
     if (OVERRIDE_COLS.includes(col)) {
@@ -288,29 +290,62 @@
   }
 
   // ---------- 虚拟滚动渲染 ----------
-  let lastScrollTop = 0;
   let renderedRows = [];
+  let scrollRenderQueued = false;
+
+  function rowHeightAt(i) {
+    const h = rowHeights[i];
+    return typeof h === "number" && h > 0 ? h : ROW_H;
+  }
+
+  // 第 i 行顶边的累计 Y 偏移（0 起点）
+  function rowOffsetAt(i) {
+    let y = 0;
+    for (let k = 0; k < i; k++) y += rowHeightAt(k);
+    return y;
+  }
+
+  function totalGridHeight() {
+    return rowOffsetAt(rows.length);
+  }
+
+  // 由滚动位置找到对应的行号（行高不一致时按累计高度定位）
+  function rowIndexAt(y) {
+    let acc = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const h = rowHeightAt(i);
+      if (y < acc + h) return i;
+      acc += h;
+    }
+    return rows.length > 0 ? rows.length - 1 : 0;
+  }
 
   function renderWindow() {
     const total = rows.length;
     const st = gridWrap.scrollTop;
     const ch = gridWrap.clientHeight;
-    const start = Math.max(0, Math.floor(st / ROW_H) - 8);
+    const start = Math.max(0, rowIndexAt(st) - 8);
     const visible = Math.ceil(ch / ROW_H) + 16;
-    const end = Math.min(total, start + visible);
+    let end = start;
+    let count = 0;
+    while (end < total && count < visible) {
+      end++;
+      count++;
+    }
     let html = "";
     renderedRows = [];
     // 顶部占位行：保证总高度恒定，虚拟滚动才能稳定滚动到底
-    const topSpacer = start * ROW_H;
+    const topSpacer = rowOffsetAt(start);
     if (topSpacer > 0) html += `<tr class="row-spacer" style="height:${topSpacer}px"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     for (let i = start; i < end; i++) {
       renderedRows.push(i);
       const r = rows[i];
+      const h = rowHeightAt(i);
       let cells = `<td class="rowno sticky-corner${i === selectedRow ? " selected" : ""}" data-r="${i}">${i + 1}</td>`;
       for (const c of ALL_COLS) cells += cellHtml(r, i, c);
-      html += `<tr data-r="${i}"${i === selectedRow ? ' class="selected"' : ""}>${cells}</tr>`;
+      html += `<tr data-r="${i}" style="height:${h}px"${i === selectedRow ? ' class="selected"' : ""}>${cells}</tr>`;
     }
-    const spacer = Math.max(0, total - end) * ROW_H;
+    const spacer = Math.max(0, totalGridHeight() - rowOffsetAt(end));
     if (spacer > 0) html += `<tr style="height:${spacer}px"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     gridBody.innerHTML = html;
     refreshStatus();
@@ -318,10 +353,12 @@
   }
 
   gridWrap.addEventListener("scroll", () => {
-    if (Math.abs(gridWrap.scrollTop - lastScrollTop) > ROW_H) {
-      lastScrollTop = gridWrap.scrollTop;
+    if (scrollRenderQueued) return;
+    scrollRenderQueued = true;
+    requestAnimationFrame(() => {
+      scrollRenderQueued = false;
       renderWindow();
-    }
+    });
   });
 
   // ---------- 输入联动 ----------
@@ -368,6 +405,8 @@
   gridBody.addEventListener("click", (e) => {
     const td = e.target.closest("td.rowno");
     if (!td) return;
+    const rRect = td.getBoundingClientRect();
+    if (e.clientY >= rRect.bottom - 6) return; // 下边缘为调整行高拖动区，不触发选中整行
     const r = Number(td.closest("tr").dataset.r);
     selectedRow = selectedRow === r ? -1 : r;
     renderWindow();
@@ -377,7 +416,6 @@
     L.computeRows(rows, { hazardFactors, detectionItems });
     updateVisibleCells();
     refreshStatus();
-    scheduleWidths();
   }
 
   function updateVisibleCells() {
@@ -469,6 +507,7 @@
     if (n === null) return;
     if (rows.length + n > 5000) { alert("总行数不能超过 5000。"); return; }
     for (let i = 0; i < n; i++) rows.push(blankRow());
+    rowHeights.push(...Array(n).fill(ROW_H));
     recomputeAndRefresh();
     gridWrap.scrollTop = gridWrap.scrollHeight;
     renderWindow();
@@ -481,6 +520,7 @@
     const ins = [];
     for (let i = 0; i < n; i++) ins.push(blankRow());
     rows.splice(at, 0, ...ins);
+    rowHeights.splice(at, 0, ...Array(n).fill(ROW_H));
     if (cur && cur.r >= at) cur.r += n;
     selectedRow = at;
     recomputeAndRefresh();
@@ -496,8 +536,17 @@
     const copies = [];
     for (let i = 0; i < n; i++) copies.push(cloneRow(src));
     rows.splice(at + 1, 0, ...copies);
+    rowHeights.splice(at + 1, 0, ...Array(n).fill(ROW_H));
     if (cur && cur.r > at) cur.r += n;
     selectedRow = at + n;
+    recomputeAndRefresh();
+    renderWindow();
+  });
+  // 自动调整：点击一次按内容统一重算列宽与行高（列宽按内容自适应，行高恢复为内容所需高度）
+  $("btn-fit-rows").addEventListener("click", () => {
+    colWidths = computeGridWidths();
+    applyGridWidths();
+    for (let i = 0; i < rows.length; i++) rowHeights[i] = ROW_H;
     recomputeAndRefresh();
     renderWindow();
   });
@@ -509,6 +558,7 @@
     if (cnt < 1) return;
     if (!confirm(`确定删除从第 ${selectedRow + 1} 行起的 ${cnt} 行？`)) return;
     rows.splice(selectedRow, cnt);
+    rowHeights.splice(selectedRow, cnt);
     selectedRow = -1;
     clampCur();
     recomputeAndRefresh();
@@ -593,10 +643,10 @@
   function revealCell(r, cIdx) {
     const wrap = gridWrap;
     const headH = gridHead.offsetHeight || 60; // sticky 表头高度
-    const rowTop = headH + r * ROW_H;
+    const rowTop = headH + rowOffsetAt(r);
     const ch = wrap.clientHeight;
     if (rowTop < wrap.scrollTop + headH) wrap.scrollTop = Math.max(0, rowTop - headH);
-    else if (rowTop + ROW_H > wrap.scrollTop + ch) wrap.scrollTop = rowTop + ROW_H - ch;
+    else if (rowTop + rowHeightAt(r) > wrap.scrollTop + ch) wrap.scrollTop = rowTop + rowHeightAt(r) - ch;
     if (!renderedRows.includes(r)) renderWindow();
     const td = findTd(r, cIdx);
     if (!td) return;
@@ -657,7 +707,7 @@
     }
     if (opts.grow && r > rows.length - 1) {
       if (rows.length >= 5000) r = rows.length - 1;
-      else while (rows.length < 5000 && r > rows.length - 1) rows.push(blankRow());
+      else while (rows.length < 5000 && r > rows.length - 1) { rows.push(blankRow()); rowHeights.push(ROW_H); }
     }
     setCur(r, c, opts);
   }
@@ -781,6 +831,65 @@
     selEnd = { r: rows.length - 1, c: ALL_COLS.length - 1 };
     updateSelectionClasses();
   }
+
+  // ---------- 行高拖动调整：按住行号列下边缘上下拖动（类似 Excel） ----------
+  let resizingRow = null; // { r, startY, startH }
+
+  gridBody.addEventListener("mousedown", (e) => {
+    const rno = e.target.closest("td.rowno");
+    if (!rno || e.target.closest("input,select")) return;
+    const rRect = rno.getBoundingClientRect();
+    if (e.clientY >= rRect.bottom - 6) {
+      const r = Number(rno.closest("tr[data-r]").dataset.r);
+      if (r >= 0 && r < rows.length) {
+        resizingRow = { r, startY: e.clientY, startH: rowHeightAt(r) };
+        e.preventDefault();
+      }
+    }
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!resizingRow) return;
+    const h = Math.max(MIN_ROW_H, Math.min(MAX_ROW_H, Math.round(resizingRow.startH + (e.clientY - resizingRow.startY))));
+    if (h !== rowHeights[resizingRow.r]) {
+      rowHeights[resizingRow.r] = h;
+      renderWindow();
+    }
+  });
+
+  document.addEventListener("mouseup", () => {
+    resizingRow = null;
+  });
+
+  // ---------- 列宽拖动调整：按住表头列右边缘左右拖动（类似 Excel） ----------
+  let resizingCol = null; // { idx, startX, startW }
+
+  gridHead.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    for (const th of gridHead.querySelectorAll("th.field")) {
+      const idx = th.dataset.c !== undefined ? colIdx(th.dataset.c) : -1;
+      if (idx < 0) continue;
+      const r = th.getBoundingClientRect();
+      if (Math.abs(e.clientX - r.right) <= 6) {
+        resizingCol = { idx, startX: e.clientX, startW: (colWidths || computeGridWidths())[idx] };
+        e.preventDefault();
+        return;
+      }
+    }
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!resizingCol) return;
+    const w = Math.max(MIN_COL_W, Math.min(MAX_COL_W, Math.round(resizingCol.startW + (e.clientX - resizingCol.startX))));
+    if (w !== colWidths[resizingCol.idx]) {
+      colWidths[resizingCol.idx] = w;
+      applyGridWidths();
+    }
+  });
+
+  document.addEventListener("mouseup", () => {
+    resizingCol = null;
+  });
 
   gridBody.addEventListener("mousedown", (e) => {
     const td = e.target.closest("td[data-c]");
@@ -968,13 +1077,15 @@
     }
     if (key === "PageDown") {
       e.preventDefault();
-      const page = Math.max(1, Math.floor(gridWrap.clientHeight / ROW_H) - 1);
+      const rh = Math.max(1, rowHeightAt(cur ? cur.r : 0));
+      const page = Math.max(1, Math.floor(gridWrap.clientHeight / rh) - 1);
       moveCur(page, 0, { extend: shift });
       return;
     }
     if (key === "PageUp") {
       e.preventDefault();
-      const page = Math.max(1, Math.floor(gridWrap.clientHeight / ROW_H) - 1);
+      const rh = Math.max(1, rowHeightAt(cur ? cur.r : 0));
+      const page = Math.max(1, Math.floor(gridWrap.clientHeight / rh) - 1);
       moveCur(-page, 0, { extend: shift });
       return;
     }
@@ -1067,8 +1178,6 @@
   });
 
   gridBody.addEventListener("paste", (e) => {
-    const rect = selRect();
-    if (!rect) return;
     const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
     if (!text) return;
     const lines = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
@@ -1077,6 +1186,13 @@
     const srcRows = lines.map((l) => l.split("\t"));
     const srcH = Math.max(srcRows.length, 1);
     const srcW = srcRows.reduce((m, r) => Math.max(m, r.length), 1);
+    // 未指定选中区域（无选区或仅当前单元格）时，从当前单元格开始，按剪贴板全部内容大小直接粘贴
+    let rect = selRect();
+    if (!rect || (rect.r1 === rect.r2 && rect.c1 === rect.c2)) {
+      const r0 = cur ? cur.r : 0;
+      const c0 = cur ? cur.c : 0;
+      rect = { r1: r0, c1: c0, r2: r0 + srcH - 1, c2: c0 + srcW - 1 };
+    }
     let changed = false;
     // 将复制内容按行列规律重复填充到整个选中区域（复制单值则整片填入）
     for (let r = rect.r1; r <= rect.r2; r++) {
@@ -1085,7 +1201,7 @@
         const col = ALL_COLS[c];
         if (!INPUT_COLS.includes(col) && !TEXT_OVERRIDE_COLS.includes(col)) continue;
         const val = (srcRows[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
-        while (rows.length <= r) rows.push(blankRow());
+        while (rows.length <= r) { rows.push(blankRow()); rowHeights.push(ROW_H); }
         if (INPUT_COLS.includes(col)) {
           rows[r].input[col] = val;
           // 接害因素粘贴变化时，备注列按数据库重新自动生成
@@ -1844,6 +1960,7 @@
       const hasData = rows.some((r) => !isBlankRow(r));
       if (hasData && !confirm(`将用「${rec.name}」（${rec.rows.length} 行）替换当前表格，是否继续？`)) return;
       rows = L.restoreRows(rec.rows);
+      rowHeights = rows.map(() => ROW_H);
       selectedRow = -1;
       recomputeAndRefresh();
       renderWindow();
@@ -2056,7 +2173,7 @@
     if (spacer > 0) html += `<tr class="hazard-spacer" style="height:${spacer}px"><td colspan="${HAZARD_KEYS.length + 1}"></td></tr>`;
     body.innerHTML = html;
     $("hazard-status").textContent = `共 ${hazardFactors.length} 条 · 显示 ${list.length} 条`;
-    scheduleWidths();
+    applyHazardWidths();
   }
 
   const hazardWrap = document.querySelector(".hazard-wrap");
@@ -2346,6 +2463,7 @@
         }
         if (imported.length) {
           rows = imported;
+          rowHeights = rows.map(() => ROW_H);
           L.computeRows(rows, { hazardFactors, detectionItems });
           if (hasInput) {
             // 完整结构文件：保留文件里的覆盖值

@@ -76,22 +76,28 @@ const status = await page.textContent("#grid-status");
 if (!status.includes("错误 0 处")) throw new Error("初始状态应有 0 错误: " + status);
 console.log("计算值与状态校验通过 ✔");
 
-// 列宽自适应：内容变长后列宽应随之变宽
+// 列宽不随输入实时变化；点「自动调整」后按内容一次性调整
 const wBefore = await page.$eval("#grid-cols col:nth-child(5)", (el) => el.style.width);
 await page.fill(
   '#main-grid tr[data-r="0"] td[data-c="D"] input',
-  "这是一个非常非常长的接害因素名称用来测试列宽自适应功能是否正常工作"
+  "这是一个非常非常长的接害因素名称用来测试列宽不实时变化"
 );
 await page.waitForTimeout(900);
 const wAfter = await page.$eval("#grid-cols col:nth-child(5)", (el) => el.style.width);
-if (parseFloat(wAfter) <= parseFloat(wBefore)) {
-  throw new Error(`列宽未随内容自适应: ${wBefore} -> ${wAfter}`);
+if (Math.abs(parseFloat(wAfter) - parseFloat(wBefore)) > 0.5) {
+  throw new Error(`列宽不应随输入实时变化: ${wBefore} -> ${wAfter}`);
+}
+await page.click("#btn-fit-rows");
+await page.waitForTimeout(400);
+const wAuto = await page.$eval("#grid-cols col:nth-child(5)", (el) => el.style.width);
+if (parseFloat(wAuto) <= parseFloat(wAfter)) {
+  throw new Error(`「自动调整」后列宽未变化: ${wAfter} -> ${wAuto}`);
 }
 await page.fill('#main-grid tr[data-r="0"] td[data-c="D"] input', "二氧化钛粉尘(总尘)");
 await page.fill('#main-grid tr[data-r="0"] td[data-c="B"] input', "操作工");
 await page.fill('#main-grid tr[data-r="0"] td[data-c="C"] input', "投料");
 await page.waitForTimeout(900);
-console.log("列宽自适应校验通过 ✔");
+console.log("列宽手动/自动调整校验通过 ✔");
 
 // 录入区：区域选择 / 复制 / 粘贴
 await page.evaluate(() => {
