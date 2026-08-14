@@ -30,7 +30,8 @@
   const TILI_LD = ["Ⅰ", "Ⅱ", "Ⅲ", "Ⅳ"];
 
   // 列定义：A..BI
-  const INPUT_COLS = "ABCDEFGHIJKLMNOPQRSTU".split("");
+  // A..U 原录入列，V 为新增录入列「备注」（显示在“是否采样”后面）
+  const INPUT_COLS = "ABCDEFGHIJKLMNOPQRSTUV".split("");
   const COMPUTED_COLS = [
     "W", "X", "Y", "Z", "AA", "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI",
     "AJ", "AK", "AL", "AM", "AN", "AO", "AP", "AQ", "AR", "AS", "AT", "AU",
@@ -298,6 +299,11 @@
       put("BI", BI[i]);
       // 手工列
       for (const mc of MANUAL_COLS) vals[mc] = r.manual[mc] ?? "";
+      // 录入区备注列（V）有内容时，自动计算区备注列（BI）填充该内容；为空则按原逻辑
+      const remark = r.input && r.input.V;
+      if (remark !== undefined && String(remark).trim() !== "") {
+        vals.BI = String(remark);
+      }
       // 校验
       r.errors = validateRow(r, ref);
     }

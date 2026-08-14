@@ -32,28 +32,36 @@
   }
 
   // ---------- 列定义 ----------
-  const INPUT_COLS = L.INPUT_COLS; // A..U
+  const INPUT_COLS = L.INPUT_COLS; // A..V（V 为录入区备注列）
   const COMPUTED_COLS = L.COMPUTED_COLS; // W..BI
   const MANUAL_COLS = L.MANUAL_COLS;
   const OVERRIDE_COLS = L.OVERRIDE_COLS;
   const TEXT_OVERRIDE_COLS = L.TEXT_OVERRIDE_COLS || ["BI"];
-  const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "R", "S", "U", "AI", "AJ", "BH"]); // 下拉单元格列
+  const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "U", "AI", "AJ", "BH"]); // 下拉单元格列
   const NUM_COLS = new Set(["E", "F", "G", "H", "I", "AA", "AB", "AG", "AH", "AY", "AZ", "BA", "BB"]);
-  const ALL_COLS = [...INPUT_COLS, "V", ...COMPUTED_COLS]; // 61 列（A..BI）
-  const HEADERS = DEFAULT_DATA.mainHeaders; // 61 项
+  // 显示顺序：A..M → V（备注，位于“是否采样”后面）→ N..U → W..BI
+  const ALL_COLS = [
+    ...INPUT_COLS.slice(0, 13),
+    "V",
+    ...INPUT_COLS.slice(13, 21),
+    ...COMPUTED_COLS,
+  ]; // 61 列
+  const MAIN_HEADERS = DEFAULT_DATA.mainHeaders; // A..U + "" 分隔列 + W..BI
+  const HEADERS = [
+    ...MAIN_HEADERS.slice(0, 13),
+    "备注",
+    ...MAIN_HEADERS.slice(13, 21),
+    ...MAIN_HEADERS.slice(22),
+  ]; // 61 项，与 ALL_COLS 一一对应
   const ROW_H = 30;
 
-  const colIdx = (letter) => {
-    let c = 0;
-    for (const ch of letter) c = c * 26 + (ch.charCodeAt(0) - 64);
-    return c - 1;
-  };
+  const colIdx = (letter) => ALL_COLS.indexOf(letter);
   // 各列宽度（Excel 字符单位近似）
   const COL_W = ALL_COLS.map((c) => {
     const w = {
       A: 12, B: 12, C: 10, D: 18, E: 9, F: 9, G: 9, H: 7, I: 8, J: 16,
       K: 14, L: 12, M: 8, N: 8, O: 9, P: 8, Q: 8, R: 11, S: 13, T: 11,
-      U: 10, V: 4, W: 12, X: 12, Y: 9, Z: 16, AA: 10, AB: 9, AC: 12,
+      U: 10, V: 14, W: 12, X: 12, Y: 9, Z: 16, AA: 10, AB: 9, AC: 12,
       AD: 11, AE: 13, AF: 11, AG: 12, AH: 12, AI: 12, AJ: 12, AK: 11,
       AL: 12, AM: 20, AN: 20, AO: 12, AP: 11, AQ: 11, AR: 9, AS: 11,
       AT: 9, AU: 9, AV: 8, AW: 10, AX: 10, AY: 11, AZ: 10, BA: 9,
@@ -104,7 +112,6 @@
       (i) => HEADERS[i],
       (r, i) => {
         const c = ALL_COLS[i];
-        if (c === "V") return "";
         if (INPUT_COLS.includes(c)) return r.input[c];
         if (MANUAL_COLS.includes(c)) return r.manual[c];
         return r.values[c];
@@ -116,11 +123,15 @@
       380,
       14
     );
-    w[21] = 18; // V 列是分隔空列，保持窄
     // 下拉单元格额外预留右侧箭头空间，文字完整显示不被截断
     ALL_COLS.forEach((c, i) => { if (SELECT_COLS.has(c)) w[i] += 24; });
     $("grid-cols").innerHTML =
       "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
+    // 前三列（车间/岗位/工种/点位）与行号列锁定：设置各锁定列的 left 偏移
+    const rownoW = 42;
+    gridWrap.style.setProperty("--sticky-a", rownoW + "px");
+    gridWrap.style.setProperty("--sticky-b", rownoW + w[0] + "px");
+    gridWrap.style.setProperty("--sticky-c", rownoW + w[0] + w[1] + "px");
   }
 
   function applyHazardWidths() {
@@ -186,13 +197,15 @@
   function buildHead() {
     const groupTh = (label, colSpan) =>
       `<th class="group" colspan="${colSpan}">${label}</th>`;
-    const fieldTh = (label) => `<th class="field">${label || "&nbsp;"}</th>`;
-    let groupHtml = `<th class="corner" rowspan="2" style="width:40px">行</th>`;
+    const fieldTh = (label, cls) => `<th class="field${cls ? " " + cls : ""}">${label || "&nbsp;"}</th>`;
+    let groupHtml = `<th class="corner sticky-corner" rowspan="2" style="width:40px">行</th>`;
     groupHtml += groupTh("录 入 区", INPUT_COLS.length);
-    groupHtml += groupTh("&nbsp;", 1);
     groupHtml += groupTh("自动计算区（与原表 W~BI 列一致）", COMPUTED_COLS.length);
     let fieldHtml = "";
-    for (const c of ALL_COLS) fieldHtml += fieldTh(HEADERS[colIdx(c)]);
+    for (const c of ALL_COLS) {
+      const cls = c === "A" ? "sticky-col-a" : c === "B" ? "sticky-col-b" : c === "C" ? "sticky-col-c" : "";
+      fieldHtml += fieldTh(HEADERS[colIdx(c)], cls);
+    }
     gridHead.innerHTML =
       `<tr class="group-row">${groupHtml}</tr>` +
       `<tr class="field-row">${fieldHtml}</tr>`;
@@ -208,15 +221,20 @@
   }
 
   function cellHtml(row, idx, col) {
-    const cls = cellClass(col);
+    let cls = cellClass(col);
+    if (col === "A") cls += " sticky-col-a";
+    else if (col === "B") cls += " sticky-col-b";
+    else if (col === "C") cls += " sticky-col-c";
     const num = NUM_COLS.has(col) ? " cell-num" : "";
     let inner;
-    if (col === "V") {
-      inner = `<input readonly data-c="${col}" value="">`;
-    } else if (OVERRIDE_COLS.includes(col)) {
+    if (OVERRIDE_COLS.includes(col)) {
       inner = selectHtml(col, row.values[col], row.overridden[col] === true);
-    } else if (col === "R" || col === "S" || col === "U") {
+    } else if (col === "U") {
       inner = selectHtml(col, row.input[col], false, true);
+    } else if (col === "R" || col === "S") {
+      // 岗位工作班制 / 岗位班制数：下拉联想 + 可手动录入（支持复制粘贴）
+      const dl = col === "R" ? ' list="banzhi-r-dl"' : ' list="banzhi-s-dl"';
+      inner = `<input data-c="${col}"${dl} value="${escAttr(fmt(row.input[col]))}">`;
     } else if (MANUAL_COLS.includes(col)) {
       if (col === "AI" || col === "AJ" || col === "BH") {
         inner = selectHtml(col, row.manual[col], false, true);
@@ -288,7 +306,7 @@
     for (let i = start; i < end; i++) {
       renderedRows.push(i);
       const r = rows[i];
-      let cells = `<td class="rowno${i === selectedRow ? " selected" : ""}" data-r="${i}">${i + 1}</td>`;
+      let cells = `<td class="rowno sticky-corner${i === selectedRow ? " selected" : ""}" data-r="${i}">${i + 1}</td>`;
       for (const c of ALL_COLS) cells += cellHtml(r, i, c);
       html += `<tr data-r="${i}"${i === selectedRow ? ' class="selected"' : ""}>${cells}</tr>`;
     }
@@ -747,7 +765,6 @@
     if (!row) return INPUT_COLS.length - 1;
     for (let c = ALL_COLS.length - 1; c >= 0; c--) {
       const col = ALL_COLS[c];
-      if (col === "V") continue;
       if (INPUT_COLS.includes(col) && (row.input[col] ?? "") !== "") return c;
       if (MANUAL_COLS.includes(col) && (row.manual[col] ?? "") !== "") return c;
       if ((row.values[col] ?? "") !== "") return c;
@@ -2178,6 +2195,18 @@
     const old = document.getElementById("hazard-dl");
     if (old) old.remove();
     document.body.appendChild(dl);
+    // 岗位工作班制 / 岗位班制数：下拉联想（可手动录入）
+    const buildBanzhi = (id, options) => {
+      let bdl = document.getElementById(id);
+      if (!bdl) {
+        bdl = document.createElement("datalist");
+        bdl.id = id;
+        document.body.appendChild(bdl);
+      }
+      bdl.innerHTML = (options || []).map((o) => `<option value="${escAttr(o)}">`).join("");
+    };
+    buildBanzhi("banzhi-r-dl", L.BANZHI_R);
+    buildBanzhi("banzhi-s-dl", L.BANZHI_S);
   }
 
   // ---------- 导出 ----------

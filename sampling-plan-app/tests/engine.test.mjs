@@ -184,6 +184,20 @@ logic.computeRows([remarkRow], data);
 if (remarkRow.values.BI !== "" || remarkRow.overridden.BI) {
   throw new Error("接害因素变化后备注未重新生成: " + JSON.stringify(remarkRow.values.BI));
 }
+// 录入区备注列（V）有内容时，自动计算区备注列（BI）填充该内容；为空则按原逻辑
+const vRemarkRow = {
+  input: { A: "1车间", B: "操作工", C: "投料", D: "碘", V: "客户备注" },
+  manual: {}, overridden: {}, values: {}, errors: {},
+};
+logic.computeRows([vRemarkRow], data);
+if (vRemarkRow.values.BI !== "客户备注") {
+  throw new Error("录入区备注未填充 BI: " + JSON.stringify(vRemarkRow.values.BI));
+}
+vRemarkRow.input.V = "";
+logic.computeRows([vRemarkRow], data);
+if (vRemarkRow.values.BI !== "无合适外包机构") {
+  throw new Error("录入区备注为空时 BI 未按原逻辑: " + JSON.stringify(vRemarkRow.values.BI));
+}
 
 // Unicode 安全 base64 往返（GitHub API 数据读写用）
 const demoJson = JSON.stringify({ name: "测试记录", rows: [{ A: "3号车间", D: "二氧化钛粉尘(总尘)" }] });

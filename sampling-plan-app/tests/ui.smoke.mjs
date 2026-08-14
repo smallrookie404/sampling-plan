@@ -202,13 +202,7 @@ console.log("粘贴后立即 Delete 清空校验通过 ✔");
 await page.screenshot({ path: SHOT_DIR + "/1-main.png" });
 
 // 2) 输入校验联动：把第 2 行班制改成非法值
-await page.selectOption(`#main-grid tr[data-r="1"] td[data-c="R"] select`, { label: "单班" });
-await page.evaluate(() => {
-  const sel = document.querySelector(`#main-grid tr[data-r="1"] td[data-c="R"] select`);
-  // 模拟手动输入非法值：直接写入 select 不可能，改用 input 的 R 不可行；改为通过引擎验证
-  window.__testBad = true;
-});
-// 改为校验 AN 找不到：把第 2 行接害因素改为不存在的因素
+// 岗位工作班制（R）改为可手动录入的输入框，校验联动改为：把第 2 行接害因素改为不存在的因素
 await page.fill(`#main-grid tr[data-r="1"] td[data-c="D"] input`, "不存在的因素XYZ");
 await page.waitForTimeout(150);
 const status2 = await page.textContent("#grid-status");
