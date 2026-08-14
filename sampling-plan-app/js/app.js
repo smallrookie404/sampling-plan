@@ -177,28 +177,9 @@
     return { input, manual, overridden: {}, values: {}, errors: {} };
   }
 
-  function emptyGrid(n = 20) {
+  function emptyGrid(n = 50) {
     rows = [];
     for (let i = 0; i < n; i++) rows.push(blankRow());
-  }
-
-  // 示例数据（与原表第 2~9 行一致）
-  function loadSample() {
-    const samples = [
-      { A: "3号车间", B: "操作工", C: "投料", D: "二氧化钛粉尘(总尘)", E: "4", F: "8", G: "6", H: "4", I: "1", P: "是" },
-      { A: "3号车间", B: "操作工", C: "投料", D: "硫酸钡", P: "是" },
-      { A: "3号车间", B: "操作工", C: "投料", D: "丙烯酸", P: "是" },
-      { D: "苯乙烯", P: "是" },
-      { A: "3号车间", B: "操作工", C: "投料", D: "噪声", P: "是" },
-      { A: "3号车间", B: "操作工", C: "放料", D: "丙烯酸", E: "1", P: "是" },
-      { D: "苯乙烯", P: "是" },
-      { A: "3号车间", B: "操作工", C: "放料", D: "噪声", P: "是" },
-    ];
-    rows = samples.map((s) => {
-      const r = blankRow();
-      for (const k of Object.keys(s)) r.input[k] = s[k];
-      return r;
-    });
   }
 
   // ---------- 表头 ----------
@@ -517,7 +498,7 @@
   });
   $("btn-reset").addEventListener("click", () => {
     if (!confirm("清空测点表格（保留危害因素库与检测项目）？")) return;
-    emptyGrid(20);
+    emptyGrid();
     selectedRow = -1;
     selStart = selEnd = selAnchor = null;
     cur = null;
@@ -2379,7 +2360,7 @@
   async function init() {
     hazardFactors = DEFAULT_DATA.hazardFactors.map((h) => ({ ...h }));
     detectionItems = DEFAULT_DATA.detectionItems.slice();
-    loadSample();
+    emptyGrid();
     buildHead();
     renderHazardHead();
     rebuildDatalist();

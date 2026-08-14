@@ -53,16 +53,25 @@ const val = async (r, c) =>
 const selVal = async (r, c) =>
   await page.$eval(`#main-grid tr[data-r="${r}"] td[data-c="${c}"] select`, (el) => el.value);
 
-// 1) 计算值校验
+// 1) 默认状态：50 行空白录入区（自动计算区保留引擎默认值，如每天样品数=3）
 const checks = [
-  [0, "W", "3号车间"], [0, "X", "操作工"], [0, "AN", "二氧化钛粉尘"],
-  [0, "AU", "总尘"], [0, "BB", "3"], [0, "AM", "操作设备投料作业"],
-  [7, "AN", "噪声"], [7, "BD", "设备运行"], [7, "AZ", "1"], [7, "AS", "短时间"],
+  [0, "A", ""], [0, "B", ""], [0, "C", ""], [0, "D", ""], [0, "E", ""], [0, "P", ""],
 ];
 for (const [r, c, exp] of checks) {
   const got = await val(r, c);
   if (got !== exp) throw new Error(`单元格 r${r} ${c} 期望 ${exp} 实际 ${got}`);
 }
+// 滚动到底部：应有 50 行（最后一行 r=49）且录入区空白
+await page.$eval("#grid-wrap", (el) => { el.scrollTop = el.scrollHeight; });
+await page.waitForTimeout(200);
+const lastRow = await page.$eval("#main-grid tbody tr[data-r]:last-child", (el) => el.dataset.r);
+if (lastRow !== "49") throw new Error("默认应有 50 行，最后一行 r=" + lastRow);
+for (const c of ["A", "B", "C", "D", "P"]) {
+  const got = await val(49, c);
+  if (got !== "") throw new Error(`第 50 行 ${c} 应为空白，实际 ${got}`);
+}
+await page.$eval("#grid-wrap", (el) => { el.scrollTop = 0; });
+await page.waitForTimeout(200);
 const status = await page.textContent("#grid-status");
 if (!status.includes("错误 0 处")) throw new Error("初始状态应有 0 错误: " + status);
 console.log("计算值与状态校验通过 ✔");
@@ -79,6 +88,8 @@ if (parseFloat(wAfter) <= parseFloat(wBefore)) {
   throw new Error(`列宽未随内容自适应: ${wBefore} -> ${wAfter}`);
 }
 await page.fill('#main-grid tr[data-r="0"] td[data-c="D"] input', "二氧化钛粉尘(总尘)");
+await page.fill('#main-grid tr[data-r="0"] td[data-c="B"] input', "操作工");
+await page.fill('#main-grid tr[data-r="0"] td[data-c="C"] input', "投料");
 await page.waitForTimeout(900);
 console.log("列宽自适应校验通过 ✔");
 
@@ -289,9 +300,12 @@ async function doRowOp(btnId, count) {
   await page.waitForSelector("#prompt-modal.hidden", { state: "attached" });
   await page.waitForTimeout(120);
 }
-let n0 = await rowCountOf(); // 8
+let n0 = await rowCountOf(); // 默认 50 行
 await doRowOp("#btn-add", 3);
 if ((await rowCountOf()) !== n0 + 3) throw new Error("新增自定义行数无效");
+// 新增行后网格可能已滚到底部，先回到顶部再点第 1 行行号
+await page.$eval("#grid-wrap", (el) => { el.scrollTop = 0; });
+await page.waitForTimeout(150);
 await page.click('#main-grid tr[data-r="0"] td.rowno');
 await doRowOp("#btn-copy", 2);
 if ((await rowCountOf()) !== n0 + 5) throw new Error("复制自定义行数无效");
