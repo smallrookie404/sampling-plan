@@ -546,6 +546,18 @@
     };
   }
 
+  // 开始单元格选区时，取消整行选中（避免整行浅蓝高亮残留，看起来像同行全部被选中）
+  function clearRowSelection() {
+    if (selectedRow < 0) return;
+    const tr = gridBody.querySelector(`tr[data-r="${selectedRow}"]`);
+    if (tr) {
+      tr.classList.remove("selected");
+      const rowno = tr.querySelector("td.rowno");
+      if (rowno) rowno.classList.remove("selected");
+    }
+    selectedRow = -1;
+  }
+
   function updateSelectionClasses() {
     const rect = selRect();
     for (const tr of gridBody.querySelectorAll("tr[data-r]")) {
@@ -596,6 +608,7 @@
   function setCur(r, cIdx, opts = {}) {
     if (rows.length === 0) return;
     const { extend = false, focus = true } = opts;
+    clearRowSelection();
     r = Math.max(0, Math.min(r, rows.length - 1));
     cIdx = Math.max(0, Math.min(cIdx, ALL_COLS.length - 1));
     const prev = cur;
@@ -759,6 +772,7 @@
     const c = ALL_COLS.indexOf(td.dataset.c);
     const cell = { r, c };
     lastMouse = { x: e.clientX, y: e.clientY };
+    clearRowSelection();
     editing = false;
     editOriginal = null;
     if (e.shiftKey) {
