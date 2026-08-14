@@ -219,10 +219,10 @@ table.grid {
 }
 
 /* 前三列（车间/岗位/工种/点位）+ 行号列横向锁定：左右滑动保持不动 */
-.grid thead th.sticky-corner { left: 0; }
-.grid thead th.sticky-col-a { left: var(--sticky-a, 42px); }
-.grid thead th.sticky-col-b { left: var(--sticky-b, 120px); }
-.grid thead th.sticky-col-c { left: var(--sticky-c, 200px); }
+.grid thead th.sticky-corner { left: 0; z-index: 8; }
+.grid thead th.sticky-col-a { left: var(--sticky-a, 42px); z-index: 7; }
+.grid thead th.sticky-col-b { left: var(--sticky-b, 120px); z-index: 7; }
+.grid thead th.sticky-col-c { left: var(--sticky-c, 200px); z-index: 7; }
 .grid tbody td.sticky-corner,
 .grid tbody td.sticky-col-a,
 .grid tbody td.sticky-col-b,
