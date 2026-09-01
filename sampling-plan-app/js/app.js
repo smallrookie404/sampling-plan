@@ -483,6 +483,37 @@
     else status.title = "";
   }
 
+  // 错误定位：点击右上角错误计数，按从上到下顺序依次滚动并闪烁到错误单元格；循环点击循环定位
+  let errorLocateIdx = -1;
+  $("grid-status").addEventListener("click", () => {
+    const { total } = L.countErrors(rows);
+    if (total === 0) return;
+    // 按行、按列序收集错误位置（从上到下、从左到右）
+    const errs = [];
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row || !row.errors) continue;
+      for (let ci = 0; ci < ALL_COLS.length; ci++) {
+        const c = ALL_COLS[ci];
+        if (row.errors[c]) errs.push({ r, c });
+      }
+    }
+    if (!errs.length) return;
+    errorLocateIdx = (errorLocateIdx + 1) % errs.length;
+    const target = errs[errorLocateIdx];
+    const cIdx = ALL_COLS.indexOf(target.c);
+    // 虚拟滚动：revealCell 会滚动到目标行并按需重渲染，随后单元格已在 DOM 中
+    revealCell(target.r, cIdx);
+    requestAnimationFrame(() => {
+      const td = findTd(target.r, cIdx);
+      if (!td) return;
+      td.classList.remove("error-flash");
+      void td.offsetWidth; // 强制重启动画
+      td.classList.add("error-flash");
+      setTimeout(() => td.classList.remove("error-flash"), 1400);
+    });
+  });
+
   // ---------- 通用输入弹窗 ----------
   function askInput({ title, hint, value, type }) {
     return new Promise((resolve) => {
