@@ -164,7 +164,7 @@
     return YEAR_SS_PREFIX + (yearPrefix || '') + '|' + (unitName || '');
   }
 
-  async function searchProjects(token, keyword, signal) {
+  async function searchProjects(token, orgId, keyword, signal) {
     const params = [];
     if (keyword && keyword.code && String(keyword.code).trim()) {
       params.push('code=' + encodeURIComponent(String(keyword.code).trim()));
@@ -183,7 +183,9 @@
     }
     const p = (async function () {
       // 平台接口经 Cloudflare 代理转发较慢，搜索超时放宽到 60 秒
-      const r = await apiRequest('GET', '/api/projectInfo?pageNumber=1&pageSize=50&' + cacheKey, { token: token, signal: signal, timeout: 60000 });
+      // 平台按机构范围过滤项目查询，必须带 organizationId 头（与上传/人员接口一致）
+      // 用 cyQuery 接口（平台「现场调查」模块同款）：projectInfo 只返回部分项目，2026 年起新项目查不到
+      const r = await apiRequest('GET', '/api/projectInfo/cyQuery?pageNumber=1&pageSize=50&' + cacheKey, { token: token, orgId: orgId, signal: signal, timeout: 60000 });
       if (r.status !== 200) throw new Error('搜索项目失败(HTTP ' + r.status + ')');
       const records = (r.data && r.data.body && r.data.body.records) || [];
       searchCache.set(cacheKey, { time: Date.now(), data: records });
@@ -201,7 +203,7 @@
     }
   }
 
-  async function fetchYearProjects(token, yearPrefix, unitName, signal) {
+  async function fetchYearProjects(token, orgId, yearPrefix, unitName, signal) {
     const key = yearPrefix + '|' + (unitName || '');
     const cached = yearCache.get(key);
     if (cached && Date.now() - cached.time < CACHE_TTL_YEAR) {
@@ -227,7 +229,7 @@
       const params = ['code=' + encodeURIComponent(yearPrefix)];
       if (unitName) params.push('belongInspectName=' + encodeURIComponent(String(unitName).trim()));
       // 整年项目批量拉取可能更慢，超时放宽到 90 秒
-      const r = await apiRequest('GET', '/api/projectInfo?pageNumber=1&pageSize=2000&' + params.join('&'), { token: token, signal: signal, timeout: 90000 });
+      const r = await apiRequest('GET', '/api/projectInfo/cyQuery?pageNumber=1&pageSize=2000&' + params.join('&'), { token: token, orgId: orgId, signal: signal, timeout: 90000 });
       if (r.status !== 200) throw new Error('搜索项目失败(HTTP ' + r.status + ')');
       const records = (r.data && r.data.body && r.data.body.records) || [];
       const entry = { time: Date.now(), data: records };
@@ -912,7 +914,7 @@
         let promise;
         if (unitName) {
           // 受检单位走服务端模糊匹配（小请求），避免每敲一个字都拉取整年项目
-          promise = searchProjects(token, { code: code || yearPrefix, unitName: unitName }, currentAbort.signal)
+          promise = searchProjects(token, orgId, { code: code || yearPrefix, unitName: unitName }, currentAbort.signal)
             .then(function (list) {
               let filtered = list;
               // 未带年份前缀的编号片段：在服务端结果内再做本地包含匹配
@@ -923,7 +925,7 @@
             });
         } else if (yearPrefix && !typedHasYearPrefix) {
           // 仅按年份/编号片段浏览：拉取当年范围（30 分钟缓存 + sessionStorage），本地按编号过滤
-          promise = fetchYearProjects(token, yearPrefix, '', currentAbort.signal)
+          promise = fetchYearProjects(token, orgId, yearPrefix, '', currentAbort.signal)
             .then(function (list) {
               let filtered = list;
               if (code) {
@@ -934,7 +936,7 @@
               return filtered.slice(0, 15);
             });
         } else if (code || unitName) {
-          promise = searchProjects(token, { code: code, unitName: unitName }, currentAbort.signal);
+          promise = searchProjects(token, orgId, { code: code, unitName: unitName }, currentAbort.signal);
         } else {
           promise = Promise.resolve([]);
         }
@@ -964,7 +966,7 @@
     function prefetchYear() {
       const prefix = yearSelect.value ? 'BTC' + yearSelect.value : '';
       if (prefix && token) {
-        fetchYearProjects(token, prefix, '', null).catch(function () { });
+        fetchYearProjects(token, orgId, prefix, '', null).catch(function () { });
       }
     }
 
