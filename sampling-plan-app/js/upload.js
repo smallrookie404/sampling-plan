@@ -164,6 +164,31 @@
     return YEAR_SS_PREFIX + (yearPrefix || '') + '|' + (unitName || '');
   }
 
+  // 平台项目搜索：cyQuery（2026 年起新项目）与 projectInfo（2026 年之前项目）两个接口都查，按 id 合并去重
+  async function fetchProjectsMerged(token, orgId, query, pageSize, signal, timeout) {
+    const q = 'pageNumber=1&pageSize=' + pageSize + '&' + query;
+    const results = await Promise.allSettled([
+      apiRequest('GET', '/api/projectInfo/cyQuery?' + q, { token: token, orgId: orgId, signal: signal, timeout: timeout }),
+      apiRequest('GET', '/api/projectInfo?' + q, { token: token, orgId: orgId, signal: signal, timeout: timeout }),
+    ]);
+    const list = [];
+    const seen = new Set();
+    let anyOk = false;
+    for (const res of results) {
+      if (res.status !== 'fulfilled' || res.value.status !== 200) continue;
+      anyOk = true;
+      const records = (res.value.data && res.value.data.body && res.value.data.body.records) || [];
+      for (const rec of records) {
+        const key = String((rec && (rec.id || rec.code)) || '');
+        if (key && seen.has(key)) continue;
+        if (key) seen.add(key);
+        list.push(rec);
+      }
+    }
+    if (!anyOk) throw new Error('搜索项目失败');
+    return list;
+  }
+
   async function searchProjects(token, orgId, keyword, signal) {
     const params = [];
     if (keyword && keyword.code && String(keyword.code).trim()) {
@@ -182,12 +207,9 @@
       return searchInFlight.get(cacheKey);
     }
     const p = (async function () {
-      // 平台接口经 Cloudflare 代理转发较慢，搜索超时放宽到 60 秒
-      // 平台按机构范围过滤项目查询，必须带 organizationId 头（与上传/人员接口一致）
-      // 用 cyQuery 接口（平台「现场调查」模块同款）：projectInfo 只返回部分项目，2026 年起新项目查不到
-      const r = await apiRequest('GET', '/api/projectInfo/cyQuery?pageNumber=1&pageSize=50&' + cacheKey, { token: token, orgId: orgId, signal: signal, timeout: 60000 });
-      if (r.status !== 200) throw new Error('搜索项目失败(HTTP ' + r.status + ')');
-      const records = (r.data && r.data.body && r.data.body.records) || [];
+      // 平台接口经 Cloudflare 代理转发较慢，搜索超时放宽到 60 秒；
+      // 2026 年起新项目仅 cyQuery 可查、2026 年之前仍走 projectInfo——两个接口都查再合并去重
+      const records = await fetchProjectsMerged(token, orgId, cacheKey, 50, signal, 60000);
       searchCache.set(cacheKey, { time: Date.now(), data: records });
       if (searchCache.size > CACHE_MAX) {
         const oldest = searchCache.keys().next().value;
@@ -228,10 +250,8 @@
     const p = (async function () {
       const params = ['code=' + encodeURIComponent(yearPrefix)];
       if (unitName) params.push('belongInspectName=' + encodeURIComponent(String(unitName).trim()));
-      // 整年项目批量拉取可能更慢，超时放宽到 90 秒
-      const r = await apiRequest('GET', '/api/projectInfo/cyQuery?pageNumber=1&pageSize=2000&' + params.join('&'), { token: token, orgId: orgId, signal: signal, timeout: 90000 });
-      if (r.status !== 200) throw new Error('搜索项目失败(HTTP ' + r.status + ')');
-      const records = (r.data && r.data.body && r.data.body.records) || [];
+      // 整年项目批量拉取可能更慢，超时放宽到 90 秒；同样两接口合并去重
+      const records = await fetchProjectsMerged(token, orgId, params.join('&'), 2000, signal, 90000);
       const entry = { time: Date.now(), data: records };
       yearCache.set(key, entry);
       try {
