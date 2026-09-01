@@ -986,6 +986,11 @@
     });
     yearSelect.addEventListener('change', function () {
       prefetchYear();
+      // 受检单位/项目编号有内容时，切换年份重新触发搜索（按新年份过滤结果）
+      if (unitInput.value.trim() || codeInput.value.trim()) {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(doSearch, 300);
+      }
     });
     memberSearch.addEventListener('input', filterMemberList);
     memberList.addEventListener('change', updateMemberCount);
