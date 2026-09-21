@@ -698,13 +698,19 @@
 
   function updateSelectionClasses() {
     const rect = selRect();
+    // 单击也会产生 1×1 选区；仅当选区多于一个单元格时才视为“拖选”，让行列高亮让位
+    const multi = rect && (rect.r1 !== rect.r2 || rect.c1 !== rect.c2);
     for (const tr of gridBody.querySelectorAll("tr[data-r]")) {
       const r = Number(tr.dataset.r);
+      const isCurRow = !!(cur && r === cur.r); // 当前单元格所在行高亮
       for (const td of tr.querySelectorAll("td[data-c]")) {
         const c = ALL_COLS.indexOf(td.dataset.c);
         const inSel = rect && r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2;
         td.classList.toggle("sel", inSel);
         td.classList.toggle("cur", !!(cur && r === cur.r && c === cur.c));
+        // 选中单元格的整行、整列高亮（拖选多格时以选区代替，避免大片高亮）
+        td.classList.toggle("hl-row", !multi && isCurRow && c !== cur.c);
+        td.classList.toggle("hl-col", !multi && !!cur && c === cur.c && r !== cur.r);
       }
     }
   }
