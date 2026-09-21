@@ -392,25 +392,37 @@
     if (!total) return;
     const st = gridWrap.scrollTop;
     const ch = gridWrap.clientHeight;
-    const wantStart = Math.max(0, rowIndexAt(st) - RENDER_OVERSCAN);
-    const wantEnd = Math.min(total, rowIndexAt(st + ch) + RENDER_OVERSCAN);
+    const visStart = rowIndexAt(st);
+    const visEnd = Math.min(total, rowIndexAt(st + ch) + 1);
     const curStart = renderedRows.length ? renderedRows[0] : -1;
     const curEnd = renderedRows.length ? renderedRows[renderedRows.length - 1] + 1 : -1;
+    if (curStart < 0) { renderWindow(); return; }
+    // 迟滞区间：可视区（含半缓冲余量）仍落在已渲染窗口内时不动 DOM，滚动不触发每帧重排
+    const half = Math.floor(RENDER_OVERSCAN / 2);
+    if (visStart - half >= curStart && visEnd + half <= curEnd) return;
+    const wantStart = Math.max(0, visStart - RENDER_OVERSCAN);
+    const wantEnd = Math.min(total, visEnd + RENDER_OVERSCAN);
     if (curStart === wantStart && curEnd === wantEnd) return;
-    if (curStart < 0 || wantStart >= curEnd || wantEnd <= curStart) { renderWindow(); return; } // 窗口不相交，整体重建
+    if (wantStart >= curEnd || wantEnd <= curStart) { renderWindow(); return; } // 窗口不相交，整体重建
     const topSpacer = gridBody.firstElementChild;
     const bottomSpacer = gridBody.lastElementChild;
     if (!topSpacer || !bottomSpacer || !topSpacer.classList.contains("row-spacer") || !bottomSpacer.classList.contains("row-spacer-b")) { renderWindow(); return; }
     const trimTop = () => {
-      for (let i = curStart; i < wantStart; i++) {
-        const tr = gridBody.querySelector(`tr[data-r="${i}"]`);
-        if (tr) tr.remove();
+      // 顶部数据行紧跟 topSpacer，按序删除即可，避免逐行 querySelector
+      let node = topSpacer.nextElementSibling;
+      for (let i = curStart; i < wantStart && node && node !== bottomSpacer; i++) {
+        const next = node.nextElementSibling;
+        node.remove();
+        node = next;
       }
     };
     const trimBottom = () => {
-      for (let i = wantEnd; i < curEnd; i++) {
-        const tr = gridBody.querySelector(`tr[data-r="${i}"]`);
-        if (tr) tr.remove();
+      // 底部数据行紧邻 bottomSpacer，从后往前删
+      let node = bottomSpacer.previousElementSibling;
+      for (let i = curEnd - 1; i >= wantEnd && node && node !== topSpacer; i--) {
+        const prev = node.previousElementSibling;
+        node.remove();
+        node = prev;
       }
     };
     if (wantStart > curStart) {
