@@ -341,12 +341,15 @@
     return lo;
   }
 
+  // 渲染缓冲：上下各多渲染的行数。缓冲太小会在快速滚动时露出未渲染区（空白），取较大值
+  const RENDER_OVERSCAN = 40;
+
   function renderWindow() {
     const total = rows.length;
     const st = gridWrap.scrollTop;
     const ch = gridWrap.clientHeight;
-    const start = Math.max(0, rowIndexAt(st) - 8);
-    const visible = Math.ceil(ch / ROW_H) + 16;
+    const start = Math.max(0, rowIndexAt(st) - RENDER_OVERSCAN);
+    const visible = Math.ceil(ch / ROW_H) + RENDER_OVERSCAN * 2;
     let end = start;
     let count = 0;
     while (end < total && count < visible) {
@@ -380,7 +383,7 @@
     requestAnimationFrame(() => {
       scrollRenderQueued = false;
       // 顶部可见行未变化（小距离滚动）时无需重建整个表格
-      const start = Math.max(0, rowIndexAt(gridWrap.scrollTop) - 8);
+      const start = Math.max(0, rowIndexAt(gridWrap.scrollTop) - RENDER_OVERSCAN);
       if (start !== lastRenderedStart) renderWindow();
     });
   });
