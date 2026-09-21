@@ -275,6 +275,20 @@ table.grid {
   font-family: inherit;
   color: inherit;
 }
+/* 只读计算列的纯文本单元格（替代 readonly input，降低 DOM 负担） */
+.grid .computed-text {
+  width: 100%;
+  height: 100%;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  color: inherit;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+}
 .grid select {
   -webkit-appearance: none;
   appearance: none; /* 去掉原生箭头，改用右侧独立的自定义箭头，避免压住文字 */

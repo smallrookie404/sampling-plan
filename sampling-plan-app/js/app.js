@@ -250,7 +250,8 @@
     } else if (TEXT_OVERRIDE_COLS.includes(col)) {
       inner = `<input data-c="${col}" value="${escAttr(fmt(row.values[col]))}">`;
     } else if (COMPUTED_COLS.includes(col)) {
-      inner = `<input readonly data-c="${col}" value="${escAttr(fmt(row.values[col]))}">`;
+      // 只读计算列用纯文本而非 input：行数多时常驻输入框节点拖慢渲染（卡顿主因）
+      inner = `<div class="computed-text" data-c="${col}">${escHtml(fmt(row.values[col]))}</div>`;
     } else {
       // D 接害因素 / L 作业方式 / N 采样方式 / O 岗位性质：下拉联想 + 可手动录入
       const dlMap = { D: "hazard-dl", L: "zuoye-dl", N: "caiyang-dl", O: "gangwei-dl" };
@@ -341,8 +342,17 @@
     return lo;
   }
 
-  // 渲染缓冲：上下各多渲染的行数。缓冲太小会在快速滚动时露出未渲染区（空白），取较大值
-  const RENDER_OVERSCAN = 40;
+  // 渲染缓冲：上下各多渲染的行数。增量渲染接管滚动后无需过大缓冲
+  const RENDER_OVERSCAN = 24;
+
+  // 单行 HTML（renderWindow 与增量渲染共用）
+  function rowHtml(i) {
+    const r = rows[i];
+    const h = rowHeightAt(i);
+    let cells = `<td class="rowno sticky-corner${i === selectedRow ? " selected" : ""}" data-r="${i}">${i + 1}</td>`;
+    for (const c of ALL_COLS) cells += cellHtml(r, i, c);
+    return `<tr data-r="${i}" style="height:${h}px"${i === selectedRow ? ' class="selected"' : ""}>${cells}</tr>`;
+  }
 
   function renderWindow() {
     const total = rows.length;
@@ -359,21 +369,78 @@
     let html = "";
     renderedRows = [];
     lastRenderedStart = start;
-    // 顶部占位行：保证总高度恒定，虚拟滚动才能稳定滚动到底
+    // 顶部占位行：保证总高度恒定，虚拟滚动才能稳定滚动到底（始终保留，供增量渲染调整高度）
     const topSpacer = rowOffsetAt(start);
-    if (topSpacer > 0) html += `<tr class="row-spacer" style="height:${topSpacer}px"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
+    html += `<tr class="row-spacer" style="height:${topSpacer}px${topSpacer > 0 ? "" : ";display:none"}"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     for (let i = start; i < end; i++) {
       renderedRows.push(i);
-      const r = rows[i];
-      const h = rowHeightAt(i);
-      let cells = `<td class="rowno sticky-corner${i === selectedRow ? " selected" : ""}" data-r="${i}">${i + 1}</td>`;
-      for (const c of ALL_COLS) cells += cellHtml(r, i, c);
-      html += `<tr data-r="${i}" style="height:${h}px"${i === selectedRow ? ' class="selected"' : ""}>${cells}</tr>`;
+      html += rowHtml(i);
     }
     const spacer = Math.max(0, totalGridHeight() - rowOffsetAt(end));
-    if (spacer > 0) html += `<tr style="height:${spacer}px"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
+    // 底部占位行始终保留（高度可为 0），供增量渲染调整
+    html += `<tr class="row-spacer-b" style="height:${spacer}px${spacer > 0 ? "" : ";display:none"}"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     gridBody.innerHTML = html;
     refreshStatus();
+    updateSelectionClasses();
+  }
+
+  // 增量渲染：快速滚动时不整体重建表格，只裁掉离开窗口的行、追加进入窗口的行。
+  // 整体 innerHTML 重建在行数多时耗时明显，跟不上滚动就会露出空白；增量操作只动少数行，
+  // 且旧行在被裁掉前一直显示，滚动过程中不再出现空白。
+  function ensureWindow() {
+    const total = rows.length;
+    if (!total) return;
+    const st = gridWrap.scrollTop;
+    const ch = gridWrap.clientHeight;
+    const wantStart = Math.max(0, rowIndexAt(st) - RENDER_OVERSCAN);
+    const wantEnd = Math.min(total, rowIndexAt(st + ch) + RENDER_OVERSCAN);
+    const curStart = renderedRows.length ? renderedRows[0] : -1;
+    const curEnd = renderedRows.length ? renderedRows[renderedRows.length - 1] + 1 : -1;
+    if (curStart === wantStart && curEnd === wantEnd) return;
+    if (curStart < 0 || wantStart >= curEnd || wantEnd <= curStart) { renderWindow(); return; } // 窗口不相交，整体重建
+    const topSpacer = gridBody.firstElementChild;
+    const bottomSpacer = gridBody.lastElementChild;
+    if (!topSpacer || !bottomSpacer || !topSpacer.classList.contains("row-spacer") || !bottomSpacer.classList.contains("row-spacer-b")) { renderWindow(); return; }
+    const trimTop = () => {
+      for (let i = curStart; i < wantStart; i++) {
+        const tr = gridBody.querySelector(`tr[data-r="${i}"]`);
+        if (tr) tr.remove();
+      }
+    };
+    const trimBottom = () => {
+      for (let i = wantEnd; i < curEnd; i++) {
+        const tr = gridBody.querySelector(`tr[data-r="${i}"]`);
+        if (tr) tr.remove();
+      }
+    };
+    if (wantStart > curStart) {
+      trimTop();
+      if (wantEnd > curEnd) {
+        let html = "";
+        for (let i = curEnd; i < wantEnd; i++) html += rowHtml(i);
+        bottomSpacer.insertAdjacentHTML("beforebegin", html);
+      } else {
+        trimBottom();
+      }
+    } else {
+      let html = "";
+      for (let i = wantStart; i < curStart; i++) html += rowHtml(i);
+      topSpacer.insertAdjacentHTML("afterend", html);
+      if (wantEnd < curEnd) trimBottom();
+      else {
+        let html2 = "";
+        for (let i = curEnd; i < wantEnd; i++) html2 += rowHtml(i);
+        bottomSpacer.insertAdjacentHTML("beforebegin", html2);
+      }
+    }
+    topSpacer.style.height = rowOffsetAt(wantStart) + "px";
+    topSpacer.style.display = wantStart > 0 ? "" : "none";
+    const bottomH = Math.max(0, totalGridHeight() - rowOffsetAt(wantEnd));
+    bottomSpacer.style.height = bottomH + "px";
+    bottomSpacer.style.display = bottomH > 0 ? "" : "none";
+    renderedRows = [];
+    for (let i = wantStart; i < wantEnd; i++) renderedRows.push(i);
+    lastRenderedStart = wantStart;
     updateSelectionClasses();
   }
 
@@ -382,9 +449,8 @@
     scrollRenderQueued = true;
     requestAnimationFrame(() => {
       scrollRenderQueued = false;
-      // 顶部可见行未变化（小距离滚动）时无需重建整个表格
-      const start = Math.max(0, rowIndexAt(gridWrap.scrollTop) - RENDER_OVERSCAN);
-      if (start !== lastRenderedStart) renderWindow();
+      // 增量渲染：仅在窗口变化时追加/裁剪行，快速滚动不整体重建、不出现空白
+      ensureWindow();
     });
   });
 
@@ -467,11 +533,19 @@
         cell.classList.toggle("error", isErr);
         cell.title = isErr ? row.errors[c] : "";
         const el = cell.querySelector("input,select");
+        if (COMPUTED_COLS.includes(c)) {
+          // 只读计算列为纯文本单元格（无 input），直接同步文本内容
+          const txt = cell.querySelector("div.computed-text");
+          if (txt) {
+            const v = escHtml(fmt(row.values[c]));
+            if (txt.innerHTML !== v) txt.innerHTML = v;
+          }
+          continue;
+        }
         if (!el) continue;
         let val;
         if (OVERRIDE_COLS.includes(c)) val = fmt(row.values[c]);
         else if (MANUAL_COLS.includes(c)) val = fmt(row.manual[c]);
-        else if (COMPUTED_COLS.includes(c)) val = fmt(row.values[c]);
         else val = fmt(row.input[c]);
         if (el.tagName === "SELECT") {
           if (el.value !== val) el.value = val;
