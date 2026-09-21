@@ -38,6 +38,9 @@
   const OVERRIDE_COLS = L.OVERRIDE_COLS;
   const TEXT_OVERRIDE_COLS = L.TEXT_OVERRIDE_COLS || ["BI"];
   const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "U", "AI", "AJ", "BH"]); // 下拉单元格列
+  // 录入区下拉联想选项：作业方式 / 采样方式（datalist，可手动录入）
+  const ZUOYE_FS = ["手工作业", "半手工作业", "全自动作业"];
+  const CAIYANG_FS = ["定点", "个体"];
   const NUM_COLS = new Set(["E", "F", "G", "H", "I", "AA", "AB", "AG", "AH", "AY", "AZ", "BA", "BB"]);
   // 显示顺序：A..M → V（备注，位于“是否采样”后面）→ N..U → W..BI
   const ALL_COLS = [
@@ -249,7 +252,9 @@
     } else if (COMPUTED_COLS.includes(col)) {
       inner = `<input readonly data-c="${col}" value="${escAttr(fmt(row.values[col]))}">`;
     } else {
-      const dl = col === "D" ? ' list="hazard-dl"' : "";
+      // D 接害因素 / L 作业方式 / N 采样方式 / O 岗位性质：下拉联想 + 可手动录入
+      const dlMap = { D: "hazard-dl", L: "zuoye-dl", N: "caiyang-dl", O: "gangwei-dl" };
+      const dl = dlMap[col] ? ` list="${dlMap[col]}"` : "";
       inner = `<input data-c="${col}"${dl} value="${escAttr(fmt(row.input[col]))}">`;
     }
     return `<td class="${cls}${num}" data-r="${idx}" data-c="${col}">${inner}</td>`;
@@ -2392,6 +2397,10 @@
     };
     buildBanzhi("banzhi-r-dl", L.BANZHI_R);
     buildBanzhi("banzhi-s-dl", L.BANZHI_S);
+    // 作业方式 / 采样方式 / 岗位性质：录入区下拉联想（可手动录入）
+    buildBanzhi("zuoye-dl", ZUOYE_FS);
+    buildBanzhi("caiyang-dl", CAIYANG_FS);
+    buildBanzhi("gangwei-dl", L.GANGWEI_XZ);
   }
 
   // ---------- 导出 ----------
