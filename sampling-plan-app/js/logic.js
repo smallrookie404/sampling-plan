@@ -273,7 +273,7 @@
       return special ? 1 : I_filled[i];
     });
     const BB = AN.map((an, i) => {
-      if (contains("有机组分定性", an) || AR[i] === "个体" || ["游离二氧化硅", "工频电场", "高频电磁场"].includes(an)) return 1;
+      if (contains("有机组分定性", an) || AR[i] === "个体" || ["游离二氧化硅", "工频电场", "高频电磁场", "激光辐射"].includes(an)) return 1;
       if (["噪声", "高温", "手传振动"].includes(an)) return 3;
       if (an === "紫外辐射") return 1;
       const az = AZ[i];
