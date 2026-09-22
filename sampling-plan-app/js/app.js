@@ -672,7 +672,9 @@
     const n = await askRowCount("插入行数", 1);
     if (n === null) return;
     if (rows.length + n > 5000) { alert("总行数不能超过 5000。"); return; }
-    const at = selectedRow >= 0 ? selectedRow + 1 : rows.length;
+    // 优先用行号选中的行；没有时回退到当前选中单元格所在行
+    const anchor = selectedRow >= 0 ? selectedRow : cur ? cur.r : -1;
+    const at = anchor >= 0 ? anchor + 1 : rows.length;
     const ins = [];
     for (let i = 0; i < n; i++) ins.push(blankRow());
     rows.splice(at, 0, ...ins);
@@ -684,9 +686,13 @@
     renderWindow();
   });
   $("btn-copy").addEventListener("click", async () => {
-    const n = await askRowCount("复制行数", 1);
+    // 存在多格选区时，以选区首行为基准、默认复制选区覆盖的行数
+    const rect = selRect();
+    const selRows = rect ? rect.r2 - rect.r1 + 1 : 1;
+    const n = await askRowCount("复制行数", selRows);
     if (n === null) return;
-    const at = selectedRow >= 0 ? selectedRow : rows.length - 1;
+    // 优先用行号选中的行；没有时回退到当前选中单元格所在行，有选区时用选区首行
+    const at = rect ? rect.r1 : selectedRow >= 0 ? selectedRow : cur ? cur.r : -1;
     if (at < 0) return;
     if (rows.length + n > 5000) { alert("总行数不能超过 5000。"); return; }
     const src = rows[at];
@@ -710,14 +716,19 @@
     renderWindow();
   });
   $("btn-del").addEventListener("click", async () => {
-    if (selectedRow < 0) { alert("请先点击行号选中要删除的行。"); return; }
-    const n = await askRowCount("删除行数", 1);
+    // 存在多格选区时，以选区首行起删、默认删除选区覆盖的行数
+    const rect = selRect();
+    const selRows = rect ? rect.r2 - rect.r1 + 1 : 1;
+    // 优先用行号选中的行；没有时回退到当前选中单元格所在行，有选区时用选区首行
+    const delAt = rect ? rect.r1 : selectedRow >= 0 ? selectedRow : cur ? cur.r : -1;
+    if (delAt < 0) { alert("请先选中要删除的行（点击行号或点击任意单元格）。"); return; }
+    const n = await askRowCount("删除行数", selRows);
     if (n === null) return;
-    const cnt = Math.min(n, rows.length - selectedRow);
+    const cnt = Math.min(n, rows.length - delAt);
     if (cnt < 1) return;
-    if (!confirm(`确定删除从第 ${selectedRow + 1} 行起的 ${cnt} 行？`)) return;
-    rows.splice(selectedRow, cnt);
-    rowHeights.splice(selectedRow, cnt);
+    if (!confirm(`确定删除从第 ${delAt + 1} 行起的 ${cnt} 行？`)) return;
+    rows.splice(delAt, cnt);
+    rowHeights.splice(delAt, cnt);
     rowOffsets = null;
     selectedRow = -1;
     clampCur();
