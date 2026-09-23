@@ -1553,18 +1553,12 @@
     return !!(cfg && cfg.repo && cfg.token);
   }
 
-  // 将最新数据镜像到本地（本地文件或浏览器），作为离线兜底
-  function mirrorToLocal(list) {
+  // 将远端索引合并到本地镜像（保留已缓存的完整记录，作为离线兜底）
+  function mirrorToLocal(index) {
     try {
-      if (storageMode === "server") {
-        fetch("/api/records", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(list),
-        }).catch(() => {});
-      } else {
-        localStorage.setItem(RECORDS_KEY, JSON.stringify(list));
-      }
+      const cached = new Map(readLocalFull().map((r) => [r.id, r]));
+      const merged = index.map((r) => cached.get(r.id) || r);
+      localStorage.setItem(RECORDS_KEY, JSON.stringify(merged));
     } catch {}
   }
 
@@ -1599,16 +1593,51 @@
     if (storageMode === "detecting") await detectStorageMode();
   }
 
+  // 新存储结构：远端只存「索引」（不含 rows），单条记录按 id 拉取/保存；
+  // localStorage 镜像保存完整记录，作为离线兜底与内容预览缓存
+  function readLocalFull() {
+    try {
+      const s = localStorage.getItem(RECORDS_KEY);
+      const v = s ? JSON.parse(s) : [];
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeLocalFull(list) {
+    try { localStorage.setItem(RECORDS_KEY, JSON.stringify(list)); } catch {}
+  }
+
+  // 索引 + 本地缓存合并：有缓存的记录带 rows（供预览与直接调用），没有的仅元信息
+  function attachCachedRows(index) {
+    const map = new Map(readLocalFull().filter((r) => r && r.rows).map((r) => [r.id, r]));
+    return index.map((r) => {
+      const c = map.get(r.id);
+      return c ? { ...r, rows: c.rows } : r;
+    });
+  }
+
+  function upsertLocalFull(rec) {
+    const list = readLocalFull().filter((r) => r.id !== rec.id);
+    list.unshift(rec);
+    writeLocalFull(list);
+  }
+
+  function removeFromLocalFull(id) {
+    writeLocalFull(readLocalFull().filter((r) => r.id !== id));
+  }
+
   async function loadRecords() {
     await ensureMode();
-    // 配置了 GitHub：优先从 GitHub 读取，实现“打开即同步”
+    // 配置了 GitHub：优先从 GitHub 读取索引，实现“打开即同步”
     if (hasGithubConfig()) {
       setSyncStatus("syncing");
       try {
-        const list = await githubLoad();
-        mirrorToLocal(list);
+        const index = await githubLoadIndex();
+        mirrorToLocal(index);
         setSyncStatus("ok");
-        return list;
+        return attachCachedRows(index);
       } catch (e) {
         setSyncStatus("err", e.message);
       }
@@ -1617,8 +1646,8 @@
       try {
         const res = await fetch("/api/records", { cache: "no-store" });
         if (!res.ok) throw new Error("HTTP " + res.status);
-        const list = await res.json();
-        return Array.isArray(list) ? list : [];
+        const index = await res.json();
+        return attachCachedRows(Array.isArray(index) ? index : []);
       } catch {
         setStorageNotice(true);
         return localLoad();
@@ -1626,7 +1655,8 @@
     }
     if (storageMode === "github") {
       try {
-        return await githubLoad();
+        const index = await githubLoadIndex();
+        return attachCachedRows(index);
       } catch (e) {
         alert("读取 GitHub 数据失败：" + e.message);
         return [];
@@ -1636,39 +1666,67 @@
     return localLoad();
   }
 
-  async function persistRecords(list) {
+  // 按 id 拉取单条完整记录（索引里没有 rows 缓存时调用）
+  async function loadRecordById(id) {
     await ensureMode();
+    if (hasGithubConfig() && storageMode !== "server") {
+      try {
+        const rec = await githubLoadRecord(id);
+        if (rec) upsertLocalFull(rec);
+        return rec;
+      } catch (e) {
+        throw new Error("读取记录失败：" + e.message);
+      }
+    }
+    if (storageMode === "server") {
+      const res = await fetch("/api/records?id=" + encodeURIComponent(id), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const rec = await res.json();
+      if (rec && rec.rows) upsertLocalFull(rec);
+      return rec;
+    }
+    return readLocalFull().find((r) => r.id === id) || null;
+  }
+
+  // 保存单条记录（写单条存储 + 更新索引 + 本地镜像）
+  async function persistRecord(rec) {
+    await ensureMode();
+    rec.updatedAt = rec.updatedAt || new Date().toISOString();
     // 配置了 GitHub：优先写回 GitHub，随后镜像到本地
-    if (hasGithubConfig()) {
+    if (hasGithubConfig() && storageMode !== "server") {
       setSyncStatus("syncing");
       try {
-        const ok = await githubPersist(list);
-        mirrorToLocal(list);
+        const ok = await githubPersistRecord(rec);
+        upsertLocalFull(rec);
         setSyncStatus("ok");
         return ok;
       } catch (e) {
         setSyncStatus("err", e.message);
         alert("保存到 GitHub 失败：" + e.message + "，已改存本地。");
+        upsertLocalFull(rec);
+        return true;
       }
     }
     if (storageMode === "server") {
       try {
-        const res = await fetch("/api/records", {
+        const res = await fetch("/api/records?id=" + encodeURIComponent(rec.id), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(list),
+          body: JSON.stringify(rec),
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
+        upsertLocalFull(rec);
         return true;
       } catch (e) {
         setStorageNotice(true);
         alert("未能保存到项目文件夹，已暂存到浏览器：" + e.message);
-        return localPersist(list);
+        upsertLocalFull(rec);
+        return true;
       }
     }
     if (storageMode === "github") {
       try {
-        return await githubPersist(list);
+        return await githubPersistRecord(rec);
       } catch (e) {
         alert("保存到 GitHub 失败：" + e.message);
         return false;
@@ -1676,39 +1734,64 @@
     }
     setStorageNotice(true, noticeHtml());
     alert('当前为静态网页模式且未配置 GitHub，数据仅暂存到浏览器。请在「GitHub 配置」中填写仓库与 Token 后保存。');
-    return localPersist(list);
+    upsertLocalFull(rec);
+    return true;
+  }
+
+  // 删除单条记录（远端 + 索引 + 本地镜像）
+  async function deleteRecordById(id) {
+    await ensureMode();
+    if (hasGithubConfig() && storageMode !== "server") {
+      setSyncStatus("syncing");
+      try {
+        await githubDeleteRecord(id);
+        setSyncStatus("ok");
+      } catch (e) {
+        setSyncStatus("err", e.message);
+        alert("从 GitHub 删除失败：" + e.message);
+        return false;
+      }
+    } else if (storageMode === "server") {
+      try {
+        const res = await fetch("/api/records?id=" + encodeURIComponent(id), { method: "DELETE" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+      } catch (e) {
+        alert("删除失败：" + e.message);
+        return false;
+      }
+    }
+    removeFromLocalFull(id);
+    return true;
   }
 
   function localLoad() {
-    try {
-      const s = localStorage.getItem(RECORDS_KEY);
-      return s ? JSON.parse(s) : [];
-    } catch {
-      return [];
-    }
+    return readLocalFull();
   }
 
-  function localPersist(list) {
-    try {
-      localStorage.setItem(RECORDS_KEY, JSON.stringify(list));
-      return true;
-    } catch (e) {
-      alert("保存失败：" + e.message);
-      return false;
-    }
+  // GitHub API 读写（静态网页部署模式）：
+  // 索引存 cfg.path（records.json），单条记录存同目录 records/<id>.json
+  function githubBaseDir(cfg) {
+    const p = (cfg.path || GH_PATH_DEFAULT).split("/");
+    p.pop(); // 去掉文件名，得到目录
+    return p.join("/");
   }
 
-  // GitHub API 读写（静态网页部署模式）
   function githubApiUrl(cfg) {
     const p = (cfg.path || GH_PATH_DEFAULT).split("/").map(encodeURIComponent).join("/");
     const base = `https://api.github.com/repos/${cfg.repo}/contents/${p}`;
     return cfg.branch ? `${base}?ref=${encodeURIComponent(cfg.branch)}` : base;
   }
 
-  function githubRequest(cfg, method, body) {
+  function githubFileUrl(cfg, relPath) {
+    const p = relPath.split("/").map(encodeURIComponent).join("/");
+    const base = `https://api.github.com/repos/${cfg.repo}/contents/${p}`;
+    return cfg.branch ? `${base}?ref=${encodeURIComponent(cfg.branch)}` : base;
+  }
+
+  function githubRequestUrl(cfg, method, url, body) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 20000);
-    return fetch(githubApiUrl(cfg), {
+    return fetch(url, {
       method,
       headers: {
         Authorization: `Bearer ${cfg.token}`,
@@ -1721,51 +1804,123 @@
     }).finally(() => clearTimeout(timer));
   }
 
-  async function githubLoad() {
+  function githubRequest(cfg, method, body) {
+    return githubRequestUrl(cfg, method, githubApiUrl(cfg), body);
+  }
+
+  async function githubFetchJson(cfg, relPath) {
+    const res = await githubRequestUrl(cfg, "GET", githubFileUrl(cfg, relPath));
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    return { sha: data.sha, json: JSON.parse(L.decodeUnicodeBase64(data.content)) };
+  }
+
+  async function githubPutJson(cfg, relPath, obj, message, sha) {
+    const payload = {
+      message: message || "更新数据记录（采样计划软件）",
+      content: L.encodeUnicodeBase64(JSON.stringify(obj, null, 2)),
+      ...(sha ? { sha } : {}),
+      ...(cfg.branch ? { branch: cfg.branch } : {}),
+    };
+    const res = await githubRequestUrl(cfg, "PUT", githubFileUrl(cfg, relPath), payload);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error("HTTP " + res.status + "：" + (err.message || "请检查 Token 的 Contents 读/写权限"));
+    }
+    return (await res.json()).content?.sha || null;
+  }
+
+  async function githubDeleteJson(cfg, relPath, sha) {
+    const payload = {
+      message: "删除数据记录（采样计划软件）",
+      sha,
+      ...(cfg.branch ? { branch: cfg.branch } : {}),
+    };
+    const res = await githubRequestUrl(cfg, "DELETE", githubFileUrl(cfg, relPath), payload);
+    if (!res.ok && res.status !== 404) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error("HTTP " + res.status + "：" + (err.message || "删除失败"));
+    }
+  }
+
+  const recRelPath = (id) => githubBaseDir(loadGithubConfig()) + "/records/" + encodeURIComponent(id) + ".json";
+
+  // 读取索引（旧格式兼容：若索引文件本身是完整记录数组，则整体迁移为分文件结构）
+  async function githubLoadIndex() {
     const cfg = loadGithubConfig();
     if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
-    const res = await githubRequest(cfg, "GET");
-    if (res.status === 404) {
+    const data = await githubFetchJson(cfg, cfg.path || GH_PATH_DEFAULT);
+    if (!data) {
       ghSha = null;
       return [];
     }
-    if (!res.ok) throw new Error("HTTP " + res.status + "（请检查仓库名与 Token 权限）");
-    const data = await res.json();
     ghSha = data.sha;
-    const list = JSON.parse(L.decodeUnicodeBase64(data.content));
-    return Array.isArray(list) ? list : [];
+    const idx = data.json;
+    if (!Array.isArray(idx)) return [];
+    if (idx.some((r) => r && Array.isArray(r.rows))) {
+      // 旧格式：整表数组 → 逐条写入 records/<id>.json，索引替换为元信息
+      const newIndex = [];
+      for (const rec of idx) {
+        if (!rec || !rec.id) continue;
+        await githubPutJson(cfg, recRelPath(rec.id), rec, "迁移数据记录（采样计划软件）", null);
+        newIndex.push({ id: rec.id, name: rec.name || "", createdAt: rec.createdAt || "", updatedAt: rec.updatedAt || "" });
+      }
+      ghSha = await githubPutJson(cfg, cfg.path || GH_PATH_DEFAULT, newIndex, "迁移数据记录索引（采样计划软件）", ghSha);
+      return newIndex;
+    }
+    return idx.filter((r) => r && r.id);
   }
 
-  async function githubPersist(list) {
+  async function githubLoadRecord(id) {
     const cfg = loadGithubConfig();
     if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
-    const content = L.encodeUnicodeBase64(JSON.stringify(list, null, 2));
+    const data = await githubFetchJson(cfg, recRelPath(id));
+    return data ? data.json : null;
+  }
+
+  async function githubPersistRecord(rec) {
+    const cfg = loadGithubConfig();
+    if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
+    // 写单条文件（409 冲突重试一次）
+    let sha = null;
+    try {
+      const cur = await githubFetchJson(cfg, recRelPath(rec.id));
+      sha = cur ? cur.sha : null;
+    } catch {}
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (!ghSha) {
-        const res = await githubRequest(cfg, "GET");
-        if (res.status === 404) ghSha = null;
-        else if (res.ok) ghSha = (await res.json()).sha;
-        else throw new Error("HTTP " + res.status);
+      try {
+        await githubPutJson(cfg, recRelPath(rec.id), rec, "更新数据记录（采样计划软件）", sha);
+        break;
+      } catch (e) {
+        if (attempt === 0 && String(e.message).includes("409")) {
+          const cur = await githubFetchJson(cfg, recRelPath(rec.id)).catch(() => null);
+          sha = cur ? cur.sha : null;
+          continue;
+        }
+        throw e;
       }
-      const payload = {
-        message: "更新数据记录（采样计划软件）",
-        content,
-        ...(ghSha ? { sha: ghSha } : {}),
-        ...(cfg.branch ? { branch: cfg.branch } : {}),
-      };
-      const res = await githubRequest(cfg, "PUT", payload);
-      if (res.status === 409 && attempt === 0) {
-        ghSha = null; // 文件被其他端修改，重取 sha 后重试一次
-        continue;
-      }
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error("HTTP " + res.status + "：" + (err.message || "请检查 Token 的 Contents 读/写权限"));
-      }
-      ghSha = (await res.json()).content?.sha || ghSha;
-      return true;
     }
-    throw new Error("更新冲突，请稍后重试");
+    // 更新索引
+    const index = await githubLoadIndex().catch(() => []);
+    const meta = { id: rec.id, name: rec.name || "", createdAt: rec.createdAt || "", updatedAt: rec.updatedAt || "" };
+    const pos = index.findIndex((r) => r.id === rec.id);
+    if (pos >= 0) index[pos] = meta;
+    else index.unshift(meta);
+    const idxSha = await githubFetchJson(cfg, cfg.path || GH_PATH_DEFAULT).then((d) => (d ? d.sha : null)).catch(() => null);
+    ghSha = await githubPutJson(cfg, cfg.path || GH_PATH_DEFAULT, index, "更新数据记录索引（采样计划软件）", idxSha ?? ghSha);
+    return true;
+  }
+
+  async function githubDeleteRecord(id) {
+    const cfg = loadGithubConfig();
+    if (!cfg || !cfg.repo || !cfg.token) throw new Error("未配置 GitHub 仓库或 Token");
+    const cur = await githubFetchJson(cfg, recRelPath(id)).catch(() => null);
+    if (cur) await githubDeleteJson(cfg, recRelPath(id), cur.sha);
+    const index = (await githubLoadIndex().catch(() => [])).filter((r) => r.id !== id);
+    const idxSha = await githubFetchJson(cfg, cfg.path || GH_PATH_DEFAULT).then((d) => (d ? d.sha : null)).catch(() => null);
+    ghSha = await githubPutJson(cfg, cfg.path || GH_PATH_DEFAULT, index, "更新数据记录索引（采样计划软件）", idxSha ?? ghSha);
+    return true;
   }
 
   // ---------- 危害因素库 / 检测项目参考库：加载、保存与自动同步 ----------
@@ -2046,10 +2201,11 @@
   }
 
   function recordSearchText(rec) {
-    return [
-      rec.name,
-      ...rec.rows.map((r) => [r.input.A, r.input.B, r.input.C, r.input.D, r.values.AN].filter((v) => v).join(" ")),
-    ].join(" ").toLowerCase();
+    const parts = [rec.name];
+    if (Array.isArray(rec.rows)) {
+      for (const r of rec.rows) parts.push([r.input.A, r.input.B, r.input.C, r.input.D, r.values.AN].filter((v) => v).join(" "));
+    }
+    return parts.join(" ").toLowerCase();
   }
 
   $("btn-save").addEventListener("click", async () => {
@@ -2066,20 +2222,20 @@
     const now = new Date().toISOString();
     const snap = L.snapshotRows(contentRows);
     const existing = list.find((r) => r.name === name);
+    let rec;
     if (existing) {
       if (!confirm(`已存在同名记录「${name}」，是否覆盖？`)) return;
-      existing.rows = snap;
-      existing.updatedAt = now;
+      rec = { ...existing, rows: snap, updatedAt: now };
     } else {
-      list.unshift({
+      rec = {
         id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
         name,
         createdAt: now,
         updatedAt: now,
         rows: snap,
-      });
+      };
     }
-    if (await persistRecords(list)) alert(`已保存「${name}」（${contentRows.length} 行）。`);
+    if (await persistRecord(rec)) alert(`已保存「${name}」（${contentRows.length} 行）。`);
   });
 
   async function renderDbList() {
@@ -2096,7 +2252,8 @@
     box.innerHTML = shown
       .map((r) => {
         const meta = new Date(r.updatedAt).toLocaleString("zh-CN", { hour12: false });
-        const preview = r.rows
+        const rowsArr = Array.isArray(r.rows) ? r.rows : [];
+        const preview = rowsArr
           .slice(0, 3)
           .map((row) => `${row.input.A || "?"}｜${row.input.D || ""}`)
           .join("；");
@@ -2104,7 +2261,7 @@
           `<div class="db-item" data-id="${escAttr(r.id)}">` +
           `<div class="db-item-main">` +
           `<div class="db-item-name">${escHtml(r.name)}</div>` +
-          `<div class="db-item-meta">${r.rows.length} 行 · 保存于 ${escHtml(meta)}</div>` +
+          `<div class="db-item-meta">${rowsArr.length ? rowsArr.length + " 行 · " : ""}保存于 ${escHtml(meta)}</div>` +
           `<div class="db-item-preview">${escHtml(preview)}</div>` +
           `</div>` +
           `<div class="db-item-actions">` +
@@ -2132,9 +2289,12 @@
     if (!btn) return;
     const item = btn.closest(".db-item");
     const id = item.dataset.id;
-    const rec = (await loadRecords()).find((r) => r.id === id);
-    if (!rec) return;
+    const meta = (await loadRecords()).find((r) => r.id === id);
+    if (!meta) return;
     if (btn.dataset.act === "load") {
+      // 索引项可能不含 rows（本地无缓存），按 id 拉取完整记录
+      const rec = Array.isArray(meta.rows) && meta.rows.length ? meta : await loadRecordById(id);
+      if (!rec || !Array.isArray(rec.rows)) { alert("读取记录内容失败，请检查网络后重试。"); return; }
       const hasData = rows.some((r) => !isBlankRow(r));
       if (hasData && !confirm(`将用「${rec.name}」（${rec.rows.length} 行）替换当前表格，是否继续？`)) return;
       rows = L.restoreRows(rec.rows);
@@ -2146,9 +2306,8 @@
       $("db-modal").classList.add("hidden");
       alert(`已调用「${rec.name}」（${rec.rows.length} 行）。`);
     } else if (btn.dataset.act === "del") {
-      if (!confirm(`确定删除记录「${rec.name}」？此操作不可恢复。`)) return;
-      const list = (await loadRecords()).filter((r) => r.id !== id);
-      if (await persistRecords(list)) {
+      if (!confirm(`确定删除记录「${meta.name}」？此操作不可恢复。`)) return;
+      if (await deleteRecordById(id)) {
         await renderDbList();
         alert("已删除。");
       }
@@ -2180,11 +2339,18 @@
         e.target.value = "";
         return;
       }
-      const map = new Map((await loadRecords()).map((r) => [r.name, r]));
-      for (const r of clean) map.set(r.name, r);
-      if (await persistRecords([...map.values()])) {
+      // 按名称合并：同名取导入版本，逐条保存（单条存储）
+      const existing = await loadRecords();
+      const nameMap = new Map(existing.map((r) => [r.name, r]));
+      let saved = 0;
+      for (const rec of clean) {
+        const dup = nameMap.get(rec.name);
+        const toSave = dup ? { ...dup, rows: rec.rows, updatedAt: new Date().toISOString() } : rec;
+        if (await persistRecord(toSave)) saved++;
+      }
+      if (saved) {
         await renderDbList();
-        alert(`已导入 ${clean.length} 条记录。`);
+        alert(`已导入 ${saved} 条记录。`);
       }
     } catch (err) {
       alert("导入失败：" + err.message);
