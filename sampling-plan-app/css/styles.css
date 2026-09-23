@@ -148,6 +148,52 @@ body {
 .status.err { color: #b3261e; font-weight: 600; cursor: pointer; }
 .search { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; width: 260px; font-size: 13px; }
 
+/* 危害因素库 Excel 式列筛选 */
+.th-filter {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  color: #fff;
+  padding: 0 2px;
+  vertical-align: middle;
+}
+.th-filter:hover { background: var(--primary); border-radius: 3px; }
+.th-filter.active { color: #fff; background: var(--primary); border-radius: 3px; }
+.th-filter.open { color: #fff; background: var(--primary); border-radius: 3px; box-shadow: inset 0 0 0 1px #fff; }
+#hazard-filter-pop {
+  position: fixed;
+  z-index: 3000;
+  width: 250px;
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  font-size: 12px;
+}
+#hazard-filter-pop .hfp-title { padding: 8px 10px 4px; font-weight: 600; color: #334155; }
+#hazard-filter-pop .hfp-ops { display: flex; gap: 6px; padding: 4px 10px 6px; border-bottom: 1px solid var(--line); }
+#hazard-filter-pop .hfp-ops button {
+  border: 1px solid var(--line); background: #f8fafc; border-radius: 5px;
+  padding: 2px 8px; cursor: pointer; font-size: 11px; color: #475569;
+}
+#hazard-filter-pop .hfp-ops button:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
+#hazard-filter-pop .hfp-list { overflow: auto; flex: 1; padding: 4px 2px; }
+#hazard-filter-pop .hfp-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 8px; cursor: pointer; border-radius: 4px;
+}
+#hazard-filter-pop .hfp-item:hover { background: #eef2f7; }
+#hazard-filter-pop .hfp-val { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#hazard-filter-pop .hfp-cnt { color: #94a3b8; font-size: 11px; }
+#hazard-filter-pop .hfp-foot {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 6px 10px; border-top: 1px solid var(--line);
+}
+
 /* 网格 */
 .grid-wrap {
   flex: 1;

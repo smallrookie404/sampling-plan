@@ -2478,15 +2478,165 @@
   }
 
   function renderHazardHead() {
+    // 筛选模式下每列表头显示下拉箭头（Excel 式）；有激活筛选的列高亮，当前打开弹层的列为蓝色选中态。
+    // 注意：HAZARD_HEADERS 首列是「序号」，不在 HAZARD_KEYS 中，键索引 = 表头索引 - 1
     $("hazard-head").innerHTML =
-      `<tr>${HAZARD_HEADERS.map((h) => `<th>${h}</th>`).join("")}</tr>`;
+      `<tr>${HAZARD_HEADERS.map((h, ci) => {
+        if (ci === 0) return `<th>${h}</th>`;
+        const ki = ci - 1;
+        return `<th>${h}${hazardFilterMode ? `<button class="th-filter${hazardFilter[ki] ? " active" : ""}${hazardFilterCi === ki ? " open" : ""}" data-ki="${ki}" title="筛选本列">▼</button>` : ""}</th>`;
+      }).join("")}</tr>`;
   }
+
+  // ---------- 危害因素库 Excel 式列筛选 ----------
+  // hazardFilter: { 列索引: Set(勾选的显示值) }；无键表示该列未筛选
+  let hazardFilter = {};
+  let hazardFilterMode = false; // 是否开启筛选模式（表头显示每列箭头）
+  let hazardFilterCi = -1; // 当前打开弹层的列
+
+  function closeHazardFilterPop() {
+    const pop = $("hazard-filter-pop");
+    if (pop) pop.remove();
+    if (hazardFilterCi >= 0) {
+      hazardFilterCi = -1;
+      renderHazardHead(); // 移除列箭头的蓝色选中态
+    }
+    document.removeEventListener("click", hazardFilterOutside, true);
+  }
+
+  function hazardFilterOutside(e) {
+    const pop = $("hazard-filter-pop");
+    if (pop && !pop.contains(e.target) && !e.target.closest(".th-filter")) closeHazardFilterPop();
+  }
+
+  function openHazardFilter(ki, anchor) {
+    closeHazardFilterPop();
+    hazardFilterCi = ki;
+    // 计数基准：搜索 + 其他列筛选后的行（不含本列），与列表实际显示一致
+    const q = $("hazard-search").value.trim();
+    const others = Object.entries(hazardFilter).filter(([k]) => Number(k) !== ki);
+    const base = hazardFactors.filter((h) =>
+      (!q || h.rec.includes(q) || h.name.includes(q)) &&
+      others.every(([k, set]) => set.has(fmt(h[HAZARD_KEYS[k]])))
+    );
+    const counts = new Map();
+    for (const h of base) {
+      const v = fmt(h[HAZARD_KEYS[ki]]);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const values = [...counts.keys()].sort((a, b) => a.localeCompare(b, "zh-CN"));
+    const checked = hazardFilter[ki] || new Set(values);
+    const headerName = HAZARD_HEADERS[HAZARD_KEYS.indexOf(HAZARD_KEYS[ki]) + 1] || HAZARD_KEYS[ki];
+    const pop = document.createElement("div");
+    pop.id = "hazard-filter-pop";
+    pop.innerHTML =
+      `<div class="hfp-title">筛选（${escHtml(headerName)}）</div>` +
+      `<div class="hfp-ops">` +
+      `<button type="button" data-op="all">全选</button>` +
+      `<button type="button" data-op="none">反选</button>` +
+      `<button type="button" data-op="clear">清除本列</button>` +
+      `</div>` +
+      `<div class="hfp-list">` +
+      values.map((v) => {
+        const has = checked.has(v);
+        return `<label class="hfp-item"><input type="checkbox" value="${escAttr(v)}"${has ? " checked" : ""}/>` +
+          `<span class="hfp-val">${v === "" ? "（空）" : escHtml(v)}</span>` +
+          `<span class="hfp-cnt">${counts.get(v)}</span></label>`;
+      }).join("") +
+      `</div>` +
+      `<div class="hfp-foot"><button type="button" class="btn small primary" data-op="ok">确定</button>` +
+      `<button type="button" class="btn small ghost" data-op="cancel">取消</button></div>`;
+    document.body.appendChild(pop);
+    const r = anchor.getBoundingClientRect();
+    pop.style.left = Math.min(r.left, window.innerWidth - 260) + "px";
+    pop.style.top = Math.min(r.bottom + 4, window.innerHeight - 320) + "px";
+    // 勾选即时生效（Excel 是点确定生效，这里即时刷新更直观；取消则还原）
+    const snapshot = new Set(checked);
+    // 从弹层勾选框读取选中值集合（存字符串值，不能存元素）
+    const readChecked = () => new Set([...pop.querySelectorAll(".hfp-item input:checked")].map((el) => el.value));
+    pop.addEventListener("change", () => {
+      const cur = readChecked();
+      if (cur.size === values.length) delete hazardFilter[ki];
+      else hazardFilter[ki] = cur;
+      renderHazard();
+      renderHazardHead();
+      reopenAt(anchor);
+    });
+    pop.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-op]");
+      if (!btn) return;
+      const op = btn.dataset.op;
+      if (op === "all" || op === "none") {
+        const target = op === "all";
+        for (const el of pop.querySelectorAll(".hfp-item input")) el.checked = target;
+      } else if (op === "clear") {
+        delete hazardFilter[ki];
+        closeHazardFilterPop();
+        renderHazard();
+        renderHazardHead();
+        return;
+      } else if (op === "cancel") {
+        // 取消：清除本列筛选，恢复显示全部内容（不保留打开弹层时的状态）
+        delete hazardFilter[ki];
+        closeHazardFilterPop();
+        renderHazard();
+        renderHazardHead();
+        return;
+      } else if (op === "ok") {
+        const cur = readChecked();
+        if (cur.size === values.length) delete hazardFilter[ki];
+        else hazardFilter[ki] = cur;
+        closeHazardFilterPop();
+        renderHazard();
+        renderHazardHead();
+        return;
+      }
+      // 全选/反选后即时刷新
+      const cur = readChecked();
+      if (cur.size === values.length) delete hazardFilter[ki];
+      else hazardFilter[ki] = cur;
+      renderHazard();
+      renderHazardHead();
+      reopenAt(anchor);
+    });
+    function reopenAt(a) {
+      // 重渲染表头后按钮节点被替换，重新定位弹层
+      const btn2 = document.querySelector(`.th-filter[data-ki="${ki}"]`);
+      if (btn2 && hazardFilterCi === ki) {
+        const r2 = btn2.getBoundingClientRect();
+        pop.style.left = Math.min(r2.left, window.innerWidth - 260) + "px";
+        pop.style.top = Math.min(r2.bottom + 4, window.innerHeight - 320) + "px";
+      }
+    }
+    setTimeout(() => document.addEventListener("click", hazardFilterOutside, true), 0);
+  }
+
+  $("hazard-head").addEventListener("click", (e) => {
+    const btn = e.target.closest(".th-filter");
+    if (!btn) return;
+    e.stopPropagation();
+    const ki = Number(btn.dataset.ki);
+    if (hazardFilterCi === ki) closeHazardFilterPop();
+    else openHazardFilter(ki, btn);
+  });
+
+  // 工具栏「筛选」按钮：切换筛选模式（表头显示/收起每列箭头）；
+  // 关闭时清空全部列筛选，恢复显示原始内容
+  $("hazard-filter").addEventListener("click", () => {
+    hazardFilterMode = !hazardFilterMode;
+    closeHazardFilterPop();
+    if (!hazardFilterMode) hazardFilter = {};
+    renderHazardHead();
+    renderHazard();
+  });
 
   function renderHazard() {
     const q = $("hazard-search").value.trim();
     const list = hazardFactors
       .map((h, idx) => ({ h, idx }))
-      .filter((x) => !q || x.h.rec.includes(q) || x.h.name.includes(q));
+      .filter((x) => !q || x.h.rec.includes(q) || x.h.name.includes(q))
+      // 列筛选：每列勾选值之间是「或」，列与列之间是「与」（Excel 语义）
+      .filter((x) => Object.entries(hazardFilter).every(([ci, set]) => set.has(fmt(x.h[HAZARD_KEYS[ci]]))));
     const body = $("hazard-body");
     const wrap = document.querySelector(".hazard-wrap");
     // 窗口化渲染：只生成可见行，大幅降低点击/删除/搜索时的 DOM 开销
