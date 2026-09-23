@@ -228,7 +228,8 @@ table.grid {
   line-height: 1.3;
   padding: 4px 2px;
 }
-.grid thead tr.group-row th { background: var(--group-bg); font-weight: 600; font-size: 12px; }
+/* 组标题行高度固定 30px，与字段行的 sticky 偏移 top:30px 精确衔接，两行无空隙 */
+.grid thead tr.group-row th { background: var(--group-bg); font-weight: 600; font-size: 12px; top: 0; height: 30px; padding: 0 2px; }
 .grid thead th.corner { background: var(--primary-dark); }
 .grid thead th.field { top: 30px; }
 #main-grid thead th.field::after {

@@ -1733,7 +1733,7 @@
       }
     }
     setStorageNotice(true, noticeHtml());
-    alert('当前为静态网页模式且未配置 GitHub，数据仅暂存到浏览器。请在「GitHub 配置」中填写仓库与 Token 后保存。');
+    // 静态模式未配置 GitHub：静默存浏览器，不再弹提示
     upsertLocalFull(rec);
     return true;
   }
@@ -2208,23 +2208,24 @@
     return parts.join(" ").toLowerCase();
   }
 
-  $("btn-save").addEventListener("click", async () => {
+  // 保存当前表格为一条数据记录（btn-save 与上传成功后联动共用）
+  async function saveRecordFlow(defaultName) {
     const contentRows = trimBlankRows(rows);
-    if (!contentRows.length) { alert("当前没有可保存的数据。"); return; }
+    if (!contentRows.length) { alert("当前没有可保存的数据。"); return false; }
     const name = await askInput({
       title: "保存数据",
       hint: "为当前数据命名，之后可在「数据记录」中搜索并调用，减少重复输入",
-      value: defaultRecordName(),
+      value: defaultName,
     });
-    if (name === null) return;
-    if (name === "") { alert("名称不能为空。"); return; }
+    if (name === null) return false;
+    if (name === "") { alert("名称不能为空。"); return false; }
     const list = await loadRecords();
     const now = new Date().toISOString();
     const snap = L.snapshotRows(contentRows);
     const existing = list.find((r) => r.name === name);
     let rec;
     if (existing) {
-      if (!confirm(`已存在同名记录「${name}」，是否覆盖？`)) return;
+      if (!confirm(`已存在同名记录「${name}」，是否覆盖？`)) return false;
       rec = { ...existing, rows: snap, updatedAt: now };
     } else {
       rec = {
@@ -2235,7 +2236,13 @@
         rows: snap,
       };
     }
-    if (await persistRecord(rec)) alert(`已保存「${name}」（${contentRows.length} 行）。`);
+    const ok = await persistRecord(rec);
+    if (ok) alert(`已保存「${name}」（${contentRows.length} 行）。`);
+    return ok;
+  }
+
+  $("btn-save").addEventListener("click", async () => {
+    await saveRecordFlow(defaultRecordName());
   });
 
   async function renderDbList() {
@@ -2861,6 +2868,8 @@
     exportWorkbookBytes: exportWorkbook,
     exportName: () => "系统测点布局调查_自动计算区.xlsx",
     countErrors: () => L.countErrors(rows).total,
+    // 上传成功后联动保存：传入默认名（如「25年XX公司」），弹出保存命名框走统一保存链路
+    promptSave: (defaultName) => saveRecordFlow(defaultName || defaultRecordName()),
   };
 
   $("btn-export").addEventListener("click", async () => {

@@ -1065,6 +1065,16 @@
             log('同步团队信息失败：' + e.message);
             syncMsg = '，团队信息同步失败：' + e.message;
           }
+          // 上传成功后询问是否保存数据，默认名：年份 + 公司名称（从项目编号取年份前缀）
+          try {
+            const ym = /^BTC(\d{2})/.exec(selectedProject.code || '');
+            const defaultName = (ym ? ym[1] + '年' : '') + (selectedProject.belongInspectName || '');
+            if (window.SamplingApp && window.SamplingApp.promptSave) {
+              setTimeout(function () {
+                window.SamplingApp.promptSave(defaultName).catch(function () {});
+              }, 300);
+            }
+          } catch (e) {}
           if (msgs.length > 0) {
             log('导入完成，但有以下提示：' + msgs.join('；'));
             alert('导入完成，提示：\n' + msgs.join('\n'));
