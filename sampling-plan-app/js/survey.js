@@ -643,6 +643,20 @@
     renderSurvey();
   });
 
+  // 清空录入区：6 个子表全部重置为默认 10 行空表
+  $S("survey-clear").addEventListener("click", () => {
+    if (!confirm("确定清空调查表全部 6 个表格的录入内容？此操作不可恢复。")) return;
+    sCloseWsPanel();
+    sEditing = false;
+    sEditOriginal = null;
+    sCur = sSelAnchor = sSelStart = sSelEnd = null;
+    SURVEY_SHEETS.forEach((sh) => {
+      surveyData[sh.key] = Array.from({ length: 10 }, () => sh.headers.map(() => ""));
+    });
+    surveySave();
+    renderSurvey();
+  });
+
   $S("survey-del").addEventListener("click", async () => {
     const rect = sSelRect();
     const selRows = rect ? rect.r2 - rect.r1 + 1 : 1;
@@ -660,20 +674,84 @@
     renderSurvey();
   });
 
-  // 导出当前子表为 xlsx（复用主应用的 xlsxio，自建 aoa→sheet 结构）
-  $S("survey-export").addEventListener("click", async () => {
-    const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
-    const rows = surveyRows();
+  // xlsx 导出辅助（供主界面导出菜单生成「调查表 6 子表合一份」xlsx）
+  function sExportAoaSheet(name, headers, rows) {
+    // xlsxio 通用形式：rows 为纯 aoa（首行表头）
+    return { name, rows: [headers, ...rows.map((r) => r.map((v) => (v == null ? "" : String(v))))] };
+  }
+  $S("survey-export").addEventListener("click", async (e) => {
     if (!window.SamplingApp) { alert("导出组件未就绪，请稍后重试。"); return; }
-    const X = await import("./js/xlsxio.js").then((m) => m.default || m);
-    const aoa = [sh.headers, ...rows];
-    const grid = aoa.map((row) => row.map((v) => ({ v: v == null ? "" : String(v) })));
-    const bytes = await X.writeWorkbook([{ name: sh.name, grid, rows: grid.length, cols: sh.headers.length }]);
-    X.downloadBlob(new Blob([bytes], { type: "application/octet-stream" }), `${sh.name}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    e.stopPropagation();
+    if (sExportMenu) { sCloseExportMenu(); return; }
+    const menu = document.createElement("div");
+    menu.className = "survey-export-menu";
+    menu.innerHTML =
+      `<div class="survey-export-item" data-k="main">测点布局调查（主表格）</div>` +
+      `<div class="survey-export-item" data-k="survey">调查表（6 个子表合一份）</div>` +
+      `<div class="survey-export-item" data-k="cur">仅当前子表（${escHtml(SURVEY_SHEETS.find((s) => s.key === surveyCur).name)}）</div>`;
+    const r = e.currentTarget.getBoundingClientRect();
+    menu.style.left = r.left + "px";
+    menu.style.top = r.bottom + 2 + "px";
+    document.body.appendChild(menu);
+    sExportMenu = menu;
   });
+  // 加载 xlsxio（经典脚本，挂 window.SamplingXlsx；与主应用 ensureXlsx 同机制，动态 import 不适用）
+  let sXlsxPromise = null;
+  function sEnsureXlsx() {
+    if (window.SamplingXlsx) return Promise.resolve(window.SamplingXlsx);
+    if (!sXlsxPromise) {
+      sXlsxPromise = (async () => {
+        const load = (src) => new Promise((res, rej) => {
+          const s = document.createElement("script");
+          s.src = src; s.onload = res; s.onerror = () => rej(new Error("加载失败: " + src));
+          document.head.appendChild(s);
+        });
+        if (!window.JSZip) await load("js/jszip.min.js");
+        await load("js/xlsxio.js");
+        if (!window.SamplingXlsx) throw new Error("xlsx 模块加载失败");
+        return window.SamplingXlsx;
+      })();
+    }
+    return sXlsxPromise;
+  }
 
-  // 对外接口：页签切换时刷新渲染
-  window.SurveySheets = { refresh: () => { buildSurveyTabs(); renderSurvey(); } };
+  // 裁剪掉尾部全空行（保存数据时减小体积）
+  function sTrimRows(rows) {
+    const arr = (rows || []).map((r) => r.map((v) => (v == null ? "" : String(v))));
+    while (arr.length && arr[arr.length - 1].every((v) => v === "")) arr.pop();
+    return arr;
+  }
+  function sAllEmpty(data) {
+    const sh0 = SURVEY_SHEETS[0];
+    return !data || SURVEY_SHEETS.every((sh) => !(data[sh.key] || []).some((r) => (r || []).some((v) => v !== "")));
+  }
+
+  // 对外接口：页签切换时刷新渲染；供主界面导出菜单生成「调查表 6 子表合一份」xlsx；供保存/调用数据读写 6 表内容
+  window.SurveySheets = {
+    refresh: () => { buildSurveyTabs(); renderSurvey(); },
+    exportAllWorkbook: async () => {
+      const X = await sEnsureXlsx();
+      const sheets = SURVEY_SHEETS.map((sh) => sExportAoaSheet(sh.name, sh.headers, surveyData[sh.key] || []));
+      return X.writeWorkbook(sheets);
+    },
+    // 保存数据用：6 表内容（已裁剪空行）；全部为空时返回 null
+    getData: () => {
+      const rows = surveyRows(); // 确保内存数据已初始化
+      void rows;
+      const out = {};
+      SURVEY_SHEETS.forEach((sh) => { out[sh.key] = sTrimRows(surveyData[sh.key]); });
+      return sAllEmpty(out) ? null : out;
+    },
+    // 调用数据用：写入 6 表内容（缺省子表补默认 10 行空表）并重渲染
+    setData: (data) => {
+      surveyData = data && typeof data === "object" ? data : {};
+      SURVEY_SHEETS.forEach((sh) => {
+        if (!Array.isArray(surveyData[sh.key])) surveyData[sh.key] = Array.from({ length: 10 }, () => sh.headers.map(() => ""));
+      });
+      surveySave();
+      renderSurvey();
+    },
+  };
 
   // 加载完成立即渲染一次（面板隐藏不影响 DOM 渲染），确保进入页签即见全部子表按钮
   buildSurveyTabs();

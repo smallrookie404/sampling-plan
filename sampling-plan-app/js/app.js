@@ -609,17 +609,56 @@
   });
 
   // ---------- 通用输入弹窗 ----------
-  function askInput({ title, hint, value, type }) {
+  function askInput({ title, hint, value, type, recordSearch }) {
     return new Promise((resolve) => {
       const modal = $("prompt-modal");
       const input = $("prompt-input");
       const okBtn = $("prompt-ok");
       const cancelBtn = $("prompt-cancel");
+      const wrap = $("prompt-search-wrap");
+      const searchBox = $("prompt-search");
+      const listBox = $("prompt-rec-list");
       $("prompt-title").textContent = title || "输入";
       $("prompt-hint").textContent = hint || "";
       $("prompt-msg").textContent = "";
       input.type = type || "text";
       input.value = value || "";
+      // 记录搜索区（保存数据弹窗用）：展示已存记录，点选即填入名称（确认后覆盖该记录）
+      let records = [];
+      if (recordSearch) {
+        wrap.classList.remove("hidden");
+        searchBox.value = "";
+        listBox.innerHTML = `<div class="prompt-rec-empty">加载中…</div>`;
+        recordSearch().then((list) => {
+          records = list || [];
+          renderRecList("");
+        });
+        searchBox.oninput = () => renderRecList(searchBox.value.trim().toLowerCase());
+      } else {
+        wrap.classList.add("hidden");
+        listBox.innerHTML = "";
+        searchBox.oninput = null;
+      }
+      function renderRecList(q) {
+        const shown = q ? records.filter((r) => (r._search || "").includes(q) || (r.name || "").toLowerCase().includes(q)) : records;
+        listBox.innerHTML = shown.length
+          ? shown
+              .map(
+                (r) =>
+                  `<div class="prompt-rec-item" data-name="${escAttr(r.name)}">` +
+                  `<span class="prompt-rec-name">${escHtml(r.name)}</span>` +
+                  `<span class="prompt-rec-meta">${escHtml(r._meta || "")}</span>` +
+                  `</div>`
+              )
+              .join("")
+          : `<div class="prompt-rec-empty">${q ? "无匹配记录" : "暂无已保存记录"}</div>`;
+      }
+      listBox.onclick = (e) => {
+        const item = e.target.closest(".prompt-rec-item");
+        if (!item) return;
+        input.value = item.dataset.name;
+        input.focus();
+      };
       modal.classList.remove("hidden");
       input.focus();
       input.select();
@@ -628,6 +667,7 @@
         okBtn.onclick = null;
         cancelBtn.onclick = null;
         input.onkeydown = null;
+        listBox.onclick = null;
       };
       okBtn.onclick = () => { const v = input.value.trim(); cleanup(); resolve(v); };
       cancelBtn.onclick = () => { cleanup(); resolve(null); };
@@ -2193,11 +2233,9 @@
 
   function defaultRecordName() {
     const first = rows.find((r) => !isBlankRow(r));
-    const a = first && first.input.A ? first.input.A : "未命名车间";
+    const a = first && first.input.A ? first.input.A : "";
     const d = first && first.input.D ? first.input.D : "";
-    const now = new Date();
-    const ymd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    return `${a}_${d}_${ymd}`;
+    return [a, d].filter(Boolean).join("_");
   }
 
   function recordSearchText(rec) {
@@ -2214,14 +2252,24 @@
     if (!contentRows.length) { alert("当前没有可保存的数据。"); return false; }
     const name = await askInput({
       title: "保存数据",
-      hint: "为当前数据命名，之后可在「数据记录」中搜索并调用，减少重复输入",
+      hint: "为当前数据命名，也可在下方搜索并点选已有记录名，确定后覆盖该记录",
       value: defaultName,
+      // 已保存记录列表（点选填入名称，覆盖保存）；_meta 显示行数与保存时间
+      recordSearch: async () =>
+        (await loadRecords())
+          .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
+          .map((r) => ({
+            name: r.name,
+            _meta: `${Array.isArray(r.rows) ? r.rows.length + " 行 · " : ""}保存于 ${new Date(r.updatedAt).toLocaleString("zh-CN", { hour12: false })}`,
+          })),
     });
     if (name === null) return false;
     if (name === "") { alert("名称不能为空。"); return false; }
     const list = await loadRecords();
     const now = new Date().toISOString();
     const snap = L.snapshotRows(contentRows);
+    // 附带调查表 6 表数据（全部为空时不写入）
+    const surveyData = window.SurveySheets && window.SurveySheets.getData ? window.SurveySheets.getData() : null;
     const existing = list.find((r) => r.name === name);
     let rec;
     if (existing) {
@@ -2236,8 +2284,10 @@
         rows: snap,
       };
     }
+    if (surveyData) rec.survey = surveyData;
+    else delete rec.survey;
     const ok = await persistRecord(rec);
-    if (ok) alert(`已保存「${name}」（${contentRows.length} 行）。`);
+    if (ok) alert(`已保存「${name}」（${contentRows.length} 行${surveyData ? "，含调查表" : ""}）。`);
     return ok;
   }
 
@@ -2310,8 +2360,10 @@
       selectedRow = -1;
       recomputeAndRefresh();
       renderWindow();
+      // 同步还原调查表 6 表数据（旧记录无 survey 字段时清空为默认空表）
+      if (window.SurveySheets && window.SurveySheets.setData) window.SurveySheets.setData(rec.survey || null);
       $("db-modal").classList.add("hidden");
-      alert(`已调用「${rec.name}」（${rec.rows.length} 行）。`);
+      alert(`已调用「${rec.name}」（${rec.rows.length} 行${rec.survey ? "，含调查表" : ""}）。`);
     } else if (btn.dataset.act === "del") {
       if (!confirm(`确定删除记录「${meta.name}」？此操作不可恢复。`)) return;
       if (await deleteRecordById(id)) {
@@ -2884,12 +2936,43 @@
     },
   };
 
-  $("btn-export").addEventListener("click", async () => {
-    const { total } = L.countErrors(rows);
-    if (total > 0 && !confirm(`当前有 ${total} 处校验错误，仍要导出吗？`)) return;
-    const bytes = await exportWorkbook();
-    const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    X.downloadBlob(blob, "系统测点布局调查_自动计算区.xlsx");
+  // 导出选择菜单：测点布局调查（主表格）或 调查表（6 个子表合一份）
+  let exportMenu = null;
+  function closeExportMenu() {
+    if (exportMenu) { exportMenu.remove(); exportMenu = null; }
+  }
+  $("btn-export").addEventListener("click", async (e) => {
+    if (exportMenu) { closeExportMenu(); return; }
+    const menu = document.createElement("div");
+    menu.className = "survey-export-menu"; // 复用调查表菜单样式
+    menu.innerHTML =
+      `<div class="survey-export-item" data-k="main">测点布局调查（主表格）</div>` +
+      `<div class="survey-export-item" data-k="survey">调查表（6 个子表合一份）</div>`;
+    const r = e.currentTarget.getBoundingClientRect();
+    menu.style.left = r.left + "px";
+    menu.style.top = r.bottom + 2 + "px";
+    document.body.appendChild(menu);
+    exportMenu = menu;
+  });
+  document.addEventListener("mousedown", async (e) => {
+    if (!exportMenu) return;
+    const item = e.target.closest(".survey-export-item");
+    if (!item || !exportMenu.contains(item)) { if (!e.target.closest("#btn-export")) closeExportMenu(); return; }
+    e.preventDefault();
+    closeExportMenu();
+    if (item.dataset.k === "main") {
+      const { total } = L.countErrors(rows);
+      if (total > 0 && !confirm(`当前有 ${total} 处校验错误，仍要导出吗？`)) return;
+      const bytes = await exportWorkbook();
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      X.downloadBlob(blob, "系统测点布局调查_自动计算区.xlsx");
+    } else {
+      if (!window.SurveySheets || !window.SurveySheets.exportAllWorkbook) { alert("调查表模块未就绪，请稍后重试。"); return; }
+      await ensureXlsx(); // X 在此分支尚未初始化，先加载
+      const bytes = await window.SurveySheets.exportAllWorkbook();
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      X.downloadBlob(blob, `现场调查表汇总_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    }
   });
 
   // 数据上传：切换到上传视图（登录/选项目/上传当前表格导出的 Excel）

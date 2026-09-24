@@ -1026,23 +1026,45 @@
       generateExportFile();
     });
 
-    $('btnUpload').addEventListener('click', async function () {
+    // 自动生成调查表（6 合一）导出 Excel 作为上传文件
+    let selectedSurveyFile = null;
+    async function generateSurveyFile() {
+      const fileNameEl = $('fileNameSurvey');
+      try {
+        if (!window.SurveySheets || !window.SurveySheets.exportAllWorkbook) throw new Error('调查表导出模块未就绪');
+        const bytes = await window.SurveySheets.exportAllWorkbook();
+        const name = '现场调查表汇总_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+        selectedSurveyFile = new File([bytes], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        if (fileNameEl) fileNameEl.textContent = name + '（' + Math.max(1, Math.round(bytes.length / 1024)) + ' KB）';
+        log('已生成上传文件：' + name);
+      } catch (e) {
+        selectedSurveyFile = null;
+        if (fileNameEl) fileNameEl.textContent = '';
+        log('生成调查表文件失败：' + e.message);
+      }
+    }
+
+    // 上传流程共用：生成文件 → 确认 → 上传 → 同步团队信息 → 提示保存
+    async function runUploadFlow(opts) {
       if (!selectedProject) { log('请先查询项目（输入项目编号后点搜索并选择）'); return; }
       if (!token) { showLogin(); return; }
-      const errs = window.SamplingApp && window.SamplingApp.countErrors ? window.SamplingApp.countErrors() : 0;
-      if (errs > 0 && !confirm('当前表格有 ' + errs + ' 处校验错误，仍要上传吗？')) return;
-      // 上传前重新生成一次，确保文件为最新表格内容
-      await generateExportFile();
-      if (!selectedFile) { log('上传文件生成失败，请先处理表格内容后重试'); return; }
+      const isSurvey = opts.kind === 'survey';
+      const btn = $(isSurvey ? 'btnUploadSurvey' : 'btnUpload');
+      // 上传前重新生成一次，确保文件为最新内容
+      const file = isSurvey ? (await generateSurveyFile(), selectedSurveyFile) : (await generateExportFile(), selectedFile);
+      if (!file) { log('上传文件生成失败，请先处理表格内容后重试'); return; }
+      if (!isSurvey) {
+        const errs = window.SamplingApp && window.SamplingApp.countErrors ? window.SamplingApp.countErrors() : 0;
+        if (errs > 0 && !confirm('当前表格有 ' + errs + ' 处校验错误，仍要上传吗？')) return;
+      }
       const projectId = selectedProject.id;
-      const ok = confirm('确认将文件上传到项目 ' + selectedProject.code + '（ID=' + projectId + '）？\n\n' + selectedFile.name);
+      const ok = confirm('确认将文件上传到项目 ' + selectedProject.code + '（ID=' + projectId + '）？\n\n' + file.name);
       if (!ok) return;
-      const btn = $('btnUpload');
       btn.disabled = true;
       btn.textContent = '上传中...';
       try {
-        log('开始上传（主体：' + userInfo.userCode + ' ' + userInfo.userName + '）：' + selectedFile.name);
-        const r = await uploadExcel(token, orgId, projectId, selectedFile);
+        log('开始上传（主体：' + userInfo.userCode + ' ' + userInfo.userName + '）：' + file.name);
+        const r = await uploadExcel(token, orgId, projectId, file);
         const d = r.data;
         if (r.status === 200 && d && d.code === '200') {
           const msgs = [];
@@ -1092,8 +1114,25 @@
         alert('上传异常：' + e.message);
       } finally {
         btn.disabled = false;
-        btn.textContent = '上传到现场调查';
+        btn.textContent = isSurvey ? '上传调查表（6 合一）' : '上传测点布局调查';
       }
+    }
+
+    $('btnUpload').addEventListener('click', function () { runUploadFlow({ kind: 'main' }); });
+    $('btnUploadSurvey').addEventListener('click', function () { runUploadFlow({ kind: 'survey' }); });
+
+    // 调查表上传区：点击/拖放重新生成
+    const dropZoneSurvey = $('dropZoneSurvey');
+    dropZoneSurvey.addEventListener('click', function () { generateSurveyFile(); });
+    dropZoneSurvey.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      dropZoneSurvey.classList.add('dragover');
+    });
+    dropZoneSurvey.addEventListener('dragleave', function () { dropZoneSurvey.classList.remove('dragover'); });
+    dropZoneSurvey.addEventListener('drop', function (e) {
+      e.preventDefault();
+      dropZoneSurvey.classList.remove('dragover');
+      generateSurveyFile();
     });
 
     // 视图切换：返回采样计划 / 退出登录

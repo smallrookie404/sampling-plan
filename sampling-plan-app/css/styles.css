@@ -222,6 +222,10 @@ table.survey td input:focus, table.survey td textarea:focus { box-shadow: inset 
 .survey-ws-panel { position: fixed; z-index: 1000; background: #fff; border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.18); max-height: 220px; overflow-y: auto; }
 .survey-ws-panel .survey-ws-opt { padding: 5px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .survey-ws-panel .survey-ws-opt:hover { background: var(--primary-light, #e8f0f8); }
+/* 导出选择菜单：body 级 fixed 定位 */
+.survey-export-menu { position: fixed; z-index: 1000; background: #fff; border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.18); min-width: 220px; }
+.survey-export-menu .survey-export-item { padding: 8px 14px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.survey-export-menu .survey-export-item:hover { background: var(--primary-light, #e8f0f8); }
 
 /* 网格 */
 .grid-wrap {
@@ -506,6 +510,16 @@ body.fullscreen-mode .tab-panel.active {
 .modal-body ol, .modal-body ul { margin: 4px 0 0; padding-left: 22px; }
 .modal-body .tip { color: #92400e; background: #fef3c7; border-radius: 6px; padding: 8px 12px; }
 .prompt-hint { color: #475569; margin: 4px 0 8px; }
+/* 保存数据弹窗内的记录搜索列表 */
+#prompt-search-wrap { margin-top: 8px; }
+#prompt-search { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+.prompt-rec-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.prompt-rec-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.prompt-rec-item:last-child { border-bottom: none; }
+.prompt-rec-item:hover { background: var(--primary-light, #e8f0f8); }
+.prompt-rec-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prompt-rec-meta { color: #64748b; font-size: 11.5px; white-space: nowrap; }
+.prompt-rec-empty { padding: 10px; text-align: center; color: #94a3b8; font-size: 12.5px; }
 .prompt-input { width: 100% !important; box-sizing: border-box; margin-bottom: 4px; }
 .err-msg { color: #b3261e; font-size: 12px; min-height: 16px; margin: 2px 0 6px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }

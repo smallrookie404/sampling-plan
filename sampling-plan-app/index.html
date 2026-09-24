@@ -247,7 +247,8 @@
         <button id="survey-insert" class="btn small">插入行</button>
         <button id="survey-copy" class="btn small">复制行</button>
         <button id="survey-del" class="btn small danger">删除行</button>
-        <button id="survey-export" class="btn small ghost">导出当前表</button>
+        <button id="survey-clear" class="btn small danger">清空录入区</button>
+        <button id="survey-export" class="btn small ghost" hidden>导出当前表</button>
         <span id="survey-status" class="status"></span>
       </div>
     </div>
@@ -328,6 +329,10 @@
         <p id="prompt-hint" class="prompt-hint"></p>
         <input id="prompt-input" class="search prompt-input" type="text" />
         <p id="prompt-msg" class="err-msg"></p>
+        <div id="prompt-search-wrap" class="hidden">
+          <input id="prompt-search" class="search" type="text" placeholder="搜索已保存的记录…" autocomplete="off" />
+          <div id="prompt-rec-list" class="prompt-rec-list"></div>
+        </div>
         <div class="modal-actions">
           <button id="prompt-ok" class="btn primary">确定</button>
         </div>
@@ -495,14 +500,23 @@
         </div>
 
         <div class="field">
-          <label>上传文件（自动生成）</label>
+          <label>测点布局调查表格（自动生成）</label>
           <div class="drop-zone" id="dropZone">
-            点击可重新生成当前表格的导出 Excel
+            点击可重新生成测点布局表格的导出 Excel
             <div class="filename" id="fileName"></div>
           </div>
+          <button class="btn" id="btnUpload" style="width:100%; margin-top:6px;">上传测点布局调查</button>
         </div>
 
-        <button class="btn" id="btnUpload" style="width:100%; margin-top:6px;">上传到现场调查</button>
+        <div class="field">
+          <label>调查表（6 个子表合一份，自动生成）</label>
+          <div class="drop-zone" id="dropZoneSurvey">
+            点击可重新生成调查表（6 合一）导出 Excel
+            <div class="filename" id="fileNameSurvey"></div>
+          </div>
+          <button class="btn" id="btnUploadSurvey" style="width:100%; margin-top:6px;">上传调查表（6 合一）</button>
+        </div>
+
         <div id="log"></div>
         <div class="footer">平台地址：http://223.93.144.122:27800 · 上传主体为当前登录账号</div>
       </div>
