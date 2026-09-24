@@ -495,6 +495,7 @@
       teamSaved = await loadTeamSettings();
       if (teamSaved) applyTeamSettings(teamSaved);
       generateExportFile();
+      generateSurveyFile(); // 进入上传页面自动重新生成两个上传文件（主表 + 调查表 6 合一）
     }
 
     function hideUpload() {

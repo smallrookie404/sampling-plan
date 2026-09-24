@@ -731,7 +731,10 @@
     refresh: () => { buildSurveyTabs(); renderSurvey(); },
     exportAllWorkbook: async () => {
       const X = await sEnsureXlsx();
-      const sheets = SURVEY_SHEETS.map((sh) => sExportAoaSheet(sh.name, sh.headers, surveyData[sh.key] || []));
+      // 首表：劳动定员和职业病危害因素接触情况调查（首行 = 主表格导出表头，其余内容为空）
+      const heads = (window.SamplingApp && window.SamplingApp.computedHeaders ? window.SamplingApp.computedHeaders() : []).map((v) => (v == null ? "" : String(v)));
+      const ldSheet = { name: "劳动定员和职业病危害因素接触情况调查", rows: [heads] };
+      const sheets = [ldSheet, ...SURVEY_SHEETS.map((sh) => sExportAoaSheet(sh.name, sh.headers, surveyData[sh.key] || []))];
       return X.writeWorkbook(sheets);
     },
     // 保存数据用：6 表内容（已裁剪空行）；全部为空时返回 null
