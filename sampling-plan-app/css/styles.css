@@ -194,6 +194,35 @@ body {
   padding: 6px 10px; border-top: 1px solid var(--line);
 }
 
+/* 调查表页签（6 个子表切换） */
+.survey-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.survey-tabs .stab {
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #475569;
+}
+.survey-tabs .stab:hover { border-color: var(--primary); color: var(--primary); }
+.survey-tabs .stab.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+/* 模板必填列表头（带 * 列，浅红底提示） */
+table.survey thead th.req { background: #fdecea; color: #b3261e; }
+/* 固定布局：列宽恒定（colgroup 定义），长文本在单元格内换行，不把表格撑向右延伸 */
+table.survey { table-layout: fixed; width: max-content; min-width: 100%; }
+table.survey td, table.survey thead th { word-break: break-word; overflow-wrap: anywhere; }
+/* 显示态与编辑态共用同一套字体度量（与主表格 .grid input 一致：12px、padding 2px 6px），排版零变动 */
+table.survey td .ctext { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-size: 12px; line-height: 1.4; padding: 2px 6px; }
+table.survey td input { width: 100%; height: 100%; box-sizing: border-box; border: none; outline: none; background: transparent; padding: 2px 6px; font-size: 12px; font-family: inherit; line-height: 1.4; color: inherit; }
+/* 编辑态多行文本框：无边框（聚焦用 inset 阴影，不占布局），高度由 JS 锁定为单元格原高度，度量与显示态完全一致 */
+table.survey td textarea { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: none; outline: none; background: #fff; padding: 2px 6px; font-size: 12px; font-family: inherit; line-height: 1.4; color: inherit; margin: 0; display: block; word-break: break-word; overflow-wrap: anywhere; }
+table.survey td input:focus, table.survey td textarea:focus { box-shadow: inset 0 0 0 1.5px var(--primary); }
+/* 车间下拉面板：body 级 fixed 定位，不被表格 overflow 裁剪；始终显示全部选项 */
+.survey-ws-panel { position: fixed; z-index: 1000; background: #fff; border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.18); max-height: 220px; overflow-y: auto; }
+.survey-ws-panel .survey-ws-opt { padding: 5px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.survey-ws-panel .survey-ws-opt:hover { background: var(--primary-light, #e8f0f8); }
+
 /* 网格 */
 .grid-wrap {
   flex: 1;

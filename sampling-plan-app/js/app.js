@@ -2466,6 +2466,7 @@
       document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + activeTab));
       if (activeTab === "hazard") renderHazard();
+      if (activeTab === "survey" && window.SurveySheets) window.SurveySheets.refresh();
       if (activeTab === "items") renderItems();
       if (activeTab === "main") renderWindow();
     });
@@ -2870,6 +2871,17 @@
     countErrors: () => L.countErrors(rows).total,
     // 上传成功后联动保存：传入默认名（如「25年XX公司」），弹出保存命名框走统一保存链路
     promptSave: (defaultName) => saveRecordFlow(defaultName || defaultRecordName()),
+    // 行数输入弹窗（调查表等模块复用，保持交互一致）
+    askRowCount,
+    // 主表格已填车间名称（去重、保序），供调查表「单元/工作场所」下拉引用
+    workshopNames: () => {
+      const out = [];
+      for (const row of rows) {
+        const v = (row.input["A"] ?? "").trim();
+        if (v && !out.includes(v)) out.push(v);
+      }
+      return out;
+    },
   };
 
   $("btn-export").addEventListener("click", async () => {
