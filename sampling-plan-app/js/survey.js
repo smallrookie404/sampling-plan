@@ -390,12 +390,8 @@
 
     if (mod) {
       if (editInput) {
-        // 编辑中保留浏览器原生快捷键；仅 Ctrl+Enter 提交并下移（textarea 换行与提交并存）
-        if (e.key === "Enter") {
-          e.preventDefault();
-          sCellCommit();
-          sMove(e.shiftKey ? -1 : 1, 0, { grow: true });
-        }
+        // 编辑中保留浏览器原生快捷键；Ctrl+Enter 在单元格内换行
+        if (e.key === "Enter") return;
         return;
       }
       if (e.key === "Home") { e.preventDefault(); sMoveTo(0, 0); return; }
@@ -431,14 +427,18 @@
       return;
     }
 
-    // 编辑模式：Enter/Tab 提交并移动，Escape 还原，其余按键（方向键/Home/End/退格）走原生行为
+    // 编辑模式：Enter 提交并下移（不在单元格内换行，换行内容经粘贴保留 / Alt+Enter 手动换行），Tab 提交并右移，Escape 还原
     if (editInput) {
       if (e.key === "Enter") {
-        // textarea 中 Enter 保留原生换行（Ctrl+Enter 提交下移）
-        if (editInput.tagName === "TEXTAREA" && !mod) return;
+        if (e.altKey) {
+          // Alt+Enter：手动插入换行符（浏览器对 Alt+Enter 无原生插入行为）
+          e.preventDefault();
+          editInput.setRangeText("\n", editInput.selectionStart, editInput.selectionEnd, "end");
+          return;
+        }
         e.preventDefault();
         sCellCommit();
-        sMove(e.shiftKey ? -1 : 1, 0, { grow: true });
+        sMove(1, 0, { grow: true });
       } else if (e.key === "Tab") {
         e.preventDefault();
         sCellCommit();
