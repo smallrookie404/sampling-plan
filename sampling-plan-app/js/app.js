@@ -2935,6 +2935,18 @@
     },
     // 主表格导出表头（自动计算区列名），供调查表 6 合一导出首表使用
     computedHeaders: () => COMPUTED_HEADERS.slice(),
+    // 车间 → 岗位/工种列表映射（主表格 A/B 列），供调查表「操作岗位(工种)」列按同行车间联动
+    workshopPosts: () => {
+      const map = {};
+      for (const row of rows) {
+        const ws = (row.input["A"] ?? "").trim();
+        const post = (row.input["B"] ?? "").trim();
+        if (!ws || !post) continue;
+        if (!map[ws]) map[ws] = [];
+        if (!map[ws].includes(post)) map[ws].push(post);
+      }
+      return map;
+    },
   };
 
   // 导出选择菜单：测点布局调查（主表格）或 调查表（6 个子表合一份）

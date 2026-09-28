@@ -28,6 +28,20 @@
     },
   ];
   const SURVEY_KEY = "samplingPlanSurvey_v2"; // v2：统一默认 10 行（旧 v1 缓存弃用）
+
+  // 固定下拉列选项（按表头名匹配；「单元/工作场所」列动态取主表车间名，不在此列）
+  const SURVEY_COL_OPTIONS = {
+    "*设施布局": ["机群式布局", "U型生产线布局", "直线型生产线布局", "Y型生产线布局", "其他"],
+    "*物理状态": ["气态", "液态", "粉末", "颗粒状", "片状", "条状", "固态"],
+    "*储存方式": ["袋装", "桶装", "罐装", "散装"],
+    "*加药/投料方式": ["人工", "自动"],
+    "*运输方式": ["槽罐车", "叉车", "货车", "皮带"],
+    "*装卸方式": ["接驳", "人工装卸"],
+    "*类型": ["产品", "中间产品", "副产品", "联产品"],
+    "*包装方式": ["袋装", "桶装", "罐装", "散装"],
+    "*防护类型": ["防毒", "防尘", "防噪", "减振", "防暑降温", "防低温", "防非电离辐射", "防电离辐射"],
+    "*防护用品分类": ["眼面防护", "听力防护", "呼吸防护", "防护服装", "手部防护"],
+  };
   let surveyData = null; // { key: [[cell,...],...] }
   let surveyCur = "process"; // 当前显示的子表
   // 选区状态（与主表格一致：cur 当前单元格 + 拖选矩形）
@@ -156,11 +170,27 @@
     if (!td || !rows[sCur.r]) return;
     sEditing = true;
     sEditOriginal = rows[sCur.r][sCur.c] ?? "";
-    // 「单元/工作场所」列（各调查表均含，列位置不同）：下拉选项 = 主表格已填车间名称（与主表格下拉联想同机制，可输可选）
+    // 下拉联想列：「单元/工作场所」动态取主表格已填车间名称；设备设施表「操作岗位(工种)」= 同行车间在主表中的岗位/工种；其余固定选项列取 SURVEY_COL_OPTIONS（可输可选）
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
-    const wsOpts = (sh && sh.headers[sCur.c] && sh.headers[sCur.c].includes("单元/工作场所") && window.SamplingApp && window.SamplingApp.workshopNames)
-      ? window.SamplingApp.workshopNames()
-      : null;
+    const headerName = sh && sh.headers[sCur.c];
+    let wsOpts = null;
+    if (headerName && headerName.includes("单元/工作场所") && window.SamplingApp && window.SamplingApp.workshopNames) {
+      wsOpts = window.SamplingApp.workshopNames();
+    } else if (/(操作|使用|影响|设置|配置)岗位\(工种\)/.test(headerName) && window.SamplingApp && window.SamplingApp.workshopPosts) {
+      // 岗位(工种)列（设备设施/原辅物料/主要产品/职业防护/个体防护）：选项 = 同行「单元/工作场所」车间在主表中的岗位/工种；多车间（「、」分隔）时合并去重
+      const wsCol = sh.headers.indexOf("单元/工作场所");
+      const postsMap = window.SamplingApp.workshopPosts();
+      const wsNames = (wsCol >= 0 ? String(surveyRows()[sCur.r]?.[wsCol] ?? "") : "").split("、").map((s) => s.trim()).filter(Boolean);
+      const merged = [];
+      for (const name of wsNames) {
+        for (const p of postsMap[name] || []) {
+          if (!merged.includes(p)) merged.push(p);
+        }
+      }
+      wsOpts = merged;
+    } else if (headerName && SURVEY_COL_OPTIONS[headerName]) {
+      wsOpts = SURVEY_COL_OPTIONS[headerName];
+    }
     if (wsOpts) {
       sCloseWsPanel();
       td.innerHTML = `<input data-r="${sCur.r}" data-c="${sCur.c}" value="${escAttr(sEditOriginal)}">`;
@@ -172,7 +202,7 @@
       if (wsOpts.length) {
         const panel = document.createElement("div");
         panel.className = "survey-ws-panel";
-        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt" data-v="${escAttr(o)}">${escHtml(o)}</div>`).join("");
+        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt" data-v="${escAttr(o)}"${el.value.split("、").includes(o) ? ' style="background:var(--primary-light, #e8f0f8)"' : ""}>${escHtml(o)}</div>`).join("");
         document.body.appendChild(panel);
         const r = el.getBoundingClientRect();
         panel.style.left = r.left + "px";
@@ -182,10 +212,17 @@
           const opt = ev.target.closest(".survey-ws-opt");
           if (!opt) return;
           ev.preventDefault(); // 阻止 input 失焦
-          el.value = opt.dataset.v;
+          // 多选：点选追加（以「、」分隔），重复点选则移除（支持取消）
+          const SEP = "、";
+          const curParts = el.value.split(SEP).map((s) => s.trim()).filter(Boolean);
+          const v = opt.dataset.v;
+          const idx = curParts.indexOf(v);
+          if (idx >= 0) curParts.splice(idx, 1);
+          else curParts.push(v);
+          el.value = curParts.join(SEP);
+          opt.style.background = idx >= 0 ? "" : "var(--primary-light, #e8f0f8)";
           el.focus();
           el.setSelectionRange(el.value.length, el.value.length);
-          sCloseWsPanel();
         });
         sWsPanel = panel;
       }
@@ -332,9 +369,14 @@
     if (!tr) return;
     const r = Number(tr.dataset.r);
     const c = Number(td.dataset.c);
+    if (sEditing && sCur && r === sCur.r && c === sCur.c) {
+      // 编辑中按下当前格：允许拖动扩展选区；未拖动则保持编辑态（不 preventDefault，光标由浏览器原生定位）
+      sDragging = true;
+      sDidDrag = false;
+      sLastMouse = { x: e.clientX, y: e.clientY };
+      return;
+    }
     if (sEditing) {
-      // 编辑中点击当前格：保持编辑态，光标由浏览器原生定位（与主表格一致，不闪、不重建）
-      if (sCur && r === sCur.r && c === sCur.c) return;
       sCellCommit(); // 点其他格：先提交再切换
     }
     sCur = { r, c };
@@ -353,7 +395,10 @@
 
   document.addEventListener("mousemove", (e) => {
     if (!sDragging) return;
-    if (Math.abs(e.clientX - sLastMouse.x) > 3 || Math.abs(e.clientY - sLastMouse.y) > 3) sDidDrag = true;
+    if (Math.abs(e.clientX - sLastMouse.x) > 3 || Math.abs(e.clientY - sLastMouse.y) > 3) {
+      if (!sDidDrag && sEditing) sCellCommit(); // 从编辑格拖出：先提交编辑再进入拖选（与主表格一致）
+      sDidDrag = true;
+    }
     const td = e.target.closest && e.target.closest("td[data-c]");
     if (!td) return;
     const tr = td.closest("tr[data-r]");
@@ -554,7 +599,7 @@
 
   // 粘贴：Excel 复制的内容以 text/plain TSV 到达 paste 事件（比 clipboard.readText 兼容性更好、无需权限）
   // 挂 document：单元格选中后焦点不在表格内，paste 事件派发到 body，挂在 survey-body 上收不到
-  // 粘贴基准 = 选区左上角；多行多列依次写入，行数不够自动扩行
+  // 粘贴基准 = 选区左上角；与主表格一致：有选区时按选区大小将剪贴板内容按行列规律重复填充，无选区（或单格选区）时按剪贴板内容大小直接粘贴
   document.addEventListener("paste", (e) => {
     if (!sCur) return;
     // 焦点在其他输入框/文本域时不劫持（如保存对话框）
@@ -568,14 +613,20 @@
     // Excel 复制区域末尾常带一个空行，去掉（中间空行保留）
     if (grid.length > 1 && grid[grid.length - 1].length === 1 && grid[grid.length - 1][0] === "") grid.pop();
     if (!grid.length) return;
-    const r0 = sCur.r;
-    const c0 = sCur.c;
-    const need = r0 + grid.length;
+    const srcH = grid.length;
+    const srcW = grid.reduce((m, r) => Math.max(m, r.length), 1);
+    let rect = sSelRect();
+    if (!rect || (rect.r1 === rect.r2 && rect.c1 === rect.c2)) {
+      // 无选区或仅单格：从当前单元格起按剪贴板全部内容大小粘贴
+      rect = { r1: sCur.r, c1: sCur.c, r2: sCur.r + srcH - 1, c2: sCur.c + srcW - 1 };
+    }
+    const need = rect.r2 + 1;
     while (rows.length < need) rows.push(surveyBlankRow());
-    for (let i = 0; i < grid.length; i++) {
-      const cols = grid[i]; // parseTsvGrid 已按列拆好
-      for (let j = 0; j < cols.length; j++) {
-        if (c0 + j < rows[r0 + i].length) rows[r0 + i][c0 + j] = cols[j];
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        if (c >= rows[r].length) break;
+        // 按剪贴板内容行列规律重复填充（单值则整片填入）
+        rows[r][c] = (grid[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
       }
     }
     surveySave();
