@@ -1758,8 +1758,7 @@
         upsertLocalFull(rec);
         return true;
       } catch (e) {
-        setStorageNotice(true);
-        alert("未能保存到项目文件夹，已暂存到浏览器：" + e.message);
+        setStorageNotice(true, "数据已暂存浏览器，未能同步到项目文件夹（本地服务未响应：" + e.message + "）。请通过「启动采样计划软件.bat」打开软件后重试。");
         upsertLocalFull(rec);
         return true;
       }

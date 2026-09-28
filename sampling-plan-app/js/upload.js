@@ -97,7 +97,8 @@
     if (opts.belongProject) headers['belongProject'] = String(opts.belongProject);
     const init = { method: method, headers: headers };
     const ac = new AbortController();
-    const timer = setTimeout(function () { ac.abort(); }, opts.timeout || 30000);
+    // timeout 为 0 表示不限时（如大文件上传，平台处理时间不可预估）
+    const timer = opts.timeout === 0 ? null : setTimeout(function () { ac.abort(); }, opts.timeout || 30000);
     if (opts.signal) {
       opts.signal.addEventListener('abort', function () { ac.abort(); });
     }
@@ -269,7 +270,8 @@
       token: token,
       orgId: orgId,
       belongProject: projectId,
-      form: fd
+      form: fd,
+      timeout: 0 // 上传不限时：平台导入处理时间可能较长，超时中断会造成「实际成功却报异常」
     });
   }
 
@@ -1111,8 +1113,11 @@
           alert('导入失败：' + msg);
         }
       } catch (e) {
-        log('上传异常：' + e.message);
-        alert('上传异常：' + e.message);
+        // 传输中断（如网络断开）时平台可能已接收成功，提示核实而非断言失败
+        const aborted = e && (e.name === 'AbortError' || /abort/i.test(e.message || ''));
+        log(aborted ? '上传连接中断（结果未知，请到平台核实）' : '上传异常：' + e.message);
+        alert(aborted ? '上传连接中断，结果未知：\n请到平台该项目下核实是否已导入成功，避免重复上传。' : '上传异常：' + e.message);
+        if (!aborted) log('上传异常：' + e.message);
       } finally {
         btn.disabled = false;
         btn.textContent = isSurvey ? '上传调查表（6 合一）' : '上传测点布局调查';

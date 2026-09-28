@@ -512,6 +512,7 @@ body.fullscreen-mode .tab-panel.active {
 .prompt-hint { color: #475569; margin: 4px 0 8px; }
 /* 保存数据弹窗内的记录搜索列表 */
 #prompt-search-wrap { margin-top: 8px; }
+#prompt-search-wrap.hidden { display: none; }
 #prompt-search { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
 .prompt-rec-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
 .prompt-rec-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12.5px; cursor: pointer; border-bottom: 1px solid var(--line); }
