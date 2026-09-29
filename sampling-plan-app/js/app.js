@@ -1728,17 +1728,19 @@
     return readLocalFull().find((r) => r.id === id) || null;
   }
 
-  // 导出备份用：返回全部「完整」记录（含 rows）。索引本身只含元数据，缺 rows 的按 id 逐条拉全，
-  // 避免备份文件里大部分记录没有行数据、导入时被当无效记录丢弃
-  async function loadAllFullRecords() {
-    const index = await loadRecords();
-    const out = [];
-    for (const meta of index) {
-      if (Array.isArray(meta.rows)) { out.push(meta); continue; }
-      const full = await loadRecordById(meta.id).catch(() => null);
-      if (full && Array.isArray(full.rows)) out.push(full);
+  // 导出备份用：基于已有索引返回全部「完整」记录（含 rows）。索引本身只含元数据，
+  // 缺 rows 的按 id 分批并发拉全，避免备份文件里大部分记录没有行数据、导入时被当无效记录丢弃
+  async function loadAllFullRecords(index) {
+    const metas = index.filter((r) => !Array.isArray(r.rows));
+    const fetched = new Map();
+    const BATCH = 5;
+    for (let i = 0; i < metas.length; i += BATCH) {
+      await Promise.all(metas.slice(i, i + BATCH).map(async (meta) => {
+        const full = await loadRecordById(meta.id).catch(() => null);
+        if (full && Array.isArray(full.rows)) fetched.set(meta.id, full);
+      }));
     }
-    return out;
+    return index.map((r) => fetched.get(r.id) || r).filter((r) => Array.isArray(r.rows));
   }
 
   // 保存单条记录（写单条存储 + 更新索引 + 本地镜像）
@@ -2416,8 +2418,7 @@
   $("db-export").addEventListener("click", async () => {
     const all = await loadRecords();
     if (!all.length) { alert("数据库为空，无需备份。"); return; }
-    await ensureXlsx();
-    const list = await loadAllFullRecords();
+    const list = await loadAllFullRecords(all);
     const missing = all.length - list.length;
     if (!list.length) { alert("没有可导出的完整记录（均缺少行数据），无法备份。"); return; }
     const blob = new Blob(
