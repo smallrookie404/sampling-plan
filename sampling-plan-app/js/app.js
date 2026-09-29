@@ -2292,7 +2292,9 @@
   }
 
   $("btn-save").addEventListener("click", async () => {
-    await saveRecordFlow(defaultRecordName());
+    // 上传页已选择项目时，默认名与上传后弹出的保存框一致（年份+单位名称）
+    const upName = window.SamplingUpload && window.SamplingUpload.defaultSaveName ? window.SamplingUpload.defaultSaveName() : null;
+    await saveRecordFlow(upName || defaultRecordName());
   });
 
   async function renderDbList() {
@@ -2322,6 +2324,7 @@
           `<div class="db-item-preview">${escHtml(preview)}</div>` +
           `</div>` +
           `<div class="db-item-actions">` +
+          `<button class="btn small" data-act="rename">重命名</button>` +
           `<button class="btn small primary" data-act="load">调用</button>` +
           `<button class="btn small danger" data-act="del">删除</button>` +
           `</div></div>`
@@ -2369,6 +2372,26 @@
       if (await deleteRecordById(id)) {
         await renderDbList();
         alert("已删除。");
+      }
+    } else if (btn.dataset.act === "rename") {
+      // 重命名：预填当前名，确认后更新并持久化（重名拒绝）
+      const newName = await askInput({
+        title: "重命名数据记录",
+        hint: `将「${meta.name}」重命名为：`,
+        value: meta.name,
+      });
+      if (newName === null) return;
+      const trimmed = newName.trim();
+      if (!trimmed) { alert("名称不能为空。"); return; }
+      if (trimmed === meta.name) return;
+      const list = await loadRecords();
+      if (list.some((r) => r.id !== id && r.name === trimmed)) { alert(`已存在同名记录「${trimmed}」，请换一个名称。`); return; }
+      // 索引项可能不含 rows（本地无缓存），按 id 拉取完整记录再改名保存
+      const rec = Array.isArray(meta.rows) && meta.rows.length ? { ...meta, name: trimmed } : { ...(await loadRecordById(id)), name: trimmed };
+      if (!rec || !rec.id) { alert("读取记录内容失败，请检查网络后重试。"); return; }
+      if (await persistRecord(rec)) {
+        await renderDbList();
+        alert(`已重命名为「${trimmed}」。`);
       }
     }
   });

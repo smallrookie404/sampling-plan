@@ -426,7 +426,7 @@ table.grid.hazard td { height: 26px; }
 /* 弹窗 */
 .modal {
   position: fixed;
-  inset: 0;
+  top: 0; right: 0; bottom: 0; left: 0; /* 老内核（360极速等）不支持 inset 简写 */
   background: rgba(15, 23, 42, .45);
   display: flex;
   align-items: center;
@@ -434,6 +434,8 @@ table.grid.hazard td { height: 26px; }
   z-index: 50;
 }
 .modal.hidden { display: none; }
+/* 通用输入弹窗需叠在数据记录等弹窗之上（db-modal 在 DOM 中靠后，同级会盖住 prompt-modal） */
+#prompt-modal { z-index: 60; }
 
 /* 全屏模式：浮动操作条 */
 .fs-bar {

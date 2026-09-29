@@ -11,7 +11,7 @@
     /* ===== 统一登录 / 数据上传视图（与主界面同一套主题变量） ===== */
     .xcdc-overlay {
       position: fixed;
-      inset: 0;
+      top: 0; right: 0; bottom: 0; left: 0; /* 老内核（360极速等）不支持 inset 简写，用四边长写法 */
       overflow: auto;
       background: var(--bg);
       z-index: 500;
@@ -113,7 +113,6 @@
       border-radius: 50%;
     }
     .xcdc .member-tag-rm:hover { color: var(--error-line); background: #fdecea; }
-    }
     .xcdc .member-count { color: #64748b; font-size: 12px; margin-left: 8px; }
     .xcdc .suggest {
       border: 1px solid var(--line); border-radius: 6px; max-height: 220px;
@@ -148,6 +147,21 @@
     }
     .xcdc .footer { margin-top: 18px; color: #94a3b8; font-size: 12px; }
     .xcdc .hidden { display: none; }
+    /* ===== 老内核兼容（360极速等 Chromium<84 不支持 flex gap）：以 margin 模拟间距，支持 gap 的内核不受影响 ===== */
+    @supports not (gap: 1px) {
+      .xcdc .xcdc-brand .logo { margin-right: 12px; }
+      .xcdc .search-row { margin-left: -10px; }
+      .xcdc .search-row > * { margin-left: 10px; }
+      .xcdc .captcha-row { margin-left: -10px; }
+      .xcdc .captcha-row > * { margin-left: 10px; }
+      .xcdc .remember-row label input { margin-right: 6px; }
+      .xcdc .row-2 { margin-left: -6px; margin-right: -6px; }
+      .xcdc .row-2 .field { margin-left: 6px; margin-right: 6px; }
+      .xcdc .member-item input { margin-right: 8px; }
+      .xcdc .member-tag { margin-right: 6px; margin-bottom: 6px; }
+      .xcdc .member-tag-rm { margin-left: 2px; }
+      .xcdc .suggest-item > * + * { margin-left: 10px; }
+    }
   </style>
 </head>
 <body>

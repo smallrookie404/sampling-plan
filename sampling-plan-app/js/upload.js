@@ -1148,7 +1148,13 @@
     window.SamplingUpload = {
       show: showUpload,
       hide: hideUpload,
-      logout: logout
+      logout: logout,
+      // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null
+      defaultSaveName: function () {
+        if (!selectedProject) return null;
+        const ym = /^BTC(\d{2})/.exec(selectedProject.code || '');
+        return (ym ? ym[1] + '年' : '') + (selectedProject.belongInspectName || '');
+      }
     };
 
     // 启动：有会话直接进入（登录遮罩保持隐藏），否则显示登录
