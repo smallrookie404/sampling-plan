@@ -32,7 +32,7 @@
   // 固定下拉列选项（按表头名匹配；「单元/工作场所」列动态取主表车间名，不在此列）
   const SURVEY_COL_OPTIONS = {
     "*设施布局": ["机群式布局", "U型生产线布局", "直线型生产线布局", "Y型生产线布局", "其他"],
-    "*物理状态": ["气态", "液态", "粉末", "颗粒状", "片状", "条状", "固态"],
+    "*物理状态": ["气态", "液态", "粉末", "颗粒状", "片状", "条状", "块状", "固态"],
     "*储存方式": ["袋装", "桶装", "罐装", "散装"],
     "*加药/投料方式": ["人工", "自动"],
     "*运输方式": ["槽罐车", "叉车", "货车", "皮带"],
@@ -121,10 +121,10 @@
     sCloseWsPanel(); // tbody 重建会销毁编辑框，下拉面板一并清理
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
     const rows = surveyRows();
-    // 表头（模板原格式：必填列带 *，样式上以浅红底提示）
+    // 表头（模板原格式：必填列带 *，样式上以浅红底提示）；首列（设备名称/物料名称等）横向锁定
     $S("survey-head").innerHTML =
       `<tr>${sh.headers.map((h, i) =>
-        `<th class="${h.startsWith("*") ? "req" : ""}" data-i="${i}">${escHtml(h)}</th>`
+        `<th class="${h.startsWith("*") ? "req" : ""}${i === 0 ? " s-sticky-name" : ""}" data-i="${i}">${escHtml(h)}</th>`
       ).join("")}</tr>`;
     // colgroup：首列稍窄，其余均分
     $S("survey-cols").innerHTML = sh.headers.map((h, i) => `<col style="width:${i === 0 ? 150 : 140}px">`).join("");
@@ -133,7 +133,7 @@
       ? rows.map((r, ri) =>
           `<tr data-r="${ri}">` +
           sh.headers.map((h, ci) =>
-            `<td data-c="${ci}"><div class="ctext">${escHtml(r[ci])}</div></td>`
+            `<td data-c="${ci}"${ci === 0 ? ' class="s-sticky-name"' : ""}><div class="ctext">${escHtml(r[ci])}</div></td>`
           ).join("") +
           `</tr>`
         ).join("")
@@ -215,7 +215,13 @@
         document.body.appendChild(panel);
         const r = el.getBoundingClientRect();
         panel.style.left = r.left + "px";
-        panel.style.top = r.bottom + 2 + "px";
+        // 贴近视口底部时向上弹出（面板高度约 232px：max-height 220 + 边距），否则向下
+        const below = window.innerHeight - r.bottom;
+        if (below < 240 && r.top > 240) {
+          panel.style.top = Math.max(4, r.top - 234) + "px";
+        } else {
+          panel.style.top = r.bottom + 2 + "px";
+        }
         panel.style.minWidth = Math.max(r.width, 120) + "px";
         panel.addEventListener("mousedown", (ev) => {
           const opt = ev.target.closest(".survey-ws-opt");

@@ -433,6 +433,22 @@ table.grid.hazard td { height: 26px; }
   justify-content: center;
   z-index: 50;
 }
+/* ===== 调查表（6 子表）：首列横向锁定 + 表头纵向固定 ===== */
+#survey-grid thead th { top: 0; }
+#survey-grid thead th.s-sticky-name,
+#survey-grid tbody td.s-sticky-name {
+  position: sticky;
+  left: 0;
+  z-index: 6;
+}
+#survey-grid tbody td.s-sticky-name {
+  z-index: 4;
+  background: var(--input-bg);
+}
+/* 首列选中/编辑高亮时保持背景可见（sticky 列背景需自带，不被滚动内容透出） */
+#survey-grid tbody td.s-sticky-name.sel { background: #dbeafe !important; }
+#survey-grid tbody td.s-sticky-name.cur { z-index: 5; }
+
 .modal.hidden { display: none; }
 /* 通用输入弹窗需叠在数据记录等弹窗之上（db-modal 在 DOM 中靠后，同级会盖住 prompt-modal） */
 #prompt-modal { z-index: 60; }

@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -18,6 +18,8 @@ const APP_URL = `http://127.0.0.1:${PORT}/`;
 process.on("exit", () => {
   try { server.close(); } catch {}
   try { fs.rmSync(TEST_DATA, { force: true }); } catch {}
+  // 同步兜底：断言抛错退出时终止浏览器子进程，避免残留 Chrome 进程（正常结束仍走 await browser.close() 优雅关闭）
+  try { if (typeof browser !== "undefined" && browser) browser.process()?.kill(); } catch {}
 });
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
@@ -49,7 +51,11 @@ const noticeHidden = await page.$eval("#storage-notice", (el) => el.classList.co
 if (!noticeHidden) throw new Error("服务模式下不应显示临时模式提示条");
 
 const val = async (r, c) =>
-  await page.$eval(`#main-grid tr[data-r="${r}"] td[data-c="${c}"] input`, (el) => el.value);
+  // 兼容录入列（input）与自动计算列（.computed-text 文本，如 AN 检测方式）
+  await page.$eval(`#main-grid tr[data-r="${r}"] td[data-c="${c}"]`, (el) => {
+    const el2 = el.querySelector("input") || el.querySelector(".computed-text") || el;
+    return el2.value ?? el2.textContent;
+  });
 const selVal = async (r, c) =>
   await page.$eval(`#main-grid tr[data-r="${r}"] td[data-c="${c}"] select`, (el) => el.value);
 
@@ -64,7 +70,7 @@ for (const [r, c, exp] of checks) {
 // 滚动到底部：应有 50 行（最后一行 r=49）且录入区空白
 await page.$eval("#grid-wrap", (el) => { el.scrollTop = el.scrollHeight; });
 await page.waitForTimeout(200);
-const lastRow = await page.$eval("#main-grid tbody tr[data-r]:last-child", (el) => el.dataset.r);
+const lastRow = await page.$eval('#main-grid tbody tr[data-r="49"]', (el) => el.dataset.r);
 if (lastRow !== "49") throw new Error("默认应有 50 行，最后一行 r=" + lastRow);
 for (const c of ["A", "B", "C", "D", "P"]) {
   const got = await val(49, c);
@@ -224,8 +230,8 @@ await page.waitForTimeout(150);
 // 3) 覆盖联动：第 2 行检测方式覆盖为个体
 await page.selectOption(`#main-grid tr[data-r="1"] td[data-c="AR"] select`, { label: "个体" });
 await page.waitForTimeout(150);
-const as1 = await page.$eval(`#main-grid tr[data-r="1"] td[data-c="AS"] input`, (el) => el.value);
-const ak1 = await page.$eval(`#main-grid tr[data-r="1"] td[data-c="AK"] input`, (el) => el.value);
+const as1 = await page.$eval(`#main-grid tr[data-r="1"] td[data-c="AS"]`, (el) => (el.querySelector("input") || el.querySelector(".computed-text") || el).value ?? el.textContent);
+const ak1 = await page.$eval(`#main-grid tr[data-r="1"] td[data-c="AK"]`, (el) => (el.querySelector("input") || el.querySelector(".computed-text") || el).value ?? el.textContent);
 if (as1 !== "长时间" || ak1 !== "采样对象") throw new Error(`覆盖联动失败 AS=${as1} AK=${ak1}`);
 console.log("覆盖联动校验通过 ✔");
 
@@ -252,7 +258,9 @@ await page.click('.tab[data-tab="main"]');
 await page.waitForSelector("#main-grid");
 const [download] = await Promise.all([
   page.waitForEvent("download", { timeout: 15000 }),
+  // 导出现为「按钮弹菜单 → 选类型」两步（无错误时不弹 confirm）
   page.click("#btn-export"),
+  page.click('.survey-export-item[data-k="main"]'),
 ]);
 // 导出前恢复 AR 覆盖，避免 confirm 干扰（无错误时直接导出）
 const xlsxPath = SHOT_DIR + "/exported.xlsx";
@@ -316,6 +324,7 @@ if ((await rowCountOf()) !== n0 + 4) throw new Error("删除自定义行数无�
 console.log("行操作自定义行数校验通过 ✔");
 
 // ---------- 8) 数据记录：保存 / 搜索 / 调用 / 持久化 / 删除 ----------
+const anBeforeSave = await val(0, "AN"); // AN 为计算列（危害因素库反查名称），调用后应与保存前一致
 await page.click("#btn-save");
 await page.waitForSelector("#prompt-modal:not(.hidden)");
 await page.fill("#prompt-input", "测试记录A");
@@ -341,7 +350,7 @@ const savedRows = Number(metaText.match(/(\d+) 行/)[1]);
 await page.click('#db-list .db-item button[data-act="load"]');
 await page.waitForSelector("#db-modal.hidden", { state: "attached" });
 await page.waitForTimeout(200);
-if (await val(0, "AN") !== "二氧化钛粉尘") throw new Error("调用后 AN 值不符");
+if (await val(0, "AN") !== anBeforeSave) throw new Error("调用后 AN 值不符: " + (await val(0, "AN")) + " != " + anBeforeSave);
 if ((await rowCountOf()) !== savedRows) throw new Error("调用后行数不符");
 
 // 刷新页面：记录仍在数据库中，可再次调用
@@ -432,6 +441,7 @@ await page.screenshot({ path: SHOT_DIR + "/4-main-after-export.png" });
 
 if (errors.length) {
   console.log("浏览器错误:", errors);
+  await browser.close();
   process.exit(1);
 }
 console.log("UI 冒烟测试全部通过 ✔");
