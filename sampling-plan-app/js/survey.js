@@ -222,10 +222,10 @@
       }
       wsOpts = merged;
     } else if (headerName === "*防护用品类别") {
-      // 个体防护表「防护用品类别」：选项按同行「防护用品分类」联动，分类未填/不在映射时给出全部候选
+      // 个体防护表「防护用品类别」：选项按同行「防护用品分类」联动；分类无对应（未填/防护服装/手部防护）时不显示下拉
       const clsCol = sh.headers.indexOf("*防护用品分类");
       const cls = clsCol >= 0 ? String(surveyRows()[sCur.r]?.[clsCol] ?? "").trim() : "";
-      wsOpts = PPE_CATEGORY_MAP[cls] || Object.values(PPE_CATEGORY_MAP).flat();
+      wsOpts = PPE_CATEGORY_MAP[cls] || null;
     } else if (headerName && PPE_FIELD_OPTIONS[headerName]) {
       // 个体防护表「型号或规格」「防护性能参数」：选项按同行「防护用品类别」联动
       const catCol = sh.headers.indexOf("*防护用品类别");
