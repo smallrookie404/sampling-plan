@@ -1728,6 +1728,19 @@
     return readLocalFull().find((r) => r.id === id) || null;
   }
 
+  // 导出备份用：返回全部「完整」记录（含 rows）。索引本身只含元数据，缺 rows 的按 id 逐条拉全，
+  // 避免备份文件里大部分记录没有行数据、导入时被当无效记录丢弃
+  async function loadAllFullRecords() {
+    const index = await loadRecords();
+    const out = [];
+    for (const meta of index) {
+      if (Array.isArray(meta.rows)) { out.push(meta); continue; }
+      const full = await loadRecordById(meta.id).catch(() => null);
+      if (full && Array.isArray(full.rows)) out.push(full);
+    }
+    return out;
+  }
+
   // 保存单条记录（写单条存储 + 更新索引 + 本地镜像）
   async function persistRecord(rec) {
     await ensureMode();
@@ -2401,14 +2414,18 @@
 
   // 备份导出 / 导入
   $("db-export").addEventListener("click", async () => {
-    const list = await loadRecords();
-    if (!list.length) { alert("数据库为空，无需备份。"); return; }
+    const all = await loadRecords();
+    if (!all.length) { alert("数据库为空，无需备份。"); return; }
     await ensureXlsx();
+    const list = await loadAllFullRecords();
+    const missing = all.length - list.length;
+    if (!list.length) { alert("没有可导出的完整记录（均缺少行数据），无法备份。"); return; }
     const blob = new Blob(
       [JSON.stringify({ app: "采样计划软件", version: 1, exportedAt: new Date().toISOString(), records: list }, null, 2)],
       { type: "application/json" }
     );
     X.downloadBlob(blob, `采样计划数据库备份_${new Date().toISOString().slice(0, 10)}.json`);
+    if (missing > 0) alert(`已导出 ${list.length} 条记录；另有 ${missing} 条读取行数据失败未包含，可重试导出。`);
   });
   $("db-import").addEventListener("click", () => $("db-file-input").click());
   $("db-file-input").addEventListener("change", async (e) => {
@@ -2419,8 +2436,9 @@
       const list = Array.isArray(parsed) ? parsed : parsed.records;
       if (!Array.isArray(list)) throw new Error("备份文件格式不正确");
       const clean = list.filter((r) => r && typeof r.name === "string" && Array.isArray(r.rows));
-      if (!clean.length) throw new Error("备份文件中没有有效记录");
-      if (!confirm(`将导入 ${clean.length} 条记录（与现有记录按名称合并，同名覆盖），是否继续？`)) {
+      const skipped = list.length - clean.length;
+      if (!clean.length) throw new Error("备份文件中没有有效记录" + (skipped ? `（${skipped} 条缺少行数据，可能是旧版本导出的不完整备份，请重新导出）` : ""));
+      if (!confirm(`将导入 ${clean.length} 条记录（与现有记录按名称合并，同名覆盖）${skipped ? `；另有 ${skipped} 条缺少行数据将被跳过` : ""}，是否继续？`)) {
         e.target.value = "";
         return;
       }
