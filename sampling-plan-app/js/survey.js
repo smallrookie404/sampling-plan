@@ -202,11 +202,16 @@
       el.focus();
       if (commitCurrent) el.value = commitCurrent + sEditOriginal;
       el.setSelectionRange(el.value.length, el.value.length);
+      // 多选仅限「单元/工作场所」与岗位(工种)列；其余固定选项列单选（点选即替换）
+      const multi = !!(
+        (headerName && headerName.includes("单元/工作场所")) ||
+        (headerName && /(操作|使用|影响|设置|配置)岗位\(工种\)/.test(headerName))
+      );
       // 自定义下拉面板：始终显示全部选项（datalist 会按已有内容过滤，单元格有值时只剩匹配项）
       if (wsOpts.length) {
         const panel = document.createElement("div");
         panel.className = "survey-ws-panel";
-        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt" data-v="${escAttr(o)}"${el.value.split("、").includes(o) ? ' style="background:var(--primary-light, #e8f0f8)"' : ""}>${escHtml(o)}</div>`).join("");
+        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt" data-v="${escAttr(o)}"${multi && el.value.split("、").includes(o) ? ' style="background:var(--primary-light, #e8f0f8)"' : ""}>${escHtml(o)}</div>`).join("");
         document.body.appendChild(panel);
         const r = el.getBoundingClientRect();
         panel.style.left = r.left + "px";
@@ -216,15 +221,21 @@
           const opt = ev.target.closest(".survey-ws-opt");
           if (!opt) return;
           ev.preventDefault(); // 阻止 input 失焦
-          // 多选：点选追加（以「、」分隔），重复点选则移除（支持取消）
-          const SEP = "、";
-          const curParts = el.value.split(SEP).map((s) => s.trim()).filter(Boolean);
-          const v = opt.dataset.v;
-          const idx = curParts.indexOf(v);
-          if (idx >= 0) curParts.splice(idx, 1);
-          else curParts.push(v);
-          el.value = curParts.join(SEP);
-          opt.style.background = idx >= 0 ? "" : "var(--primary-light, #e8f0f8)";
+          if (multi) {
+            // 多选：点选追加（以「、」分隔），重复点选则移除（支持取消）
+            const SEP = "、";
+            const curParts = el.value.split(SEP).map((s) => s.trim()).filter(Boolean);
+            const v = opt.dataset.v;
+            const idx = curParts.indexOf(v);
+            if (idx >= 0) curParts.splice(idx, 1);
+            else curParts.push(v);
+            el.value = curParts.join(SEP);
+            opt.style.background = idx >= 0 ? "" : "var(--primary-light, #e8f0f8)";
+          } else {
+            // 单选：点选即替换并关闭面板
+            el.value = opt.dataset.v;
+            sCloseWsPanel();
+          }
           el.focus();
           el.setSelectionRange(el.value.length, el.value.length);
         });
