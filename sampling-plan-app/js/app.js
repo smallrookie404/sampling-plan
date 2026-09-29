@@ -2248,7 +2248,9 @@
   // 保存当前表格为一条数据记录（btn-save 与上传成功后联动共用）
   async function saveRecordFlow(defaultName) {
     const contentRows = trimBlankRows(rows);
-    if (!contentRows.length) { alert("当前没有可保存的数据。"); return false; }
+    // 主表无数据时仍可保存调查表：调查表 6 表全部为空才拦截
+    const surveyData = window.SurveySheets && window.SurveySheets.getData ? window.SurveySheets.getData() : null;
+    if (!contentRows.length && !surveyData) { alert("当前没有可保存的数据（主表格与调查表均为空）。"); return false; }
     const name = await askInput({
       title: "保存数据",
       hint: "为当前数据命名，也可在下方搜索并点选已有记录名，确定后覆盖该记录",
@@ -2268,7 +2270,6 @@
     const now = new Date().toISOString();
     const snap = L.snapshotRows(contentRows);
     // 附带调查表 6 表数据（全部为空时不写入）
-    const surveyData = window.SurveySheets && window.SurveySheets.getData ? window.SurveySheets.getData() : null;
     const existing = list.find((r) => r.name === name);
     let rec;
     if (existing) {
@@ -2286,7 +2287,7 @@
     if (surveyData) rec.survey = surveyData;
     else delete rec.survey;
     const ok = await persistRecord(rec);
-    if (ok) alert(`已保存「${name}」（${contentRows.length} 行${surveyData ? "，含调查表" : ""}）。`);
+    if (ok) alert(`已保存「${name}」（${contentRows.length ? contentRows.length + " 行" : ""}${contentRows.length && surveyData ? "，含调查表" : surveyData ? "仅调查表" : ""}）。`);
     return ok;
   }
 
