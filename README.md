@@ -6,13 +6,21 @@
 
 ```text
 ├─ sampling-plan-app/        软件（网页界面 + 计算引擎 + 本地服务）
-│  ├─ index.html             软件入口
+│  ├─ index.html             软件入口（主工具 + 调查表页签 + 登录/上传）
 │  ├─ server.mjs             本地服务（静态页面 + 数据文件读写）
 │  ├─ data/records.json      数据记录（数据库文件，随仓库同步到 GitHub）
+│  ├─ data/library.json      危害因素库 + 检测项目（应用自动写回）
 │  └─ tests/                 自动化测试
 ├─ 同步数据库到GitHub.bat    把 data/records.json 提交并推送到 GitHub
 └─ .gitignore
 ```
+
+## 主要功能
+
+- **测点布局调查主表**：原 Excel 公式表的完整计算/编辑/校验/导出能力，全部在浏览器端完成；
+- **现场调查表**：6 个子表（生产工艺、设备设施、原辅物料、主要产品、职业防护、个体防护），Excel 式编辑（单击选中、双击编辑、拖选、多行粘贴），可随数据记录一起保存/导入/导出；
+- **数据记录管理**：本地文件 / GitHub 仓库 / Cloudflare KV 三方可保存与同步；
+- **统一登录与数据上传**：平台账号登录（Cloudflare Pages 部署下可用），一键上传导出 Excel。
 
 ## 在本机运行
 
@@ -72,7 +80,7 @@ git push -u origin main
 
 仓库已包含：
 
-- `sampling-plan-app/functions/`：Cloudflare Pages Functions（`/api/health`、`/api/records`，读写 KV）；
+- `sampling-plan-app/functions/`：Cloudflare Pages Functions（`/api/health`、`/api/records`、`/api/library`、`/api/team`，读写 KV；`/api/platform` 平台同源代理）；
 - `wrangler.jsonc`：Pages 部署配置（含 KV 绑定占位）；
 - `部署到Cloudflare.bat`：一键登录、创建 KV、部署脚本。
 

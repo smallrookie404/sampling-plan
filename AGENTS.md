@@ -17,7 +17,7 @@ sampling-plan/
 │   ├── deploy-pages.yml            # push main → GitHub Pages
 │   └── deploy-cloudflare.yml       # push main → Cloudflare Pages（含 Functions）
 └── sampling-plan-app/
-    ├── index.html                  # 唯一页面：主工具 + 登录遮罩 + 上传视图
+    ├── index.html                  # 唯一页面：主工具 + 调查表页签 + 登录遮罩 + 上传视图
     ├── server.mjs                  # 本地服务（Node 标准库，端口 8017，/api/records、/api/library）
     ├── css/styles.css              # 主界面样式（CSS 变量 --primary 等，.xcdc 作用域给登录/上传视图）
     ├── data/
@@ -28,6 +28,7 @@ sampling-plan/
     │   ├── logic.js                # 计算引擎（浏览器/Node 通用，纯函数）
     │   ├── xlsxio.js + jszip.min.js# xlsx 读写（懒加载，首次导入/导出时加载）
     │   ├── app.js                  # 主工具界面逻辑；暴露 window.SamplingApp（导出/错误数）
+    │   ├── survey.js               # 调查表模块（6 个现场调查子表，Excel 式编辑）；暴露 window.SurveySheets
     │   └── upload.js               # 统一登录 + 现场调查上传（平台接口、团队配置、云端同步）
     ├── functions/api/              # Cloudflare Pages Functions（编译为 Worker）
     │   ├── records.js / library.js # KV 数据读写（binding: SAMPLING_RECORDS）
@@ -45,6 +46,9 @@ sampling-plan/
   node tests/xlsxio.test.mjs     # xlsx 导出/导入往返
   node tests/server.test.mjs     # 本地服务接口
   node tests/ui.smoke.mjs        # 浏览器冒烟（依赖 Chrome/Edge）
+  node tests/survey.smoke.mjs    # 调查表冒烟（Playwright）
+  node tests/survey.edit.mjs     # 调查表编辑交互（Playwright）
+  node tests/cloudflare.test.mjs # Cloudflare Functions 接口
   ```
 - 测试注意：应用会自动把参考库写回 `data/library.json`；跑会改动参考库的测试前先备份，测试后 `git checkout -- sampling-plan-app/data/library.json` 恢复。
 
@@ -65,6 +69,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 4. **平台代理**：`functions/api/platform/[[path]].js` 用 `cloudflare:sockets` 原始 TCP 连接平台 `http://223.93.144.122:27800`，透传请求头/响应头/Cookie 并解压 gzip，绕过 Cloudflare 直连 IP 限制；`upload.js` 在 pages.dev 上自动走 `/api/platform`，本地 http/file 直连平台。
 5. **导出上传联动**：「数据上传」按钮生成当前表格的导出 Excel（`window.SamplingApp.exportWorkbookBytes()`）作为上传文件，无需手动选文件；导出范围到「检测项目」列最后一个非空单元格。
 6. **界面约定**：主界面样式变量在 `css/styles.css`（`--primary: #1f4e79` 等）；登录/上传视图样式统一用 `.xcdc` 作用域并复用同一套变量。新增页面元素需与 `upload.js` 中的 id 引用保持一致。
+7. **调查表模块**（survey.js）：6 个现场调查子表（生产工艺/设备设施/原辅物料/主要产品/职业防护/个体防护），页签位于「测点布局调查」旁。Excel 式交互与主表格对齐：单击选中、双击编辑、拖选矩形、Enter 提交并下移、Alt+Enter 或编辑态粘贴多行为单元格内换行（非编辑态粘贴按行拆分填入多行）；下拉多选仅「车间」与「岗位(工种)」列，其余固定选项列为单选，「单元/工作场所」动态取主表车间名，岗位下拉数据源为主表自动计算区 W→X（含下填）。数据存 localStorage 键 `samplingPlanSurvey_v2`（统一默认 10 行），随记录保存/还原；无 Tab 多行粘贴兼容。导入 Excel 支持调查表；导出 6 合一首表为「劳动定员接触情况调查」，上传页进入时自动生成两个文件。主表无数据时仍可保存仅含调查表的记录（两者均空才拦截）。
 
 ## 已知注意事项
 
@@ -76,5 +81,6 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 ## 常见任务速查
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
+- 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了 Cloudflare Functions → 本地用 `wrangler pages functions build` 验证语法，或直接依赖工作流部署后测 `https://sampling-plan.pages.dev/api/health`。
 - 需要平台白名单 → 把 Cloudflare 出口 IP（https://www.cloudflare.com/ips/）提供给平台管理员。
