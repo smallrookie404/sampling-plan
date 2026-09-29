@@ -42,6 +42,35 @@
     "*防护类型": ["防毒", "防尘", "防噪", "减振", "防暑降温", "防低温", "防非电离辐射", "防电离辐射"],
     "*防护用品分类": ["眼面防护", "听力防护", "呼吸防护", "防护服装", "手部防护"],
   };
+  // 个体防护表：「防护用品类别」下拉选项按同行「防护用品分类」联动
+  const PPE_CATEGORY_MAP = {
+    "听力防护": ["防噪耳塞", "防噪耳罩"],
+    "呼吸防护": ["防尘口罩", "防毒面具", "防尘毒半面具", "一次性口罩"],
+    "眼面防护": ["电焊面罩", "护目镜"],
+  };
+  // 个体防护表：按「防护用品类别」联动的列选项（无匹配时该列退回普通文本编辑）
+  const PPE_FIELD_OPTIONS = {
+    "*型号或规格": {
+      "防噪耳塞": ["1110", "1100", "1270", "1250"],
+      "防尘口罩": ["KN90", "KN95", "KP90", "KP95", "KP100"],
+      "防毒面具": ["配A1滤毒盒", "配E1滤毒盒", "配A1E1滤毒盒", "配3#滤毒盒", "配7#滤毒盒"],
+    },
+    "*防护性能参数": {
+      "防噪耳塞": ["NRR=29dB，标称降噪值11dB", "NRR=24dB，标称降噪值8.5dB", "NRR=33dB，标称降噪值13dB"],
+      "防毒面具": [
+        "APF=10，防护有机气体或蒸气",
+        "APF=10，防护酸性气体或蒸气",
+        "APF=10，防护有机及酸性气体或蒸气",
+      ],
+      "防尘口罩": [
+        "KN90，APF=10，对非油性颗粒物的过滤效率≥90%",
+        "KN95，APF=10，对非油性颗粒物的过滤效率≥95%",
+        "KP90，APF=10，对油性及非油性颗粒物的过滤效率≥90%",
+        "KP95，APF=10，对油性及非油性颗粒物的过滤效率≥95%",
+        "KP100，APF=10，对油性及非油性颗粒物的过滤效率≥99.97%",
+      ],
+    },
+  };
   let surveyData = null; // { key: [[cell,...],...] }
   let surveyCur = "process"; // 当前显示的子表
   // 选区状态（与主表格一致：cur 当前单元格 + 拖选矩形）
@@ -192,6 +221,16 @@
         }
       }
       wsOpts = merged;
+    } else if (headerName === "*防护用品类别") {
+      // 个体防护表「防护用品类别」：选项按同行「防护用品分类」联动，分类未填/不在映射时给出全部候选
+      const clsCol = sh.headers.indexOf("*防护用品分类");
+      const cls = clsCol >= 0 ? String(surveyRows()[sCur.r]?.[clsCol] ?? "").trim() : "";
+      wsOpts = PPE_CATEGORY_MAP[cls] || Object.values(PPE_CATEGORY_MAP).flat();
+    } else if (headerName && PPE_FIELD_OPTIONS[headerName]) {
+      // 个体防护表「型号或规格」「防护性能参数」：选项按同行「防护用品类别」联动
+      const catCol = sh.headers.indexOf("*防护用品类别");
+      const cat = catCol >= 0 ? String(surveyRows()[sCur.r]?.[catCol] ?? "").trim() : "";
+      wsOpts = PPE_FIELD_OPTIONS[headerName][cat] || null;
     } else if (headerName && SURVEY_COL_OPTIONS[headerName]) {
       wsOpts = SURVEY_COL_OPTIONS[headerName];
     }
