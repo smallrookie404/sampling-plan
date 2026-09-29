@@ -50,6 +50,8 @@
   let sSelEnd = null;
   let sSelAnchor = null; // 选区锚点（Shift+方向扩展用，与主表格 selAnchor 同义）
   let sDragging = false;
+  let sDragCell = null; // 拖动期间鼠标所在的单元格（判断是否真的跨格）
+  let sDragMovedCell = false; // 本次按下后是否拖到过其他单元格（区别于原地手抖）
 
   function sSelRect() {
     if (!sSelStart || !sSelEnd) return null;
@@ -115,6 +117,7 @@
   }
 
   function renderSurvey() {
+    sCellCommit(); // 重建 tbody 前先提交未完成的编辑，防止 sEditing 残留导致首次点击无法进入编辑
     sCloseWsPanel(); // tbody 重建会销毁编辑框，下拉面板一并清理
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
     const rows = surveyRows();
@@ -143,6 +146,7 @@
   $S("survey-tabs").addEventListener("click", (e) => {
     const btn = e.target.closest(".stab");
     if (!btn) return;
+    sCellCommit(); // 先提交当前编辑（此时 sCur 尚未清空，编辑内容不丢失）
     surveyCur = btn.dataset.k;
     sCur = sSelAnchor = sSelStart = sSelEnd = null;
     buildSurveyTabs();
@@ -250,18 +254,20 @@
   }
 
   function sCellCommit() {
-    if (!sEditing || !sCur) return;
+    if (!sEditing) return;
     sCloseWsPanel();
-    const td = sFindTd(sCur.r, sCur.c);
+    const cur = sCur;
+    const td = cur ? sFindTd(cur.r, cur.c) : null;
     const input = td && td.querySelector("input,textarea");
     const rows = surveyRows();
-    if (input && rows[sCur.r]) {
-      rows[sCur.r][sCur.c] = input.value;
+    if (input && cur && rows[cur.r]) {
+      rows[cur.r][cur.c] = input.value;
       surveySave();
     }
+    // 状态无条件复位：即使 sCur 已被清空（如切子表）或编辑框已被重建销毁，也不残留编辑态
     sEditing = false;
     sEditOriginal = null;
-    if (td) td.innerHTML = `<div class="ctext">${escHtml(rows[sCur.r] ? (rows[sCur.r][sCur.c] ?? "") : "")}</div>`;
+    if (td && cur) td.innerHTML = `<div class="ctext">${escHtml(rows[cur.r] ? (rows[cur.r][cur.c] ?? "") : "")}</div>`;
   }
 
   function sCellCancel() {
@@ -370,9 +376,11 @@
     const r = Number(tr.dataset.r);
     const c = Number(td.dataset.c);
     if (sEditing && sCur && r === sCur.r && c === sCur.c) {
-      // 编辑中按下当前格：允许拖动扩展选区；未拖动则保持编辑态（不 preventDefault，光标由浏览器原生定位）
+      // 编辑中按下当前格：允许格内拖动选文本（走原生选择）；拖出才提交并进入拖选
       sDragging = true;
       sDidDrag = false;
+      sDragCell = { r, c };
+      sDragMovedCell = false;
       sLastMouse = { x: e.clientX, y: e.clientY };
       return;
     }
@@ -383,6 +391,8 @@
     sSelAnchor = sSelStart = sSelEnd = { r, c };
     sDragging = true;
     sDidDrag = false;
+    sDragCell = { r, c };
+    sDragMovedCell = false;
     sLastMouse = { x: e.clientX, y: e.clientY };
     e.preventDefault();
     updateSurveySelection();
@@ -395,21 +405,29 @@
 
   document.addEventListener("mousemove", (e) => {
     if (!sDragging) return;
-    if (Math.abs(e.clientX - sLastMouse.x) > 3 || Math.abs(e.clientY - sLastMouse.y) > 3) {
-      if (!sDidDrag && sEditing) sCellCommit(); // 从编辑格拖出：先提交编辑再进入拖选（与主表格一致）
-      sDidDrag = true;
-    }
+    // 位移未超过阈值（原地手抖/边缘微抖）：不改变任何状态，松开仍按单击进入编辑
+    if (Math.abs(e.clientX - sLastMouse.x) <= 3 && Math.abs(e.clientY - sLastMouse.y) <= 3) return;
     const td = e.target.closest && e.target.closest("td[data-c]");
     if (!td) return;
     const tr = td.closest("tr[data-r]");
     if (!tr) return;
-    sSelEnd = { r: Number(tr.dataset.r), c: Number(td.dataset.c) };
+    const r = Number(tr.dataset.r), c = Number(td.dataset.c);
+    // 编辑态下鼠标仍在原格内：走浏览器原生文本选择，不提交、不进入拖选（与主表格一致）
+    if (sEditing && sCur && r === sCur.r && c === sCur.c) return;
+    // 跨到其他单元格：进入拖选（首次跨出编辑格先提交编辑）
+    if (!sDragCell || sDragCell.r !== r || sDragCell.c !== c) {
+      if (!sDragMovedCell && sEditing) sCellCommit();
+      sDragCell = { r, c };
+      sDragMovedCell = true;
+      sDidDrag = true;
+    }
+    sSelEnd = { r, c };
     updateSurveySelection();
   });
 
   document.addEventListener("mouseup", () => {
-    if (sDragging && !sDidDrag && sCur) {
-      // 单击（未拖动）：立即进入编辑，光标落在点击位置
+    // 单击（未真正拖到其他单元格，原地手抖不算）且不在编辑中：立即进入编辑，光标落在点击位置
+    if (sDragging && !sDragMovedCell && sCur && !sEditing) {
       const td = sFindTd(sCur.r, sCur.c);
       sCellBeginEdit();
       const el = td && td.querySelector("input,textarea");
@@ -787,6 +805,36 @@
       const ldSheet = { name: "劳动定员和职业病危害因素接触情况调查", rows: [heads] };
       const sheets = [ldSheet, ...SURVEY_SHEETS.map((sh) => sExportAoaSheet(sh.name, sh.headers, surveyData[sh.key] || []))];
       return X.writeWorkbook(sheets);
+    },
+    // 导入：从已解析的工作表数组（{ 表名: aoa，首行表头 }）识别 6 个子表并写入；返回匹配到的子表数
+    importFromArray: (byName) => {
+      surveyRows(); // 确保 surveyData 已初始化
+      let matched = 0;
+      for (const sh of SURVEY_SHEETS) {
+        const arr = byName[sh.name];
+        if (!Array.isArray(arr) || !arr.length) continue;
+        // 按表头名映射列（兼容列序变化），缺失列留空
+        const idx = {};
+        (arr[0] || []).forEach((h, i) => { const k = String(h ?? "").trim(); if (k && idx[k] === undefined) idx[k] = i; });
+        const rows = [];
+        for (const r of arr.slice(1)) {
+          if (!r || !r.some((v) => v !== "" && v !== null && v !== undefined)) continue;
+          rows.push(sh.headers.map((h) => (idx[h] !== undefined ? String(r[idx[h]] ?? "") : "")));
+        }
+        while (rows.length < 10) rows.push(sh.headers.map(() => ""));
+        surveyData[sh.key] = rows;
+        matched++;
+      }
+      if (matched) {
+        surveySave();
+        sCloseWsPanel();
+        sEditing = false;
+        sEditOriginal = null;
+        sCur = sSelAnchor = sSelStart = sSelEnd = null;
+        buildSurveyTabs();
+        renderSurvey();
+      }
+      return matched;
     },
     // 保存数据用：6 表内容（已裁剪空行）；全部为空时返回 null
     getData: () => {

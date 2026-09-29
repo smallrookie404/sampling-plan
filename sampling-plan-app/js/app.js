@@ -3012,6 +3012,13 @@
       const byName = {};
       for (const s of sheets) byName[s.name] = X.sheetToArray(s);
 
+      // 调查表导入：识别 6 个子表工作表（生产工艺调查、设备设施调查等），按表名写回（未匹配时无副作用）
+      let surveyMatched = 0;
+      if (window.SurveySheets && window.SurveySheets.importFromArray) {
+        surveyMatched = window.SurveySheets.importFromArray(byName);
+      }
+      let mainImported = 0;
+
       // 测点布局：优先按常用表名匹配，找不到时按表头智能识别（含“*检测项目”列的工作表即主表）
       let mainSheetName = byName["测点布局情况调查"] ? "测点布局情况调查"
         : byName["劳动定员和职业病危害因素接触情况调查"] ? "劳动定员和职业病危害因素接触情况调查" : null;
@@ -3078,6 +3085,7 @@
           importedVals.push(vals);
         }
         if (imported.length) {
+          mainImported = imported.length;
           rows = imported;
           rowHeights = rows.map(() => ROW_H);
           rowOffsets = null;
@@ -3115,10 +3123,23 @@
       rebuildDatalist(); // 参考库不随导入变化，仅重建录入区的联想列表
       renderItems();
       renderWindow();
-      activeTab = "main";
-      document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
-      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
-      alert(`导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库与检测项目保持现有）。`);
+      if (surveyMatched > 0 && mainImported === 0) {
+        // 仅调查表文件：切到调查表页签，主表格保持现状
+        activeTab = "survey";
+        document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "survey"));
+        document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-survey"));
+        alert(`导入成功：调查表 ${surveyMatched} 个子表（主表格保持现状）。`);
+      } else if (surveyMatched > 0) {
+        activeTab = "main";
+        document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
+        document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
+        alert(`导入成功：测点 ${mainImported} 行 + 调查表 ${surveyMatched} 个子表（危害因素库与检测项目保持现有）。`);
+      } else {
+        activeTab = "main";
+        document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
+        document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
+        alert(`导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库与检测项目保持现有）。`);
+      }
     } catch (err) {
       console.error(err);
       alert("导入失败：" + err.message);
