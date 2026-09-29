@@ -340,7 +340,7 @@
     if (td && td.scrollIntoView) td.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
-  // 单击选中；松开且未拖动时立即进入编辑（与主表格一致），光标落在点击位置
+  // 单击仅选中；双击进入编辑（与主表格一致），光标落在点击位置
   let sLastMouse = null;
   let sDidDrag = false;
 
@@ -410,8 +410,26 @@
   });
 
   $S("survey-body").addEventListener("dblclick", (e) => {
-    // 单击已进入编辑，双击无需重复处理
+    // 双击进入编辑，光标落在点击位置（与主表格一致）
     e.preventDefault();
+    const td = e.target.closest("td[data-c]");
+    if (!td) return;
+    const tr = td.closest("tr[data-r]");
+    if (!tr) return;
+    const r = Number(tr.dataset.r), c = Number(td.dataset.c);
+    if (!sCur || sCur.r !== r || sCur.c !== c) {
+      // 双击目标与当前格不同：先选中再进入编辑
+      sCur = { r, c };
+      sSelAnchor = sSelStart = sSelEnd = { r, c };
+      updateSurveySelection();
+    }
+    if (sEditing && sCur.r === r && sCur.c === c) return; // 已在编辑：光标由浏览器原生处理
+    sCellBeginEdit();
+    const el = td.querySelector("input,textarea");
+    if (el && sLastMouse) {
+      const pos = sCaretOffset(el, sLastMouse.x, sLastMouse.y);
+      try { el.setSelectionRange(pos, pos); } catch {}
+    }
   });
 
   document.addEventListener("mousemove", (e) => {
@@ -437,16 +455,7 @@
   });
 
   document.addEventListener("mouseup", () => {
-    // 单击（未真正拖到其他单元格，原地手抖不算）且不在编辑中：立即进入编辑，光标落在点击位置
-    if (sDragging && !sDragMovedCell && sCur && !sEditing) {
-      const td = sFindTd(sCur.r, sCur.c);
-      sCellBeginEdit();
-      const el = td && td.querySelector("input,textarea");
-      if (el && sLastMouse) {
-        const pos = sCaretOffset(el, sLastMouse.x, sLastMouse.y);
-        try { el.setSelectionRange(pos, pos); } catch {}
-      }
-    }
+    // 单击（未真正拖到其他单元格，原地手抖不算）：仅保持选中，双击才进入编辑
     sDragging = false;
   });
 
