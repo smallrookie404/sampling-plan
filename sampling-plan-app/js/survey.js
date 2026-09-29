@@ -638,6 +638,16 @@
     if (!text) return;
     e.preventDefault();
     const rows = surveyRows();
+    const editEl = ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") && $S("survey-body").contains(ae) ? ae : null;
+    // 编辑中：无 Tab 的多行纯文本（如段落描述）视为单元格内容，在光标处插入换行，不拆成上下两格
+    if (editEl && !text.includes("\t")) {
+      const merged = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n+$/, "");
+      const st = editEl.selectionStart ?? editEl.value.length;
+      const en = editEl.selectionEnd ?? st;
+      editEl.setRangeText(merged, st, en, "end");
+      return;
+    }
+    // 非编辑态（或含 Tab）：按 TSV 网格解析，无 Tab 多行文本按行拆分为多行（原行为）
     const grid = parseTsvGrid(text);
     // Excel 复制区域末尾常带一个空行，去掉（中间空行保留）
     if (grid.length > 1 && grid[grid.length - 1].length === 1 && grid[grid.length - 1][0] === "") grid.pop();
