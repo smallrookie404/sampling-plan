@@ -1649,12 +1649,12 @@
     try { localStorage.setItem(RECORDS_KEY, JSON.stringify(list)); } catch {}
   }
 
-  // 索引 + 本地缓存合并：有缓存的记录带 rows（供预览与直接调用），没有的仅元信息
+  // 索引 + 本地缓存合并：有缓存的记录带 rows 与 survey（供预览与直接调用），没有的仅元信息
   function attachCachedRows(index) {
     const map = new Map(readLocalFull().filter((r) => r && r.rows).map((r) => [r.id, r]));
     return index.map((r) => {
       const c = map.get(r.id);
-      return c ? { ...r, rows: c.rows } : r;
+      return c ? { ...r, rows: c.rows, ...(c.survey !== undefined ? { survey: c.survey } : {}) } : r;
     });
   }
 
@@ -2352,8 +2352,9 @@
     const meta = (await loadRecords()).find((r) => r.id === id);
     if (!meta) return;
     if (btn.dataset.act === "load") {
-      // 索引项可能不含 rows（本地无缓存），按 id 拉取完整记录
-      const rec = Array.isArray(meta.rows) && meta.rows.length ? meta : await loadRecordById(id);
+      // 索引项可能不含 rows（本地无缓存），按 id 拉取完整记录；仅调查表记录（rows 为空但有 survey）且缓存完整时直接使用
+      const hasFull = Array.isArray(meta.rows) && (meta.rows.length || meta.survey);
+      const rec = hasFull ? meta : await loadRecordById(id);
       if (!rec || !Array.isArray(rec.rows)) { alert("读取记录内容失败，请检查网络后重试。"); return; }
       const hasData = rows.some((r) => !isBlankRow(r));
       if (hasData && !confirm(`将用「${rec.name}」（${rec.rows.length} 行）替换当前表格，是否继续？`)) return;
@@ -2366,7 +2367,9 @@
       // 同步还原调查表 6 表数据（旧记录无 survey 字段时清空为默认空表）
       if (window.SurveySheets && window.SurveySheets.setData) window.SurveySheets.setData(rec.survey || null);
       $("db-modal").classList.add("hidden");
-      alert(`已调用「${rec.name}」（${rec.rows.length} 行${rec.survey ? "，含调查表" : ""}）。`);
+      const parts = rec.rows.length ? rec.rows.length + " 行" : (rec.survey ? "仅调查表" : "空记录");
+      const suffix = rec.rows.length && rec.survey ? "，含调查表" : "";
+      alert(`已调用「${rec.name}」（${parts}${suffix}）。`);
     } else if (btn.dataset.act === "del") {
       if (!confirm(`确定删除记录「${meta.name}」？此操作不可恢复。`)) return;
       if (await deleteRecordById(id)) {
