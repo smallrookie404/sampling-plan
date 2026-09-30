@@ -156,7 +156,7 @@
     const Ybase = O.map((v) => (v !== "" ? v : "固定"));
     const Zbase = A.map(() => "浓度（或强度）相对稳定");
     const AA = fillDown(H).map(toNum);
-    const AC = L.map((v) => (v !== "" ? v : "半手工作业"));
+    const ACbase = L.map((v) => (v !== "" ? v : "半手工作业"));
     const AG = fillDown(G);
     const AH = fillDown(F).map(toNum);
     const AL = fillDown(C);
@@ -291,6 +291,20 @@
     }
     // 危害因素其他来源（BE）：纯计算列——组内 K（录入区）有内容时按组内第一个非空 K 填充，否则为空
     const BE = rows.map((_, i) => groupK.get(W[i] + "\u0001" + X[i] + "\u0001" + AL[i]) ?? "");
+    // 作业方式（AC）：录入区 L 有内容时，同 车间(W)|岗位(X)|点位(AL) 组的所有行
+    // 的 AC 按组内第一个非空 L 的内容填充（与工作内容 J→AM 一致）；L 全空则按原默认
+    const AC = (() => {
+      const groupL = new Map(); // 组键 -> 第一个非空 L 内容
+      for (let i = 0; i < n; i++) {
+        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
+        const l = str(L[i]);
+        if (l !== "" && !groupL.has(key)) groupL.set(key, l);
+      }
+      return ACbase.map((v, i) => {
+        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
+        return groupL.has(key) ? groupL.get(key) : v;
+      });
+    })();
     const AS = AR.map((v) => (v === "定点" ? "短时间" : v === "个体" ? "长时间" : ""));
     const AW = AN.map((an, i) => (an === "高温" ? (U[i] !== "" ? U[i] : "Ⅱ") : ""));
     const BA = AN.map((an, i) => {
