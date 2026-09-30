@@ -126,9 +126,22 @@
     return surveyData;
   }
 
+  // 本地缓存落盘：打字路径每个按键都会调用，改为 300ms 防抖合并写入，
+  // 避免 JSON.stringify 全部 6 表 + localStorage 磁盘 IO 阻塞输入；
+  // 离开页面/切后台时强制落盘，保证数据不丢（内存数据始终实时，落盘仅影响崩溃恢复）
+  let surveySaveTimer = null;
   function surveySave() {
+    if (surveySaveTimer) clearTimeout(surveySaveTimer);
+    surveySaveTimer = setTimeout(surveySaveFlush, 300);
+  }
+  function surveySaveFlush() {
+    if (surveySaveTimer) { clearTimeout(surveySaveTimer); surveySaveTimer = null; }
     try { localStorage.setItem(SURVEY_KEY, JSON.stringify(surveyData)); } catch {}
   }
+  document.addEventListener("beforeunload", surveySaveFlush);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") surveySaveFlush();
+  });
 
   function surveyRows() {
     return surveyLoad()[surveyCur];

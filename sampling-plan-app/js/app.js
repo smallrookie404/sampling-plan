@@ -381,6 +381,7 @@
     html += `<tr class="row-spacer-b" style="height:${spacer}px${spacer > 0 ? "" : ";display:none"}"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     gridBody.innerHTML = html;
     refreshStatus();
+    selDomGen++;
     updateSelectionClasses();
     // tbody 重建销毁了布防框/编辑框：编辑态复位并为当前格重新布防（与调查表 renderSurvey 一致）
     if (editing) editing = false;
@@ -456,6 +457,7 @@
     renderedRows = [];
     for (let i = wantStart; i < wantEnd; i++) renderedRows.push(i);
     lastRenderedStart = wantStart;
+    selDomGen++;
     updateSelectionClasses();
   }
 
@@ -472,13 +474,14 @@
 
   // ---------- 输入联动 ----------
   let recomputeTimer = null;
-  // 输入过程中合并重算请求，避免每次按键都全量计算（离散操作仍走同步 recomputeAndRefresh）
+  // 输入过程中合并重算请求，避免每次按键都全量计算（离散操作仍走同步 recomputeAndRefresh）；
+  // 250ms：连续打字期间基本不触发全量重算，停顿后一次算清（体感与 120ms 无差异）
   function scheduleRecompute() {
     if (recomputeTimer) clearTimeout(recomputeTimer);
     recomputeTimer = setTimeout(() => {
       recomputeTimer = null;
       recomputeAndRefresh();
-    }, 120);
+    }, 250);
   }
 
   gridBody.addEventListener("input", (e) => {
@@ -916,22 +919,83 @@
     selectedRow = -1;
   }
 
+  // data-c 存的是列字母：预建「字母→索引」映射（ALL_COLS 恒定），避免逐格 indexOf
+  const COL_INDEX = new Map(ALL_COLS.map((c, i) => [c, i]));
+
+  // 选区/当前格高亮：记录上次应用的状态做差量刷新，只更新覆盖到的单元格，
+  // 避免方向键/拖选每帧全表遍历数千 td（原实现每格还做一次 indexOf）
+  let lastSelState = { rect: null, cur: null, multi: false, gen: -1 };
+  let selDomGen = 0; // tbody 重建/增减行时递增：旧 DOM 上的高亮类已失效，强制全量重刷
+
+  function selRectSame(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.r1 === b.r1 && a.r2 === b.r2 && a.c1 === b.c1 && a.c2 === b.c2;
+  }
+  function selCurSame(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.r === b.r && a.c === b.c;
+  }
+
+  // 单个 td 的选区相关类（sel/cur/hl-row/hl-col），语义与全量版一致
+  function applySelClasses(td, r, c, rect, cur2, multi) {
+    const inSel = !!rect && r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2;
+    const isCur = !!cur2 && r === cur2.r && c === cur2.c;
+    td.classList.toggle("sel", inSel);
+    td.classList.toggle("cur", isCur);
+    // 选中单元格的整行、整列高亮（拖选多格时以选区代替，避免大片高亮）
+    td.classList.toggle("hl-row", !multi && !!cur2 && r === cur2.r && !isCur);
+    td.classList.toggle("hl-col", !multi && !!cur2 && c === cur2.c && !isCur);
+  }
+
+  // 全量刷新（渲染窗口变化 / 差量面积过大时的兜底）
+  function fullScanSel(rect, cur2, multi) {
+    for (const tr of gridBody.querySelectorAll("tr[data-r]")) {
+      const r = Number(tr.dataset.r);
+      for (const td of tr.querySelectorAll("td[data-c]")) {
+        applySelClasses(td, r, COL_INDEX.get(td.dataset.c), rect, cur2, multi);
+      }
+    }
+  }
+
   function updateSelectionClasses() {
     const rect = selRect();
     // 单击也会产生 1×1 选区；仅当选区多于一个单元格时才视为“拖选”，让行列高亮让位
-    const multi = rect && (rect.r1 !== rect.r2 || rect.c1 !== rect.c2);
-    for (const tr of gridBody.querySelectorAll("tr[data-r]")) {
-      const r = Number(tr.dataset.r);
-      const isCurRow = !!(cur && r === cur.r); // 当前单元格所在行高亮
-      for (const td of tr.querySelectorAll("td[data-c]")) {
-        const c = ALL_COLS.indexOf(td.dataset.c);
-        const inSel = rect && r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2;
-        td.classList.toggle("sel", inSel);
-        td.classList.toggle("cur", !!(cur && r === cur.r && c === cur.c));
-        // 选中单元格的整行、整列高亮（拖选多格时以选区代替，避免大片高亮）
-        td.classList.toggle("hl-row", !multi && isCurRow && c !== cur.c);
-        td.classList.toggle("hl-col", !multi && !!cur && c === cur.c && r !== cur.r);
-      }
+    const multi = !!(rect && (rect.r1 !== rect.r2 || rect.c1 !== rect.c2));
+    const last = lastSelState;
+    if (last.gen === selDomGen && selRectSame(last.rect, rect) && selCurSame(last.cur, cur) && last.multi === multi) return;
+    const genChanged = last.gen !== selDomGen; // tbody 重建/增减行后旧 DOM 类失效，须全量
+    lastSelState = { rect: rect ? { ...rect } : null, cur: cur ? { ...cur } : null, multi, gen: selDomGen };
+
+    // 渲染窗口变化（滚动/重建 tbody）：旧 DOM 上的类已不存在，直接全量
+    if (genChanged) { fullScanSel(rect, cur, multi); return; }
+
+    // 差量：刷新 新旧选区 ∪ 新旧行列高亮带 覆盖到的单元格；面积过大退回全量
+    const area = (rc) => (rc ? (rc.r2 - rc.r1 + 1) * (rc.c2 - rc.c1 + 1) : 0);
+    if (area(rect) + area(last.rect) > renderedRows.length * ALL_COLS.length) { fullScanSel(rect, cur, multi); return; }
+    const rowSet = new Set(renderedRows);
+    const seen = new Set();
+    const targets = [];
+    const push = (r, c) => {
+      if (!rowSet.has(r) || c < 0 || c >= ALL_COLS.length) return;
+      const k = r * ALL_COLS.length + c;
+      if (!seen.has(k)) { seen.add(k); targets.push([r, c]); }
+    };
+    const pushArea = (rc) => { if (rc) for (let r = rc.r1; r <= rc.r2; r++) for (let c = rc.c1; c <= rc.c2; c++) push(r, c); };
+    pushArea(rect);
+    pushArea(last.rect);
+    if (!last.multi && last.cur) { // 旧行列高亮带需要清除
+      for (let c = 0; c < ALL_COLS.length; c++) push(last.cur.r, c);
+      for (const r of rowSet) push(r, last.cur.c);
+    }
+    if (!multi && cur) {
+      for (let c = 0; c < ALL_COLS.length; c++) push(cur.r, c);
+      for (const r of rowSet) push(r, cur.c);
+    }
+    for (const [r, c] of targets) {
+      const td = gridBody.querySelector(`tr[data-r="${r}"] > td[data-c="${ALL_COLS[c]}"]`);
+      if (td) applySelClasses(td, r, c, rect, cur, multi);
     }
   }
 
@@ -1004,9 +1068,8 @@
     }
     if (opts.grow && r > rows.length - 1) {
       if (rows.length >= 5000) r = rows.length - 1;
-      else while (rows.length < 5000 && r > rows.length - 1) { rows.push(blankRow()); rowHeights.push(ROW_H); }
+      else while (rows.length < 5000 && r > rows.length - 1) { rows.push(blankRow()); rowHeights.push(ROW_H); rowOffsets = null; } // 仅行数变化时作废行偏移缓存
     }
-    rowOffsets = null;
     setCur(r, c, opts);
   }
 
