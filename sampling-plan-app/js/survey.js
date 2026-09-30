@@ -344,7 +344,7 @@
       if (wsOpts.length) {
         const panel = document.createElement("div");
         panel.className = "survey-ws-panel";
-        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt" data-v="${escAttr(o)}"${multi && el.value.split("、").includes(o) ? ' style="background:var(--primary-light, #e8f0f8)"' : ""}>${escHtml(o)}</div>`).join("");
+        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt${multi && el.value.split("、").includes(o) ? " selected" : ""}" data-v="${escAttr(o)}">${escHtml(o)}</div>`).join("");
         document.body.appendChild(panel);
         const r = el.getBoundingClientRect();
         panel.style.left = r.left + "px";
@@ -371,7 +371,7 @@
             if (idx >= 0) curParts.splice(idx, 1);
             else curParts.push(v);
             el.value = curParts.join(SEP);
-            opt.style.background = idx >= 0 ? "" : "var(--primary-light, #e8f0f8)";
+            opt.classList.toggle("selected", idx < 0);
           } else {
             // 单选：点选即替换并关闭面板
             el.value = opt.dataset.v;

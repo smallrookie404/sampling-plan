@@ -220,10 +220,16 @@ table.survey td input { width: 100%; height: 100%; box-sizing: border-box; borde
 /* 编辑态多行文本框：无边框（聚焦用 inset 阴影，不占布局），高度由 JS 锁定为单元格原高度，度量与显示态完全一致 */
 table.survey td textarea { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: none; outline: none; background: #fff; padding: 2px 6px; font-size: 12px; font-family: inherit; line-height: 1.4; color: inherit; margin: 0; display: block; word-break: break-word; overflow-wrap: anywhere; }
 table.survey td input:focus, table.survey td textarea:focus { box-shadow: inset 0 0 0 1.5px var(--primary); }
-/* 车间下拉面板：body 级 fixed 定位，不被表格 overflow 裁剪；始终显示全部选项 */
-.survey-ws-panel { position: fixed; z-index: 1000; background: #fff; border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.18); max-height: 220px; overflow-y: auto; }
+/* 车间下拉面板：body 级 fixed 定位，不被表格 overflow 裁剪；始终显示全部选项。
+   加深投影 + 圆角 + 不透明纯白底，与背后表格内容明确分层，防止视觉混在一起 */
+.survey-ws-panel { position: fixed; z-index: 1000; background: #fff; border: 1px solid #94a3b8; border-radius: 6px; box-shadow: 0 8px 24px rgba(15,23,42,.28), 0 2px 6px rgba(15,23,42,.16); max-height: 220px; overflow-y: auto; }
 .survey-ws-panel .survey-ws-opt { padding: 5px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
-.survey-ws-panel .survey-ws-opt:hover { background: var(--primary-light, #e8f0f8); }
+.survey-ws-panel .survey-ws-opt:first-child { border-radius: 5px 5px 0 0; }
+.survey-ws-panel .survey-ws-opt:last-child { border-radius: 0 0 5px 5px; }
+.survey-ws-panel .survey-ws-opt:hover { background: #f1f5f9; }
+/* 已选中的选项：普通蓝底白字，与 hover 灰色区分 */
+.survey-ws-panel .survey-ws-opt.selected { background: #2563eb; color: #fff; }
+.survey-ws-panel .survey-ws-opt.selected:hover { background: #1d4ed8; }
 /* 隐形布防编辑器：固定定位覆盖当前单元格，透明不可见（文字也透明），仅供输入法附着与首键捕获；
    pointer-events none 不拦截鼠标（单击/双击/拖选仍落到单元格）；首次输入/组合开始时移除并显形为真正的编辑框 */
 textarea.survey-arm { position: fixed; z-index: 900; margin: 0; padding: 2px 6px; border: none; outline: none; resize: none; background: transparent; color: transparent; caret-color: transparent; overflow: hidden; font-size: 12px; font-family: inherit; line-height: 1.4; pointer-events: none; }
