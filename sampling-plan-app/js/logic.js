@@ -257,7 +257,7 @@
 
     // 4) 派生列
     const AK = AR.map((v) => (v === "定点" ? "采样点" : "采样对象"));
-    const AM = AL.map((s) => {
+    const AMbase = AL.map((s) => {
       const text = str(s);
       const posQ = text.indexOf("区");
       const digits = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => text.indexOf(String(d))).filter((p) => p >= 0);
@@ -265,6 +265,21 @@
       const base = earliest === undefined || earliest === text.length ? text : text.slice(0, earliest);
       return "操作设备" + base + "作业";
     });
+    // 工作内容（AM）：录入区 J 有内容时，同 车间(W)|岗位(X)|点位(AL) 组的所有行
+    // 的 AM 按组内第一个非空 J 的内容填充（组内多行录入时取最先出现的）；J 全空则按原推导
+    const Jinput = col("J");
+    const AM = (() => {
+      const groupJ = new Map(); // 组键 -> 第一个非空 J 内容
+      for (let i = 0; i < n; i++) {
+        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
+        const j = str(Jinput[i]);
+        if (j !== "" && !groupJ.has(key)) groupJ.set(key, j);
+      }
+      return AMbase.map((v, i) => {
+        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
+        return groupJ.has(key) ? groupJ.get(key) : v;
+      });
+    })();
     const AS = AR.map((v) => (v === "定点" ? "短时间" : v === "个体" ? "长时间" : ""));
     const AW = AN.map((an, i) => (an === "高温" ? (U[i] !== "" ? U[i] : "Ⅱ") : ""));
     const BA = AN.map((an, i) => {
