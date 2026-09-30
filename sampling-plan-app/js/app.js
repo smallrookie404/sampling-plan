@@ -245,7 +245,7 @@
       if (col === "AI" || col === "AJ" || col === "BH") {
         inner = selectHtml(col, row.manual[col], false, true);
       } else {
-        inner = `<input data-c="${col}" value="${escAttr(fmt(row.manual[col]))}">`;
+        inner = `<input data-c="${col}" value="${escAttr(fmt(row.values[col] ?? row.manual[col]))}">`;
       }
     } else if (TEXT_OVERRIDE_COLS.includes(col)) {
       inner = `<input data-c="${col}" value="${escAttr(fmt(row.values[col]))}">`;
@@ -498,6 +498,8 @@
     } else if (TEXT_OVERRIDE_COLS.includes(c)) {
       row.values[c] = el.value;
       row.overridden[c] = true;
+    } else if (MANUAL_COLS.includes(c)) {
+      row.manual[c] = el.value;
     }
     scheduleRecompute();
   });
@@ -563,7 +565,7 @@
         if (!el) continue;
         let val;
         if (OVERRIDE_COLS.includes(c)) val = fmt(row.values[c]);
-        else if (MANUAL_COLS.includes(c)) val = fmt(row.manual[c]);
+        else if (MANUAL_COLS.includes(c)) val = fmt(row.values[c] ?? row.manual[c]); // values 为引擎合并值（手工 + 组内同步填充）
         else val = fmt(row.input[c]);
         if (el.tagName === "SELECT") {
           if (el.value !== val) el.value = val;
@@ -1342,7 +1344,7 @@
         let v = "";
         if (r < rows.length) {
           if (INPUT_COLS.includes(col)) v = rows[r].input[col];
-          else if (MANUAL_COLS.includes(col)) v = rows[r].manual[col];
+          else if (MANUAL_COLS.includes(col)) v = rows[r].values[col] ?? rows[r].manual[col];
           else v = rows[r].values[col];
         }
         cells.push(v === null || v === undefined ? "" : String(v));
@@ -1559,7 +1561,7 @@
         let v = "";
         if (r < rows.length) {
           if (INPUT_COLS.includes(col)) v = rows[r].input[col];
-          else if (MANUAL_COLS.includes(col)) v = rows[r].manual[col];
+          else if (MANUAL_COLS.includes(col)) v = rows[r].values[col] ?? rows[r].manual[col];
           else v = rows[r].values[col];
         }
         cells.push(v === null || v === undefined ? "" : String(v));

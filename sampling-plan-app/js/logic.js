@@ -41,7 +41,7 @@
   ];
 
   // 自动计算区内仍由用户手工填写的列
-  const MANUAL_COLS = ["AI", "AJ", "AX", "BE", "BF", "BG", "BH"];
+  const MANUAL_COLS = ["AI", "AJ", "AX", "BF", "BG", "BH"];
   // 表中有下拉、可覆盖自动值的列
   const OVERRIDE_COLS = ["Y", "Z", "AO", "AR"];
   // 自动计算区内默认自动生成、但允许手动编辑覆盖的列（编辑后保留手动值）
@@ -115,7 +115,7 @@
    * rows: 行数组，每行结构
    *   {
    *     input: { A..U },           // 用户录入区
-   *     manual: { AI,AJ,AX,BE,BF,BG,BH }, // 手工填写列
+   *     manual: { AI,AJ,AX,BF,BG,BH }, // 手工填写列
    *     overridden: { Y:true, Z:true, AO:true, AR:true }, // 用户覆盖过的列
    *     values: { W..BI },         // 引擎计算结果（含手工列合并后的最终值）
    *     errors: { col: 说明 }       // 校验错误
@@ -280,6 +280,17 @@
         return groupJ.has(key) ? groupJ.get(key) : v;
       });
     })();
+    // 危害因素其他来源（BE）：录入区 K 有内容时，同 车间(W)|岗位(X)|点位(AL) 组内
+    // 第一个非空 K 的内容用于填充该组 BE 为空的行（BE 已手工填写的不覆盖）；K 全空不填充
+    const Kinput = col("K");
+    const groupK = new Map(); // 组键 -> 第一个非空 K 内容
+    for (let i = 0; i < n; i++) {
+      const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
+      const k = str(Kinput[i]);
+      if (k !== "" && !groupK.has(key)) groupK.set(key, k);
+    }
+    // 危害因素其他来源（BE）：纯计算列——组内 K（录入区）有内容时按组内第一个非空 K 填充，否则为空
+    const BE = rows.map((_, i) => groupK.get(W[i] + "\u0001" + X[i] + "\u0001" + AL[i]) ?? "");
     const AS = AR.map((v) => (v === "定点" ? "短时间" : v === "个体" ? "长时间" : ""));
     const AW = AN.map((an, i) => (an === "高温" ? (U[i] !== "" ? U[i] : "Ⅱ") : ""));
     const BA = AN.map((an, i) => {
@@ -297,7 +308,11 @@
       if (az === 0.25) return 1;
       return 3;
     });
-    const BD = AN.map((an) => (["噪声", "高温", "紫外辐射"].includes(an) ? "设备运行" : "原辅物料"));
+    // 危害因素来源（BD）：组内 K（危害因素其他来源）有录入时置空，否则按危害因素类型推导
+    const BD = AN.map((an, i) => {
+      if (groupK.has(W[i] + "\u0001" + X[i] + "\u0001" + AL[i])) return "";
+      return ["噪声", "高温", "紫外辐射"].includes(an) ? "设备运行" : "原辅物料";
+    });
 
     // 5) 组装结果
     for (let i = 0; i < n; i++) {
@@ -339,6 +354,7 @@
       put("BB", BB[i]);
       put("BC", BC[i]);
       put("BD", BD[i]);
+      put("BE", BE[i]);
       put("BI", BI[i]);
       // 手工列
       for (const mc of MANUAL_COLS) vals[mc] = r.manual[mc] ?? "";
