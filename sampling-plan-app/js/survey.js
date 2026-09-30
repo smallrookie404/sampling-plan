@@ -148,6 +148,8 @@
   function renderSurvey() {
     sCellCommit(); // 重建 tbody 前先提交未完成的编辑，防止 sEditing 残留导致首次点击无法进入编辑
     sCloseWsPanel(); // tbody 重建会销毁编辑框，下拉面板一并清理
+    sEditing = false; // tbody 重建销毁编辑框，编辑态同步复位（布防框在末尾重建）
+    sEditOriginal = null;
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
     const rows = surveyRows();
     // 表头（模板原格式：必填列带 *，样式上以浅红底提示）；首列（设备名称/物料名称等）横向锁定
@@ -169,6 +171,8 @@
       : `<tr class="empty-row"><td colspan="${sh.headers.length}" style="text-align:center;color:#94a3b8;padding:16px">暂无数据，点击「+ 新增行」开始填写</td></tr>`;
     $S("survey-status").textContent = `${sh.name} · 共 ${rows.length} 行`;
     updateSurveySelection();
+    // 重建 tbody 后为当前格重新布防隐形编辑器（焦点常在，打字/输入法随时可写）
+    if (sCur) sArmCell(sCur.r, sCur.c);
   }
 
   // 切换子表
@@ -176,13 +180,14 @@
     const btn = e.target.closest(".stab");
     if (!btn) return;
     sCellCommit(); // 先提交当前编辑（此时 sCur 尚未清空，编辑内容不丢失）
+    sRemoveArm();
     surveyCur = btn.dataset.k;
     sCur = sSelAnchor = sSelStart = sSelEnd = null;
     buildSurveyTabs();
     renderSurvey();
   });
 
-  // ---------- Excel 式编辑（与主表格一致：单击选中 / 双击或直接输入编辑 / 键盘导航 / 复制粘贴） ----------
+  // ---------- Excel 式编辑（与主表格一致：单击选中即布防编辑框 / 双击定位光标 / 键盘导航 / 复制粘贴） ----------
   let sEditing = false;
   let sEditOriginal = null;
 
@@ -196,13 +201,76 @@
     return $S("survey-body").querySelector(`tr[data-r="${r}"] > td[data-c="${c}"]`);
   }
 
-  function sCellBeginEdit(commitCurrent) {
-    if (!sCur || sEditing) return;
-    const td = sFindTd(sCur.r, sCur.c);
+  function sCellValue(r, c) {
+    return (surveyRows()[r] || [])[c] ?? "";
+  }
+
+  // ---------- 隐形布防编辑器（Excel 式输入法支持） ----------
+  // 单击选中单元格时，把一个透明 textarea 固定定位到该格上并聚焦：输入法上下文
+  // 始终挂在可编辑元素上，任何时刻打字/组字都从首字母进入输入法。首次输入
+  // （beforeinput/input）或 IME 组合开始（compositionstart）时显形为真正的编辑框。
+  let sArm = null; // { r, c, ta, composing, typed }
+  function sRemoveArm() {
+    if (sArm) { sArm.ta.remove(); sArm = null; }
+  }
+
+  function sArmCell(r, c) {
+    sRemoveArm();
+    if (!sCur || sCur.r !== r || sCur.c !== c) return;
+    const td = sFindTd(r, c);
+    if (!td) return;
+    const rect = td.getBoundingClientRect();
+    const wrapRect = $S("survey-wrap").getBoundingClientRect();
+    const ta = document.createElement("textarea");
+    ta.className = "survey-arm";
+    ta.value = "";
+    ta.style.left = rect.left + "px";
+    ta.style.top = rect.top + "px";
+    ta.style.width = rect.width + "px";
+    ta.style.height = rect.height + "px";
+    document.body.appendChild(ta);
+    ta.focus();
+    // IME 组合期间绝不移除布防框（移除会打断组合、吞掉首字母）：
+    // compositionstart 仅标记，compositionend（上屏/取消）后才显形并带入全部组合文本
+    ta.addEventListener("compositionstart", () => {
+      if (!sArm) return;
+      sArm.composing = true;
+    });
+    ta.addEventListener("compositionend", (e) => {
+      if (!sArm) return;
+      sArm.composing = false;
+      sArmReveal(); // 组合结束显形：ta.value 已含组合文本（或空=取消），交给编辑框
+      void e;
+    });
+    ta.addEventListener("input", () => {
+      if (!sArm) return;
+      // 非组合的真实输入（英文直录/数字等）：显形进入编辑
+      if (!sArm.composing) sArmReveal();
+    });
+    sArm = { r, c, ta, composing: false, typed: false };
+  }
+
+  // 布防框显形：就地转为正式编辑框（进入编辑态，初值 = 布防框已输入文本 + 单元格原值）
+  function sArmReveal() {
+    if (!sArm) return;
+    const { r, c, ta } = sArm;
+    const pending = ta.value; // 组合文本/首键已写入布防框，必须带入编辑框（首字母不丢）
+    sRemoveArm();
+    if (!sCur || sCur.r !== r || sCur.c !== c) return;
+    const td = sFindTd(r, c);
+    if (!td) return;
+    sEditing = true;
+    sEditOriginal = sCellValue(r, c);
+    sBuildEditor(td, pending);
+  }
+
+  // 创建编辑控件并同步聚焦（armed）：编辑框与显示态度量一致，选中/编辑共用。
+  // 编辑框存在且聚焦后，字符与中文输入法组合全程走浏览器原生路径，
+  // 不再有「首个按键落在 body 上被吞、第二个字母才进输入法」的问题。
+  function sBuildEditor(td, commitCurrent) {
     const rows = surveyRows();
     if (!td || !rows[sCur.r]) return;
-    sEditing = true;
-    sEditOriginal = rows[sCur.r][sCur.c] ?? "";
+    const initVal = commitCurrent !== undefined ? commitCurrent + sCellValue(sCur.r, sCur.c) : sCellValue(sCur.r, sCur.c);
     // 下拉联想列：「单元/工作场所」动态取主表格已填车间名称；设备设施表「操作岗位(工种)」= 同行车间在主表中的岗位/工种；其余固定选项列取 SURVEY_COL_OPTIONS（可输可选）
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
     const headerName = sh && sh.headers[sCur.c];
@@ -236,12 +304,21 @@
     }
     if (wsOpts) {
       sCloseWsPanel();
-      td.innerHTML = `<input data-r="${sCur.r}" data-c="${sCur.c}" value="${escAttr(sEditOriginal)}">`;
+      td.innerHTML = `<input data-r="${sCur.r}" data-c="${sCur.c}" value="${escAttr(initVal)}">`;
       const el = td.querySelector("input");
-      if (commitCurrent) el.value = commitCurrent + sEditOriginal;
       el.setSelectionRange(el.value.length, el.value.length);
-      // 焦点延迟到下一帧：新建编辑框同步聚焦会使中文输入法首次组合不上屏（首字丢失）
-      requestAnimationFrame(() => { if (sEditing && el.isConnected) el.focus(); });
+      el.focus();
+      // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
+      // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
+      const armOriginal = initVal;
+      const markEditing = () => { if (!sEditing) { sEditing = true; sEditOriginal = armOriginal; } };
+      el.addEventListener("input", () => {
+        markEditing();
+        if (sCur && Number(el.dataset.r) === sCur.r && Number(el.dataset.c) === sCur.c) {
+          surveyRows()[sCur.r][sCur.c] = el.value;
+          surveySave();
+        }
+      });
       // 多选仅限「单元/工作场所」与岗位(工种)列；其余固定选项列单选（点选即替换）
       const multi = !!(
         (headerName && headerName.includes("单元/工作场所")) ||
@@ -293,21 +370,28 @@
     // 编辑不改变行高：textarea 高度 = td 内容区高度（clientHeight 减上下内边距），替换前量好
     const cs = getComputedStyle(td);
     const h = td.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
-    td.innerHTML = `<textarea data-r="${sCur.r}" data-c="${sCur.c}">${escHtml(sEditOriginal)}</textarea>`;
+    td.innerHTML = `<textarea data-r="${sCur.r}" data-c="${sCur.c}">${escHtml(initVal)}</textarea>`;
     const ta = td.querySelector("textarea");
     ta.style.height = h + "px";
     ta.style.overflowY = "hidden";
-    if (commitCurrent) ta.value = commitCurrent + sEditOriginal;
     ta.setSelectionRange(ta.value.length, ta.value.length);
-    // 焦点延迟到下一帧（连同高度修正）：新建编辑框同步聚焦会使中文输入法首次组合不上屏（首字丢失）
-    requestAnimationFrame(() => {
-      if (!sEditing || !ta.isConnected) return;
-      if (ta.scrollHeight > ta.clientHeight) {
-        // border-box 下边框占高，补偿后内容区才能完整容纳
-        const bh = ta.offsetHeight - ta.clientHeight;
-        ta.style.height = (ta.scrollHeight + bh) + "px";
+    // 字体度量差异可能导致内容溢出出现滚动条：以内容实际高度为准（不出现滚动条）
+    if (ta.scrollHeight > ta.clientHeight) {
+      // border-box 下边框占高，补偿后内容区才能完整容纳
+      const bh = ta.offsetHeight - ta.clientHeight;
+      ta.style.height = (ta.scrollHeight + bh) + "px";
+    }
+    ta.focus();
+    // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
+    // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
+    const armOriginal = initVal;
+    const markEditing = () => { if (!sEditing) { sEditing = true; sEditOriginal = armOriginal; } };
+    ta.addEventListener("input", () => {
+      markEditing();
+      if (sCur && Number(ta.dataset.r) === sCur.r && Number(ta.dataset.c) === sCur.c) {
+        surveyRows()[sCur.r][sCur.c] = ta.value;
+        surveySave();
       }
-      ta.focus();
     });
   }
 
@@ -332,9 +416,13 @@
     if (!sEditing || !sCur) return;
     sCloseWsPanel();
     const td = sFindTd(sCur.r, sCur.c);
+    // 布防期间 input 事件已实时写入模型，取消需还原为进入编辑时的原值
+    const rows = surveyRows();
+    if (rows[sCur.r]) rows[sCur.r][sCur.c] = sEditOriginal ?? "";
+    surveySave();
     sEditing = false;
     sEditOriginal = null;
-    if (td) td.innerHTML = `<div class="ctext">${escHtml((surveyRows()[sCur.r] || [])[sCur.c] ?? "")}</div>`;
+    if (td) td.innerHTML = `<div class="ctext">${escHtml(sCellValue(sCur.r, sCur.c))}</div>`;
   }
 
   function sMove(dr, dc, opts = {}) {
@@ -360,6 +448,7 @@
     r = Math.max(0, Math.min(r, rows.length - 1));
     c = Math.max(0, Math.min(c, maxC));
     const prev = sCur;
+    const movedToNewCell = !prev || prev.r !== r || prev.c !== c;
     sCur = { r, c };
     if (opts.extend && (sSelAnchor || prev)) {
       if (!sSelAnchor && prev) sSelAnchor = prev;
@@ -373,6 +462,13 @@
     updateSurveySelection();
     const td = sFindTd(r, c);
     if (td && td.scrollIntoView) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+    // 键盘导航落点重新布防隐形编辑器（Excel 式：单击/导航仅选中，随时可打字）
+    if (movedToNewCell) {
+      sEditing = false;
+      sEditOriginal = null;
+      sRemoveArm();
+      sArmCell(r, c);
+    }
   }
 
   function sMoveTo(r, c) {
@@ -380,11 +476,18 @@
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
     r = Math.max(0, Math.min(r, rows.length - 1));
     c = Math.max(0, Math.min(c, sh.headers.length - 1));
+    const movedToNewCell = !sCur || sCur.r !== r || sCur.c !== c;
     sCur = { r, c };
     sSelAnchor = sSelStart = sSelEnd = { r, c };
     updateSurveySelection();
     const td = sFindTd(r, c);
     if (td && td.scrollIntoView) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (movedToNewCell) {
+      sEditing = false;
+      sEditOriginal = null;
+      sRemoveArm();
+      sArmCell(r, c);
+    }
   }
 
   // 单击仅选中；双击进入编辑（与主表格一致），光标落在点击位置
@@ -445,6 +548,7 @@
     if (sEditing) {
       sCellCommit(); // 点其他格：先提交再切换
     }
+    sRemoveArm();
     sCur = { r, c };
     sSelAnchor = sSelStart = sSelEnd = { r, c };
     sDragging = true;
@@ -452,12 +556,14 @@
     sDragCell = { r, c };
     sDragMovedCell = false;
     sLastMouse = { x: e.clientX, y: e.clientY };
+    // 阻止 mousedown 默认聚焦（点击目标 div 无需聚焦，焦点交给隐形布防框）
     e.preventDefault();
+    sArmCell(r, c);
     updateSurveySelection();
   });
 
   $S("survey-body").addEventListener("dblclick", (e) => {
-    // 双击进入编辑，光标落在点击位置（与主表格一致）
+    // 双击进入编辑（Excel 语义）：显形编辑框并定位光标到点击位置
     e.preventDefault();
     const td = e.target.closest("td[data-c]");
     if (!td) return;
@@ -465,13 +571,26 @@
     if (!tr) return;
     const r = Number(tr.dataset.r), c = Number(td.dataset.c);
     if (!sCur || sCur.r !== r || sCur.c !== c) {
-      // 双击目标与当前格不同：先选中再进入编辑
+      // 双击目标与当前格不同：先提交旧格，再选中新格
+      if (sEditing) sCellCommit();
+      sRemoveArm();
       sCur = { r, c };
       sSelAnchor = sSelStart = sSelEnd = { r, c };
       updateSurveySelection();
     }
-    if (sEditing && sCur.r === r && sCur.c === c) return; // 已在编辑：光标由浏览器原生处理
-    sCellBeginEdit();
+    if (sEditing && sCur.r === r && sCur.c === c) {
+      // 已在编辑：仅定位光标
+      const el0 = td.querySelector("input,textarea");
+      if (el0 && sLastMouse) {
+        const pos = sCaretOffset(el0, sLastMouse.x, sLastMouse.y);
+        try { el0.setSelectionRange(pos, pos); } catch {}
+      }
+      return;
+    }
+    sRemoveArm();
+    sEditing = true;
+    sEditOriginal = sCellValue(r, c);
+    sBuildEditor(td);
     const el = td.querySelector("input,textarea");
     if (el && sLastMouse) {
       const pos = sCaretOffset(el, sLastMouse.x, sLastMouse.y);
@@ -490,9 +609,15 @@
     const r = Number(tr.dataset.r), c = Number(td.dataset.c);
     // 编辑态下鼠标仍在原格内：走浏览器原生文本选择，不提交、不进入拖选（与主表格一致）
     if (sEditing && sCur && r === sCur.r && c === sCur.c) return;
-    // 跨到其他单元格：进入拖选（首次跨出编辑格先提交编辑）
+    // 跨到其他单元格：进入拖选（首次跨出编辑格先提交编辑，隐形布防框随后重建到拖选起点）
     if (!sDragCell || sDragCell.r !== r || sDragCell.c !== c) {
-      if (!sDragMovedCell && sEditing) sCellCommit();
+      if (!sDragMovedCell && sEditing) {
+        sCellCommit();
+        sRemoveArm();
+        sCur = { r, c };
+        sSelAnchor = { r, c };
+        sArmCell(r, c);
+      }
       sDragCell = { r, c };
       sDragMovedCell = true;
       sDidDrag = true;
@@ -502,7 +627,7 @@
   });
 
   document.addEventListener("mouseup", () => {
-    // 单击（未真正拖到其他单元格，原地手抖不算）：仅保持选中，双击才进入编辑
+    // 单击/拖选结束：拖选跨格时编辑框在 mousemove 提交后已被目标格布防重建
     sDragging = false;
   });
 
@@ -511,12 +636,14 @@
   document.addEventListener("keydown", (e) => {
     if (!sCur) return;
     const ae = document.activeElement;
-    // 焦点在其他输入框/文本域（如保存对话框）时不劫持按键
-    if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT") && !$S("survey-body").contains(ae)) return;
+    // 焦点在其他输入框/文本域（如保存对话框）时不劫持按键；隐形布防框除外（它代表当前格）
+    const inBody = ae && $S("survey-body").contains(ae);
+    const onArm = sArm && ae === sArm.ta;
+    if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT") && !inBody && !onArm) return;
     const mod = e.ctrlKey || e.metaKey;
     if (e.isComposing || e.key === "Process") return; // 中文输入法组合中不拦截
-    // 编辑中的输入框获得焦点时进入编辑态分支
-    const editInput = ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") && $S("survey-body").contains(ae) ? ae : null;
+    // 编辑中的输入框获得焦点时进入编辑态分支（布防框不算：它处于「选中未编辑」态）
+    const editInput = inBody && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") ? ae : null;
 
     if (mod) {
       if (editInput) {
@@ -552,7 +679,11 @@
       if (editInput) {
         try { editInput.setSelectionRange(editInput.value.length, editInput.value.length); } catch {}
       } else {
-        sCellBeginEdit();
+        sRemoveArm();
+        sEditing = true;
+        sEditOriginal = sCellValue(sCur.r, sCur.c);
+        const td = sFindTd(sCur.r, sCur.c);
+        if (td) sBuildEditor(td);
       }
       return;
     }
@@ -576,6 +707,9 @@
       } else if (e.key === "Escape") {
         e.preventDefault();
         sCellCancel();
+        // 取消后回到布防态（隐形框重新聚焦），继续打字/导航不中断
+        sRemoveArm();
+        sArmCell(sCur.r, sCur.c);
       }
       return;
     }
@@ -608,8 +742,14 @@
       sMove(e.key === "PageDown" ? page : -page, 0, { extend: e.shiftKey });
       return;
     }
-    // Delete/Backspace：清空选区（或当前格）内容
+    // Delete/Backspace：清空选区（或当前格）内容；焦点在布防框内且单格选区时走原生逐字删除
     if (e.key === "Delete" || e.key === "Backspace") {
+      const td = sFindTd(sCur.r, sCur.c);
+      const el = td && td.querySelector("input,textarea");
+      if (el && document.activeElement === el) {
+        // 布防框聚焦中：Backspace/Delete 走浏览器原生编辑（不清空整格）
+        return;
+      }
       e.preventDefault();
       const rect = sSelRect();
       const rows = surveyRows();
@@ -625,10 +765,12 @@
       renderSurvey();
       return;
     }
-    // 可打印字符直接进入编辑并追加（编辑框内继续输入走原生）
+    // 可打印字符：焦点应已在隐形布防框（单击/导航时布防），首个键经原生写入并触发显形；
+    // 焦点意外丢失时重新布防兜底（不影响本键之后的输入）
     if (e.key.length === 1 && !e.altKey) {
-      e.preventDefault();
-      sCellBeginEdit(e.key);
+      if (!sArm || document.activeElement !== sArm.ta) {
+        if (!editInput) sArmCell(sCur.r, sCur.c);
+      }
     }
   });
 
@@ -687,9 +829,10 @@
   // 粘贴基准 = 选区左上角；与主表格一致：有选区时按选区大小将剪贴板内容按行列规律重复填充，无选区（或单格选区）时按剪贴板内容大小直接粘贴
   document.addEventListener("paste", (e) => {
     if (!sCur) return;
-    // 焦点在其他输入框/文本域时不劫持（如保存对话框）
+    // 焦点在其他输入框/文本域时不劫持（如保存对话框）；隐形布防框代表当前格，不在此列
     const ae = document.activeElement;
-    if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT") && !$S("survey-body").contains(ae)) return;
+    const onArm = sArm && ae === sArm.ta;
+    if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT") && !$S("survey-body").contains(ae) && !onArm) return;
     const text = e.clipboardData && e.clipboardData.getData("text/plain");
     if (!text) return;
     e.preventDefault();
@@ -701,6 +844,11 @@
       const st = editEl.selectionStart ?? editEl.value.length;
       const en = editEl.selectionEnd ?? st;
       editEl.setRangeText(merged, st, en, "end");
+      // 布防框粘贴：手动同步模型（setRangeText 不触发 input 事件）
+      if (sCur && Number(editEl.dataset.r) === sCur.r && Number(editEl.dataset.c) === sCur.c) {
+        surveyRows()[sCur.r][sCur.c] = editEl.value;
+        surveySave();
+      }
       return;
     }
     // 非编辑态（或含 Tab）：按 TSV 网格解析，无 Tab 多行文本按行拆分为多行（原行为）
@@ -727,6 +875,7 @@
     surveySave();
     sEditing = false; // renderSurvey 重建 tbody 会销毁编辑框，编辑态标志必须同步复位
     sEditOriginal = null;
+    sRemoveArm();
     renderSurvey();
   });
 
