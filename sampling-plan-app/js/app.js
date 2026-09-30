@@ -382,6 +382,9 @@
     gridBody.innerHTML = html;
     refreshStatus();
     updateSelectionClasses();
+    // tbody 重建销毁了布防框/编辑框：编辑态复位并为当前格重新布防（与调查表 renderSurvey 一致）
+    if (editing) editing = false;
+    if (cur && editableCellAt(cur.r, cur.c) && !isSelectCol(ALL_COLS[cur.c])) armCell(cur.r, cur.c);
   }
 
   // 增量渲染：快速滚动时不整体重建表格，只裁掉离开窗口的行、追加进入窗口的行。
@@ -457,6 +460,7 @@
   }
 
   gridWrap.addEventListener("scroll", () => {
+    removeArm(); // 滚动后单元格位置变化，固定定位的布防框立即失效
     if (scrollRenderQueued) return;
     scrollRenderQueued = true;
     requestAnimationFrame(() => {
@@ -798,10 +802,82 @@
   let editOriginal = null; // 进入编辑时的原始值，Esc 还原用
   let lastMouse = null; // 最近一次鼠标位置，双击时用于放置光标
 
+  // ---------- 隐形布防编辑器（与调查表一致：单击仅选中，打字/输入法显形编辑框，双击进入编辑） ----------
+  let arm = null; // { r, c, ta, composing }
+  function removeArm() {
+    if (arm) { arm.ta.remove(); arm = null; }
+  }
+
+  function armCell(r, c) {
+    removeArm();
+    if (!cur || cur.r !== r || cur.c !== c) return;
+    if (!editableCellAt(r, c)) return;
+    const td = findTd(r, c);
+    if (!td) return;
+    const rect = td.getBoundingClientRect();
+    const ta = document.createElement("textarea");
+    ta.className = "grid-arm";
+    ta.value = "";
+    ta.style.left = rect.left + "px";
+    ta.style.top = rect.top + "px";
+    ta.style.width = rect.width + "px";
+    ta.style.height = rect.height + "px";
+    document.body.appendChild(ta);
+    ta.focus();
+    // IME 组合期间不移除布防框（移除会打断组合、吞掉首字母）；组合结束后显形并带入全部组合文本
+    ta.addEventListener("compositionstart", () => {
+      if (arm) arm.composing = true;
+    });
+    ta.addEventListener("compositionend", () => {
+      if (arm) { arm.composing = false; armReveal(); }
+    });
+    ta.addEventListener("input", () => {
+      if (arm && !arm.composing) armReveal(); // 非组合的真实输入：显形进入编辑
+    });
+    arm = { r, c, ta, composing: false };
+  }
+
+  // 布防框显形：转入正式编辑框（进入编辑态，已输入文本置于原值之前，光标跟在其后）
+  function armReveal() {
+    if (!arm) return;
+    const { r, c, ta } = arm;
+    const pending = ta.value;
+    removeArm();
+    if (!cur || cur.r !== r || cur.c !== c) return;
+    if (!editableCellAt(r, c)) return;
+    const td = findTd(r, c);
+    if (!td) return;
+    editing = true;
+    editOriginal = getCellModelValue(r, c);
+    const el = td.querySelector("input");
+    if (el) {
+      if (pending) {
+        el.value = pending + el.value;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      el.focus({ preventScroll: true });
+      const pos = pending ? pending.length : el.value.length;
+      try { el.setSelectionRange(pos, pos); } catch {}
+      showDatalist(el); // 联想输入列：进入编辑时弹出下拉候选
+    }
+  }
+
   function editableCellAt(r, cIdx) {
     if (cIdx < 0 || cIdx >= ALL_COLS.length) return false;
     const col = ALL_COLS[cIdx];
     return INPUT_COLS.includes(col) || MANUAL_COLS.includes(col) || TEXT_OVERRIDE_COLS.includes(col);
+  }
+
+  // 该列渲染为 select 下拉框（OVERRIDE_COLS 与 SELECT_COLS）
+  function isSelectCol(col) {
+    return OVERRIDE_COLS.includes(col) || SELECT_COLS.has(col);
+  }
+
+  // 进入编辑态时弹出 datalist 联想下拉（单击不再聚焦输入框后，需主动调 showPicker）
+  function showDatalist(el) {
+    if (el && el.tagName === "INPUT" && el.list && el.showPicker) {
+      try { el.showPicker(); } catch {}
+    }
   }
 
   function findTd(r, cIdx) {
@@ -901,6 +977,7 @@
     cur = { r, c: cIdx };
     editing = false;
     editOriginal = null;
+    removeArm();
     if (extend && (selAnchor || prev)) {
       if (!selAnchor && prev) selAnchor = prev;
       selStart = selAnchor;
@@ -1119,19 +1196,41 @@
     const cell = { r, c };
     lastMouse = { x: e.clientX, y: e.clientY };
     clearRowSelection();
+    // 编辑中点当前格：走浏览器原生文本选择，不打断编辑（与调查表一致）
+    if (editing && cur && cur.r === r && cur.c === c) return;
     editing = false;
     editOriginal = null;
     if (e.shiftKey) {
       // Shift+点击扩展选区：当前单元格保持在锚点（Excel 行为）
+      removeArm();
       if (!cur) selAnchor = cell;
       else if (!selAnchor) selAnchor = cur;
       selStart = selAnchor;
       selEnd = cell;
-    } else {
-      selAnchor = cell;
-      selStart = cell;
-      selEnd = cell;
-      cur = { r, c };
+      selDragging = true;
+      updateSelectionClasses();
+      return;
+    }
+    selAnchor = cell;
+    selStart = cell;
+    selEnd = cell;
+    cur = { r, c };
+    // 可编辑输入格：单击仅选中（布防隐形编辑框），双击/打字才进入编辑（与调查表一致）
+    if (editableCellAt(r, c)) {
+      const col = ALL_COLS[c];
+      if (isSelectCol(col)) {
+        // select 下拉格：单击即聚焦（下拉无文字编辑语义，保持原生选择行为）
+        selDragging = true;
+        updateSelectionClasses();
+        const sel = td.querySelector("select");
+        if (sel) sel.focus({ preventScroll: true });
+        return;
+      }
+      e.preventDefault(); // 阻止 mousedown 默认聚焦输入框
+      selDragging = true;
+      updateSelectionClasses();
+      armCell(r, c);
+      return;
     }
     selDragging = true;
     updateSelectionClasses();
@@ -1139,6 +1238,13 @@
 
   gridBody.addEventListener("mouseover", (e) => {
     if (!selDragging) return;
+    // 编辑中鼠标在原格内移动：走原生文本选择，不进入拖选（与调查表一致）
+    const td0 = e.target.closest && e.target.closest("td[data-c]");
+    if (td0 && editing && cur) {
+      const rr = Number(td0.closest("tr").dataset.r);
+      const cc = ALL_COLS.indexOf(td0.dataset.c);
+      if (rr === cur.r && cc === cur.c) return;
+    }
     const td = e.target.closest("td[data-c]");
     if (!td) return;
     selEnd = { r: Number(td.closest("tr").dataset.r), c: ALL_COLS.indexOf(td.dataset.c) };
@@ -1160,27 +1266,89 @@
     if (!td) return;
     const r = Number(td.closest("tr[data-r]").dataset.r);
     const c = ALL_COLS.indexOf(td.dataset.c);
-    cur = { r, c };
-    selAnchor = selStart = selEnd = { r, c };
-    if (editableCellAt(r, c)) {
-      editOriginal = getCellModelValue(r, c);
-      editing = true;
-      const el = td.querySelector("input");
-      if (el) {
-        el.focus({ preventScroll: true });
-        let pos = el.value.length;
-        if (lastMouse && document.caretRangeFromPoint) {
-          const range = document.caretRangeFromPoint(lastMouse.x, lastMouse.y);
-          if (range && range.startContainer === el) pos = range.startOffset;
-        }
-        try { el.setSelectionRange(pos, pos); } catch {}
+    // 双击进入编辑（Excel 语义）：与调查表一致
+    if (!cur || cur.r !== r || cur.c !== c) {
+      editing = false;
+      editOriginal = null;
+      cur = { r, c };
+      selAnchor = selStart = selEnd = { r, c };
+    }
+    if (!editableCellAt(r, c)) { updateSelectionClasses(); return; }
+    removeArm();
+    editing = true;
+    editOriginal = getCellModelValue(r, c);
+    const el = td.querySelector("input");
+    if (el) {
+      el.focus({ preventScroll: true });
+      let pos = el.value.length;
+      if (lastMouse && document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(lastMouse.x, lastMouse.y);
+        if (range && range.startContainer === el) pos = range.startOffset;
       }
+      try { el.setSelectionRange(pos, pos); } catch {}
+      showDatalist(el); // 联想输入列：进入编辑时弹出下拉候选
     }
     updateSelectionClasses();
   });
 
   gridBody.addEventListener("focusout", () => {
     editing = false;
+  });
+
+  // 布防框键盘路由（挂 document：布防框 append 在 body 上，gridBody 的 keydown 收不到）。
+  // 与调查表一致：布防框聚焦 = 「选中未编辑」态，打字/退格交给布防框 input 事件显形，
+  // 导航/提交键按非编辑模式处理
+  document.addEventListener("keydown", (e) => {
+    if (!arm || e.target !== arm.ta) return;
+    if (e.isComposing || e.key === "Process") return; // 中文输入法组合中不拦截
+    const key = e.key;
+    const mod = e.ctrlKey || e.metaKey;
+    const shift = e.shiftKey;
+    if (mod) return; // Ctrl 组合（复制粘贴等）交给浏览器
+    if (key === "Enter") { e.preventDefault(); removeArm(); moveCur(shift ? -1 : 1, 0, { grow: true }); return; }
+    if (key === "Tab") { e.preventDefault(); removeArm(); moveCur(0, shift ? -1 : 1, { grow: true, wrap: true }); return; }
+    if (key === "F2") { e.preventDefault(); armReveal(); return; }
+    if (key === "ArrowDown" && e.altKey) return; // select 格 Alt+↓ 原生下拉
+    if (key === "ArrowDown" || key === "ArrowUp") { e.preventDefault(); removeArm(); moveCur(key === "ArrowDown" ? 1 : -1, 0, { extend: shift }); return; }
+    if (key === "ArrowRight" || key === "ArrowLeft") { e.preventDefault(); removeArm(); moveCur(0, key === "ArrowRight" ? 1 : -1, { extend: shift }); return; }
+    if (key === "Home") { e.preventDefault(); removeArm(); if (cur) setCur(cur.r, 0); return; }
+    if (key === "End") { e.preventDefault(); removeArm(); const rr = cur ? cur.r : 0; setCur(rr, lastDataCol(rr)); return; }
+    if (key === "PageDown" || key === "PageUp") {
+      e.preventDefault(); removeArm();
+      const rh = Math.max(1, rowHeightAt(cur ? cur.r : 0));
+      const page = Math.max(1, Math.floor(gridWrap.clientHeight / rh) - 1);
+      moveCur(key === "PageDown" ? page : -page, 0, { extend: shift });
+      return;
+    }
+    if (key === "Delete") {
+      if (clearRange(selRect())) { e.preventDefault(); recomputeAndRefresh(); }
+      return;
+    }
+    // 可打印字符/退格：不 preventDefault，交给布防框 input 事件显形（文本由 armReveal 带入编辑框）
+  });
+
+  // 布防框聚焦（选中未编辑）时复制：走当前单元格/选区内容（布防框值为空，原生复制会得到空文本）
+  document.addEventListener("copy", (e) => {
+    if (!arm || document.activeElement !== arm.ta) return;
+    const rect = selRect();
+    if (!rect || (rect.r1 === rect.r2 && rect.c1 === rect.c2)) return; // 单格：交给默认行为也无内容，忽略
+    e.preventDefault();
+    const lines = [];
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      const cells = [];
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        const col = ALL_COLS[c];
+        let v = "";
+        if (r < rows.length) {
+          if (INPUT_COLS.includes(col)) v = rows[r].input[col];
+          else if (MANUAL_COLS.includes(col)) v = rows[r].manual[col];
+          else v = rows[r].values[col];
+        }
+        cells.push(v === null || v === undefined ? "" : String(v));
+      }
+      lines.push(cells.join("\t"));
+    }
+    if (e.clipboardData) e.clipboardData.setData("text/plain", lines.join("\n"));
   });
 
   gridBody.addEventListener("keydown", (e) => {
@@ -1372,7 +1540,12 @@
     }
   });
 
-  gridBody.addEventListener("copy", (e) => {
+  // 复制：与调查表一致挂 document（布防框/选区态焦点不在表格内也能响应）；
+  // 编辑中（焦点在表格输入框上）走浏览器原生复制
+  document.addEventListener("copy", (e) => {
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === "INPUT" || ae.tagName === "SELECT") && gridBody.contains(ae)) return; // 编辑中走原生复制
+    if (!cur) return;
     const rect = selRect();
     if (!rect) return;
     const lines = [];
@@ -1396,16 +1569,64 @@
     }
   });
 
-  gridBody.addEventListener("paste", (e) => {
+  // 解析 Excel 粘贴文本（与调查表一致）：Tab 分列、换行分行；
+  // 含换行/引号/Tab 的单元格被 Excel 包在双引号内（"" 为字面引号）
+  function parseTsvGrid(text) {
+    const grid = [];
+    let row = [];
+    let cell = "";
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { cell += '"'; i++; } // "" → 字面引号
+          else inQuotes = false;
+        } else cell += ch;
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === "\t") {
+        row.push(cell); cell = "";
+      } else if (ch === "\n") {
+        row.push(cell); grid.push(row); row = []; cell = "";
+      } else if (ch === "\r") {
+        // 跳过（\r\n 或独立 \r 都由 \n 分支处理）
+      } else {
+        cell += ch;
+      }
+    }
+    if (cell !== "" || row.length) { row.push(cell); grid.push(row); }
+    return grid;
+  }
+
+  // 粘贴：与调查表一致挂 document（布防框/选区态焦点不在表格内，paste 挂 gridBody 收不到）；
+  // 粘贴基准 = 选区左上角；有选区时按选区大小将剪贴板内容按行列规律重复填充，
+  // 无选区（或单格选区）时按剪贴板内容大小直接粘贴
+  document.addEventListener("paste", (e) => {
+    const ae = document.activeElement;
+    const onArm = arm && ae === arm.ta;
+    // 编辑中且无 Tab 的多行纯文本：在光标处插入（含换行并入当前格，不拆成上下两格）
+    // 布防框不代表编辑态（其值不入模型），排除在外
+    const editEl = ae && !onArm && ae.tagName === "INPUT" && gridBody.contains(ae) ? ae : null;
     const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
     if (!text) return;
-    const lines = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-    // 去掉末尾空行（复制内容末尾常带换行）
-    while (lines.length && lines[lines.length - 1] === "") lines.pop();
-    const srcRows = lines.map((l) => l.split("\t"));
-    const srcH = Math.max(srcRows.length, 1);
-    const srcW = srcRows.reduce((m, r) => Math.max(m, r.length), 1);
-    // 未指定选中区域（无选区或仅当前单元格）时，从当前单元格开始，按剪贴板全部内容大小直接粘贴
+    if (editEl && !text.includes("\t")) {
+      e.preventDefault();
+      const merged = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n+$/, "");
+      const st = editEl.selectionStart ?? editEl.value.length;
+      const en = editEl.selectionEnd ?? st;
+      editEl.setRangeText(merged, st, en, "end");
+      editEl.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    if (!cur && !editEl) return; // 无当前单元格时不劫持其他输入框的粘贴
+    e.preventDefault();
+    const grid = parseTsvGrid(text);
+    // Excel 复制区域末尾常带一个空行，去掉（中间空行保留）
+    if (grid.length > 1 && grid[grid.length - 1].length === 1 && grid[grid.length - 1][0] === "") grid.pop();
+    if (!grid.length) return;
+    const srcH = grid.length;
+    const srcW = grid.reduce((m, r) => Math.max(m, r.length), 1);
     let rect = selRect();
     if (!rect || (rect.r1 === rect.r2 && rect.c1 === rect.c2)) {
       const r0 = cur ? cur.r : 0;
@@ -1419,7 +1640,7 @@
         if (c >= ALL_COLS.length) break;
         const col = ALL_COLS[c];
         if (!INPUT_COLS.includes(col) && !TEXT_OVERRIDE_COLS.includes(col)) continue;
-        const val = (srcRows[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
+        const val = (grid[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
         while (rows.length <= r) { rows.push(blankRow()); rowHeights.push(ROW_H); }
         rowOffsets = null;
         if (INPUT_COLS.includes(col)) {
@@ -1437,15 +1658,17 @@
       }
     }
     if (changed) {
-      e.preventDefault();
       cur = { r: rect.r1, c: rect.c1 };
       selAnchor = { r: rect.r1, c: rect.c1 };
+      editing = false; // renderWindow 重建 tbody 会销毁编辑框，编辑态标志必须同步复位
+      editOriginal = null;
+      removeArm();
       recomputeAndRefresh();
       renderWindow();
       // 粘贴后恢复焦点到区域左上角，保证可立即用 Delete/方向键继续操作
       revealCell(rect.r1, rect.c1);
       updateSelectionClasses();
-      focusCurrentCell();
+      armCell(rect.r1, rect.c1); // 与调查表一致：回到布防态，打字/导航随时可用
     }
   });
 

@@ -225,6 +225,8 @@ table.survey td input:focus, table.survey td textarea:focus { box-shadow: inset 
 /* 隐形布防编辑器：固定定位覆盖当前单元格，透明不可见（文字也透明），仅供输入法附着与首键捕获；
    pointer-events none 不拦截鼠标（单击/双击/拖选仍落到单元格）；首次输入/组合开始时移除并显形为真正的编辑框 */
 textarea.survey-arm { position: fixed; z-index: 900; margin: 0; padding: 2px 6px; border: none; outline: none; resize: none; background: transparent; color: transparent; caret-color: transparent; overflow: hidden; font-size: 12px; font-family: inherit; line-height: 1.4; pointer-events: none; }
+/* 主表格隐形布防编辑器：与 survey-arm 同机制（单击选中布防、首键/输入法显形编辑框） */
+textarea.grid-arm { position: fixed; z-index: 900; margin: 0; padding: 2px 6px; border: none; outline: none; resize: none; background: transparent; color: transparent; caret-color: transparent; overflow: hidden; font-size: 12px; font-family: inherit; line-height: 1.4; pointer-events: none; }
 /* 导出选择菜单：body 级 fixed 定位 */
 .survey-export-menu { position: fixed; z-index: 1000; background: #fff; border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.18); min-width: 220px; }
 .survey-export-menu .survey-export-item { padding: 8px 14px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
@@ -387,6 +389,9 @@ table.grid {
 }
 .grid input[readonly], .grid select[disabled] { cursor: default; }
 .grid td.readonly { cursor: default; }
+/* 非编辑态鼠标保持普通箭头，进入编辑态（输入框聚焦）才显示文本光标（与调查表一致） */
+.grid td input { cursor: default; }
+.grid td input:focus { cursor: text; }
 .cell-num { text-align: right; }
 .cell-num input { text-align: right; }
 
