@@ -348,14 +348,16 @@
         document.body.appendChild(panel);
         const r = el.getBoundingClientRect();
         panel.style.left = r.left + "px";
-        // 贴近视口底部时向上弹出（面板高度约 232px：max-height 220 + 边距），否则向下
-        const below = window.innerHeight - r.bottom;
-        if (below < 240 && r.top > 240) {
-          panel.style.top = Math.max(4, r.top - 234) + "px";
-        } else {
-          panel.style.top = r.bottom + 2 + "px";
-        }
         panel.style.minWidth = Math.max(r.width, 120) + "px";
+        // 先渲染量出面板实际高度，再决定向下弹出（紧贴单元格底边）或向上弹出（紧贴单元格顶边）
+        const ph = panel.offsetHeight || 234;
+        const below = window.innerHeight - r.bottom;
+        if (below >= ph + 4) {
+          panel.style.top = r.bottom + 2 + "px";
+        } else {
+          // 视口底部空间不足：向上弹出，面板底边紧贴单元格顶边（不留缝隙）
+          panel.style.top = Math.max(4, r.top - ph - 1) + "px";
+        }
         panel.addEventListener("mousedown", (ev) => {
           const opt = ev.target.closest(".survey-ws-opt");
           if (!opt) return;
