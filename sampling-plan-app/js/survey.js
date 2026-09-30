@@ -774,8 +774,10 @@
     }
   });
 
-  // 复制：与主表格一致走 copy 事件（Ctrl+C 原生触发），选区内容以 TSV 写入剪贴板
+  // 复制：与主表格一致走 copy 事件（Ctrl+C 原生触发），选区内容以 TSV 写入剪贴板。
+  // 仅调查表页签生效：主表的 copy 处理器同样挂 document，需避免互相覆盖剪贴板内容
   document.addEventListener("copy", (e) => {
+    if (!$S("tab-survey").classList.contains("active")) return;
     if (!sCur) return;
     const ae = document.activeElement;
     if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") && $S("survey-body").contains(ae)) return; // 编辑中走原生复制
@@ -828,6 +830,7 @@
   // 挂 document：单元格选中后焦点不在表格内，paste 事件派发到 body，挂在 survey-body 上收不到
   // 粘贴基准 = 选区左上角；与主表格一致：有选区时按选区大小将剪贴板内容按行列规律重复填充，无选区（或单格选区）时按剪贴板内容大小直接粘贴
   document.addEventListener("paste", (e) => {
+    if (!$S("tab-survey").classList.contains("active")) return;
     if (!sCur) return;
     // 焦点在其他输入框/文本域时不劫持（如保存对话框）；隐形布防框代表当前格，不在此列
     const ae = document.activeElement;

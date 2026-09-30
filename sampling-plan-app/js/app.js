@@ -1330,6 +1330,7 @@
   // 布防框聚焦（选中未编辑）时复制：走当前单元格/选区内容（布防框值为空，原生复制会得到空文本）
   document.addEventListener("copy", (e) => {
     if (!arm || document.activeElement !== arm.ta) return;
+    if (!$("tab-main").classList.contains("active")) return;
     const rect = selRect();
     if (!rect || (rect.r1 === rect.r2 && rect.c1 === rect.c2)) return; // 单格：交给默认行为也无内容，忽略
     e.preventDefault();
@@ -1541,8 +1542,10 @@
   });
 
   // 复制：与调查表一致挂 document（布防框/选区态焦点不在表格内也能响应）；
-  // 编辑中（焦点在表格输入框上）走浏览器原生复制
+  // 编辑中（焦点在表格输入框上）走浏览器原生复制。
+  // 仅主表页签生效：调查表的 copy 处理器同样挂 document，需避免互相覆盖剪贴板内容
   document.addEventListener("copy", (e) => {
+    if (!$("tab-main").classList.contains("active")) return;
     const ae = document.activeElement;
     if (ae && (ae.tagName === "INPUT" || ae.tagName === "SELECT") && gridBody.contains(ae)) return; // 编辑中走原生复制
     if (!cur) return;
@@ -1603,6 +1606,7 @@
   // 粘贴基准 = 选区左上角；有选区时按选区大小将剪贴板内容按行列规律重复填充，
   // 无选区（或单格选区）时按剪贴板内容大小直接粘贴
   document.addEventListener("paste", (e) => {
+    if (!$("tab-main").classList.contains("active")) return;
     const ae = document.activeElement;
     const onArm = arm && ae === arm.ta;
     // 编辑中且无 Tab 的多行纯文本：在光标处插入（含换行并入当前格，不拆成上下两格）
