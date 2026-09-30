@@ -170,8 +170,13 @@
       `<tr>${sh.headers.map((h, i) =>
         `<th class="${h.startsWith("*") ? "req" : ""}${i === 0 ? " s-sticky-name" : ""}" data-i="${i}">${escHtml(h)}</th>`
       ).join("")}</tr>`;
-    // colgroup：首列稍窄，其余均分
-    $S("survey-cols").innerHTML = sh.headers.map((h, i) => `<col style="width:${i === 0 ? 150 : 140}px">`).join("");
+    // colgroup：首列稍窄，其余均分；列数少的表（原辅物料/主要产品/职业防护/个体防护）所有列平均分铺满整表宽度
+    if (["material", "product", "protect", "ppe"].includes(sh.key)) {
+      const rest = sh.headers.length;
+      $S("survey-cols").innerHTML = sh.headers.map(() => `<col style="width:calc(100% / ${rest})">`).join("");
+    } else {
+      $S("survey-cols").innerHTML = sh.headers.map((h, i) => `<col style="width:${i === 0 ? 150 : 140}px">`).join("");
+    }
     // 全量渲染（调查表行数有限，无需虚拟化）；不显示序号列
     $S("survey-body").innerHTML = rows.length
       ? rows.map((r, ri) =>
