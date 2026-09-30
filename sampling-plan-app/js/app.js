@@ -804,6 +804,7 @@
   let selFrame = false;
   let cur = null;       // 当前单元格 { r, c }，c 为 ALL_COLS 索引
   let editing = false;  // 是否处于单元格编辑模式（F2 / 双击 / 直接输入）
+  let editTyping = false; // 编辑进入方式：true=直接键入（Excel 输入模式：方向键提交并移动单元格），false=双击/F2/退格（Excel 编辑模式：方向键在格内移动光标）
   let editOriginal = null; // 进入编辑时的原始值，Esc 还原用
   let lastMouse = null; // 最近一次鼠标位置，双击时用于放置光标
 
@@ -853,16 +854,15 @@
     const td = findTd(r, c);
     if (!td) return;
     editing = true;
+    editTyping = true; // 直接键入进入：方向键提交并移动（Excel 输入模式）
     editOriginal = getCellModelValue(r, c);
     const el = td.querySelector("input");
     if (el) {
-      if (pending) {
-        el.value = pending + el.value;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      }
+      // Excel 替换语义：选中态直接打字覆盖原内容，编辑框以键入文本开头
+      el.value = pending;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
       el.focus({ preventScroll: true });
-      const pos = pending ? pending.length : el.value.length;
-      try { el.setSelectionRange(pos, pos); } catch {}
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch {}
       showDatalist(el); // 联想输入列：进入编辑时弹出下拉候选
     }
   }
@@ -1020,15 +1020,21 @@
     updateSelectionClasses();
   }
 
+  // 聚焦/布防当前单元格：移动落点保持「选中非编辑」态（WPS 语义）——
+  // 输入格布防隐形编辑框（打字/双击才进入编辑），select 下拉格聚焦 select，计算列仅高亮
   function focusCurrentCell() {
     if (!cur) return;
     const td = findTd(cur.r, cur.c);
     if (!td) return;
-    const el = td.querySelector("input,select");
-    if (!el) return;
-    el.focus({ preventScroll: true });
-    if (el.tagName === "INPUT") {
-      try { el.setSelectionRange(el.value.length, el.value.length); } catch {}
+    const col = ALL_COLS[cur.c];
+    if (isSelectCol(col)) {
+      const sel = td.querySelector("select");
+      if (sel) sel.focus({ preventScroll: true });
+      return;
+    }
+    if (editableCellAt(cur.r, cur.c)) {
+      armCell(cur.r, cur.c); // 布防态：不聚焦输入框，方向键继续移动，打字/双击才编辑
+      return;
     }
   }
 
@@ -1341,6 +1347,7 @@
     if (!editableCellAt(r, c)) { updateSelectionClasses(); return; }
     removeArm();
     editing = true;
+    editTyping = false; // 双击进入：方向键在格内移动光标（Excel 编辑模式）
     editOriginal = getCellModelValue(r, c);
     const el = td.querySelector("input");
     if (el) {
@@ -1455,6 +1462,7 @@
       if (isInput && editableCellAt(r, c)) {
         editOriginal = getCellModelValue(r, c);
         editing = true;
+        editTyping = false; // F2 进入：方向键在格内移动光标（Excel 编辑模式）
         try { e.target.setSelectionRange(e.target.value.length, e.target.value.length); } catch {}
       }
       return;
@@ -1479,7 +1487,15 @@
         revertCurrent();
         return;
       }
-      return; // 方向键 / Home / End / 退格等在编辑时走原生行为
+      // 直接键入进入的编辑（WPS 输入模式）：方向键提交当前格并移动选中单元格；
+      // Alt+↓ 保留原生行为（datalist 下拉）
+      if (editTyping && !e.altKey && (key === "ArrowDown" || key === "ArrowUp" || key === "ArrowLeft" || key === "ArrowRight")) {
+        e.preventDefault();
+        commitCurrent();
+        moveCur(key === "ArrowDown" ? 1 : key === "ArrowUp" ? -1 : 0, key === "ArrowRight" ? 1 : key === "ArrowLeft" ? -1 : 0, { grow: true });
+        return;
+      }
+      return; // 双击/F2 编辑模式：方向键/Home/End/退格等走原生行为（光标在格内移动）
     }
 
     // 非编辑模式：单元格光标移动
@@ -1549,6 +1565,7 @@
       if (el && el.tagName === "INPUT" && editableCellAt(r, c)) {
         e.preventDefault();
         editing = true;
+        editTyping = false; // 退格进入：编辑模式，方向键在格内移动光标
         if (editOriginal === null) editOriginal = getCellModelValue(r, c);
         const start = el.selectionStart ?? el.value.length;
         const end = el.selectionEnd ?? el.value.length;
@@ -1592,17 +1609,16 @@
       }
       return;
     }
-    // 直接输入字符：在光标处插入（有选中区域则替换选中内容），不清空原有内容
+    // 直接输入字符：Excel 替换语义——选中非编辑态打字覆盖原内容，编辑框以键入字符开头
     if (isInput && editableCellAt(r, c) && key.length === 1) {
       e.preventDefault();
       const el = e.target;
       editOriginal = getCellModelValue(r, c);
-      const start = el.selectionStart ?? el.value.length;
-      const end = el.selectionEnd ?? el.value.length;
-      el.value = el.value.slice(0, start) + key + el.value.slice(end);
+      el.value = key;
       editing = true;
+      editTyping = true; // 直接键入：输入模式，方向键提交并移动单元格
       el.dispatchEvent(new Event("input", { bubbles: true }));
-      try { el.setSelectionRange(start + key.length, start + key.length); } catch {}
+      try { el.setSelectionRange(1, 1); } catch {}
     }
   });
 

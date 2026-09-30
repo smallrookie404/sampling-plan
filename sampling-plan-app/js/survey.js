@@ -202,6 +202,7 @@
 
   // ---------- Excel 式编辑（与主表格一致：单击选中即布防编辑框 / 双击定位光标 / 键盘导航 / 复制粘贴） ----------
   let sEditing = false;
+  let sEditTyping = false; // 编辑进入方式：true=直接键入（输入模式：方向键提交并移动），false=双击/F2/退格（编辑模式：方向键格内移光标）
   let sEditOriginal = null;
 
   // 车间下拉面板（body 级 fixed 定位，不被表格裁剪）
@@ -273,6 +274,7 @@
     const td = sFindTd(r, c);
     if (!td) return;
     sEditing = true;
+    sEditTyping = true; // 直接键入/输入法显形：输入模式，方向键提交并移动
     sEditOriginal = sCellValue(r, c);
     sBuildEditor(td, pending);
   }
@@ -280,10 +282,11 @@
   // 创建编辑控件并同步聚焦（armed）：编辑框与显示态度量一致，选中/编辑共用。
   // 编辑框存在且聚焦后，字符与中文输入法组合全程走浏览器原生路径，
   // 不再有「首个按键落在 body 上被吞、第二个字母才进输入法」的问题。
-  function sBuildEditor(td, commitCurrent) {
+  function sBuildEditor(td, typed) {
     const rows = surveyRows();
     if (!td || !rows[sCur.r]) return;
-    const initVal = commitCurrent !== undefined ? commitCurrent + sCellValue(sCur.r, sCur.c) : sCellValue(sCur.r, sCur.c);
+    // Excel 替换语义：布防态直接打字覆盖原内容，编辑框以键入文本开头（typed 未传=双击/F2，编辑原值）
+    const initVal = typed !== undefined ? typed : sCellValue(sCur.r, sCur.c);
     // 下拉联想列：「单元/工作场所」动态取主表格已填车间名称；设备设施表「操作岗位(工种)」= 同行车间在主表中的岗位/工种；其余固定选项列取 SURVEY_COL_OPTIONS（可输可选）
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
     const headerName = sh && sh.headers[sCur.c];
@@ -324,7 +327,7 @@
       // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
       // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
       const armOriginal = initVal;
-      const markEditing = () => { if (!sEditing) { sEditing = true; sEditOriginal = armOriginal; } };
+      const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; } };
       el.addEventListener("input", () => {
         markEditing();
         if (sCur && Number(el.dataset.r) === sCur.r && Number(el.dataset.c) === sCur.c) {
@@ -398,7 +401,7 @@
     // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
     // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
     const armOriginal = initVal;
-    const markEditing = () => { if (!sEditing) { sEditing = true; sEditOriginal = armOriginal; } };
+    const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; } };
     ta.addEventListener("input", () => {
       markEditing();
       if (sCur && Number(ta.dataset.r) === sCur.r && Number(ta.dataset.c) === sCur.c) {
@@ -602,6 +605,7 @@
     }
     sRemoveArm();
     sEditing = true;
+    sEditTyping = false; // 双击进入：编辑模式，方向键在格内移动光标
     sEditOriginal = sCellValue(r, c);
     sBuildEditor(td);
     const el = td.querySelector("input,textarea");
@@ -694,6 +698,7 @@
       } else {
         sRemoveArm();
         sEditing = true;
+        sEditTyping = false; // F2 进入：编辑模式，方向键在格内移动光标
         sEditOriginal = sCellValue(sCur.r, sCur.c);
         const td = sFindTd(sCur.r, sCur.c);
         if (td) sBuildEditor(td);
@@ -723,6 +728,12 @@
         // 取消后回到布防态（隐形框重新聚焦），继续打字/导航不中断
         sRemoveArm();
         sArmCell(sCur.r, sCur.c);
+      } else if (sEditTyping && !e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        // 直接键入进入的编辑（WPS 输入模式）：方向键提交当前格并移动选中单元格
+        e.preventDefault();
+        sCellCommit();
+        sMove(e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0, e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0, { grow: true });
+        return;
       }
       return;
     }
