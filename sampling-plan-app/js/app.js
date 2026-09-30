@@ -551,8 +551,10 @@
           if (txt) {
             const v = escHtml(fmt(row.values[c]));
             if (txt.innerHTML !== v) txt.innerHTML = v;
+            continue;
           }
-          continue;
+          // 无 computed-text 的计算列（可覆盖下拉 Y/Z/AO/AR 渲染为 select）：落到下方控件同步
+          if (!el) continue;
         }
         if (!el) continue;
         let val;

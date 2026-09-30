@@ -238,9 +238,10 @@
       sCloseWsPanel();
       td.innerHTML = `<input data-r="${sCur.r}" data-c="${sCur.c}" value="${escAttr(sEditOriginal)}">`;
       const el = td.querySelector("input");
-      el.focus();
       if (commitCurrent) el.value = commitCurrent + sEditOriginal;
       el.setSelectionRange(el.value.length, el.value.length);
+      // 焦点延迟到下一帧：新建编辑框同步聚焦会使中文输入法首次组合不上屏（首字丢失）
+      requestAnimationFrame(() => { if (sEditing && el.isConnected) el.focus(); });
       // 多选仅限「单元/工作场所」与岗位(工种)列；其余固定选项列单选（点选即替换）
       const multi = !!(
         (headerName && headerName.includes("单元/工作场所")) ||
@@ -295,18 +296,19 @@
     td.innerHTML = `<textarea data-r="${sCur.r}" data-c="${sCur.c}">${escHtml(sEditOriginal)}</textarea>`;
     const ta = td.querySelector("textarea");
     ta.style.height = h + "px";
-    // 字体度量差异可能导致内容溢出出现滚动条：以内容实际高度为准（不出现滚动条）
+    ta.style.overflowY = "hidden";
+    if (commitCurrent) ta.value = commitCurrent + sEditOriginal;
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    // 焦点延迟到下一帧（连同高度修正）：新建编辑框同步聚焦会使中文输入法首次组合不上屏（首字丢失）
     requestAnimationFrame(() => {
-      if (sEditing && ta.isConnected && ta.scrollHeight > ta.clientHeight) {
+      if (!sEditing || !ta.isConnected) return;
+      if (ta.scrollHeight > ta.clientHeight) {
         // border-box 下边框占高，补偿后内容区才能完整容纳
         const bh = ta.offsetHeight - ta.clientHeight;
         ta.style.height = (ta.scrollHeight + bh) + "px";
       }
+      ta.focus();
     });
-    ta.style.overflowY = "hidden";
-    ta.focus();
-    if (commitCurrent) ta.value = commitCurrent + sEditOriginal;
-    ta.setSelectionRange(ta.value.length, ta.value.length);
   }
 
   function sCellCommit() {
