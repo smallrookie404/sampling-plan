@@ -812,6 +812,8 @@
       const r2 = rect ? rect.r2 : sCur.r;
       const c1 = rect ? rect.c1 : sCur.c;
       const c2 = rect ? rect.c2 : sCur.c;
+      // 清空前存快照（清空前状态），Ctrl+Z 可复原（与主表格一致）
+      sPushUndo();
       for (let r = r1; r <= r2; r++) {
         if (!rows[r]) continue;
         for (let c = c1; c <= c2; c++) rows[r][c] = "";
