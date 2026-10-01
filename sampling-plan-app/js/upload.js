@@ -325,42 +325,49 @@
     const existingIds = existing.map(function (m) { return String(m.humanId); });
     const toAdd = want.filter(function (id) { return existingIds.indexOf(id) < 0; });
     const toDel = existing.filter(function (m) { return want.indexOf(String(m.humanId)) < 0; });
+    // 增删成员与调查人同步三者互不依赖：并行执行（原串行 5 次往返，现约 2 次）
+    const jobs = [];
     if (toAdd.length > 0) {
       const names = toAdd.map(function (id) {
         const u = (opts.users || []).filter(function (x) { return String(x.id) === id; })[0];
         return u ? u.userName : id;
       });
-      const r = await addProjectMembers(token, projectId, toAdd);
-      if (r.status === 200 && r.data && r.data.code === '200') {
-        logs.push('添加项目成员成功：' + names.join('、'));
-      } else {
-        logs.push('添加项目成员失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
-      }
+      jobs.push(addProjectMembers(token, projectId, toAdd).then(function (r) {
+        if (r.status === 200 && r.data && r.data.code === '200') {
+          logs.push('添加项目成员成功：' + names.join('、'));
+        } else {
+          logs.push('添加项目成员失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
+        }
+      }));
     }
     if (toDel.length > 0) {
-      const r = await deleteProjectMembers(token, toDel.map(function (m) { return m.humanId; }));
-      if (r.status === 200 && r.data && r.data.code === '200') {
-        logs.push('移除项目成员成功：' + toDel.map(function (m) { return m.humanIdName || m.humanId; }).join('、'));
-      } else {
-        logs.push('移除项目成员失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
-      }
+      jobs.push(deleteProjectMembers(token, toDel.map(function (m) { return m.humanId; })).then(function (r) {
+        if (r.status === 200 && r.data && r.data.code === '200') {
+          logs.push('移除项目成员成功：' + toDel.map(function (m) { return m.humanIdName || m.humanId; }).join('、'));
+        } else {
+          logs.push('移除项目成员失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
+        }
+      }));
     }
     if (opts.investigatorId || opts.reviewerId || opts.investigateDate) {
-      const rec = await fetchXcdcUser(token, projectId);
-      const payload = {
-        id: rec ? rec.id : null,
-        belongProject: projectId,
-        investigatePerson: opts.investigatorId ? String(opts.investigatorId) : (rec ? rec.investigatePerson : null),
-        accompanyPerson: opts.reviewerId ? String(opts.reviewerId) : (rec ? rec.accompanyPerson : null),
-        investigateTime: opts.investigateDate ? opts.investigateDate : (rec ? rec.investigateTime : null)
-      };
-      const r = await saveXcdcUser(token, payload);
-      if (r.status === 200 && r.data && r.data.code === '200') {
-        logs.push('调查人/复核人/调查日期已同步');
-      } else {
-        logs.push('调查人/复核人同步失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
-      }
+      jobs.push((async function () {
+        const rec = await fetchXcdcUser(token, projectId);
+        const payload = {
+          id: rec ? rec.id : null,
+          belongProject: projectId,
+          investigatePerson: opts.investigatorId ? String(opts.investigatorId) : (rec ? rec.investigatePerson : null),
+          accompanyPerson: opts.reviewerId ? String(opts.reviewerId) : (rec ? rec.accompanyPerson : null),
+          investigateTime: opts.investigateDate ? opts.investigateDate : (rec ? rec.investigateTime : null)
+        };
+        const r = await saveXcdcUser(token, payload);
+        if (r.status === 200 && r.data && r.data.code === '200') {
+          logs.push('调查人/复核人/调查日期已同步');
+        } else {
+          logs.push('调查人/复核人同步失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
+        }
+      })());
     }
+    await Promise.all(jobs);
     return logs;
   }
 
@@ -504,12 +511,23 @@
       if (uploadOverlay) uploadOverlay.classList.add('hidden');
     }
 
+    // GitHub 配置按钮仅 btc-wf 账号可见（登录/登出/恢复会话时联动显隐）
+    const GH_ALLOWED_USER = 'btc-wf';
+    function syncGhButton() {
+      const code = userInfo ? String(userInfo.userCode || userInfo.id || '') : '';
+      const btnGh = document.getElementById('btn-gh');
+      const btnFsGh = document.getElementById('fs-gh');
+      if (btnGh) btnGh.style.display = code === GH_ALLOWED_USER ? '' : 'none';
+      if (btnFsGh) btnFsGh.style.display = code === GH_ALLOWED_USER ? '' : 'none';
+    }
+
     function logout() {
       clearSession();
       session = null;
       token = null;
       orgId = null;
       userInfo = null;
+      syncGhButton();
       teamSaved = null;
       selectedProject = null;
       selectedFile = null;
@@ -593,6 +611,7 @@
           }
         } catch (e) { }
         $('greeting').textContent = greetingText();
+        syncGhButton();
         enterApp();
         log('登录成功：' + userInfo.userName + '（' + userInfo.userCode + '），上传主体为当前账号');
         prefetchYear();
@@ -1174,6 +1193,7 @@
             }
           }
         } catch (e) {}
+        syncGhButton();
         enterApp();
       } else {
         showLogin();

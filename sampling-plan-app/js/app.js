@@ -825,11 +825,13 @@
     renderWindow();
   });
   $("btn-reset").addEventListener("click", () => {
-    if (!confirm("清空测点表格（保留危害因素库与检测项目）？")) return;
+    if (!confirm("清空主表格与调查表的所有内容（保留危害因素库与检测项目）？")) return;
+    pushUndo(); // 清空前存快照，Ctrl+Z 可复原
     emptyGrid();
     selectedRow = -1;
     selStart = selEnd = selAnchor = null;
     cur = null;
+    if (window.SurveySheets && window.SurveySheets.clearAll) window.SurveySheets.clearAll();
     recomputeAndRefresh();
     renderWindow();
   });

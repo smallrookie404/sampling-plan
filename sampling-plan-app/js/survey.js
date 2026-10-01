@@ -1117,6 +1117,21 @@
   // 对外接口：页签切换时刷新渲染；供主界面导出菜单生成「调查表 6 子表合一份」xlsx；供保存/调用数据读写 6 表内容
   window.SurveySheets = {
     refresh: () => { buildSurveyTabs(); renderSurvey(); },
+    // 清空全部 6 个子表内容并重置为默认 10 行空表（供主界面「清空表格」联动调用）
+    clearAll: () => {
+      surveyRows(); // 确保 surveyData 已初始化（未打开过调查表页签时为 null，直接写会抛错导致清空失效）
+      sCloseWsPanel();
+      sEditing = false;
+      sEditOriginal = null;
+      sRemoveArm();
+      sCur = null;
+      sSelAnchor = sSelStart = sSelEnd = null;
+      SURVEY_SHEETS.forEach((sh) => {
+        surveyData[sh.key] = Array.from({ length: 10 }, () => sh.headers.map(() => ""));
+      });
+      surveySave();
+      renderSurvey();
+    },
     exportAllWorkbook: async () => {
       const X = await sEnsureXlsx();
       // 首表：劳动定员和职业病危害因素接触情况调查（首行 = 主表格导出表头，其余内容为空）
