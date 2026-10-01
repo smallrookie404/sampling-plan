@@ -1459,6 +1459,17 @@
     // 可打印字符/退格：不 preventDefault，交给布防框 input 事件显形（文本由 armReveal 带入编辑框）
   });
 
+  // 点击表格区域之外（含表格行下方的容器空白）退出编辑（Excel/WPS 语义）。
+  // 单元格/表头/工具栏内的点击不在此处理（各自的 mousedown/click 逻辑负责）
+  document.addEventListener("pointerdown", (e) => {
+    if (!$("tab-main").classList.contains("active")) return;
+    const t = e.target;
+    if (t.closest && (t.closest("td") || t.closest("th") || t.closest(".grid-toolbar"))) return;
+    if (!editing && !arm) return;
+    if (editing) commitCurrent();
+    removeArm();
+  });
+
   // 布防框聚焦（选中未编辑）时复制：走当前单元格/选区内容（布防框值为空，原生复制会得到空文本）
   document.addEventListener("copy", (e) => {
     if (!arm || document.activeElement !== arm.ta) return;

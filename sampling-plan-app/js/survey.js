@@ -850,6 +850,16 @@
 
   // 复制：与主表格一致走 copy 事件（Ctrl+C 原生触发），选区内容以 TSV 写入剪贴板。
   // 仅调查表页签生效：主表的 copy 处理器同样挂 document，需避免互相覆盖剪贴板内容
+  // 点击调查表区域之外（含表格行下方的容器空白）退出编辑（与主表格/Excel 一致），清理布防框
+  document.addEventListener("pointerdown", (e) => {
+    if (!$S("tab-survey").classList.contains("active")) return;
+    const t = e.target;
+    if (t.closest && (t.closest("#survey-grid td") || t.closest("#survey-grid th") || t.closest(".grid-toolbar") || t.closest(".survey-ws-panel"))) return;
+    if (!sEditing && !sArm) return;
+    if (sEditing) sCellCommit();
+    sRemoveArm();
+  });
+
   document.addEventListener("copy", (e) => {
     if (!$S("tab-survey").classList.contains("active")) return;
     if (!sCur) return;
