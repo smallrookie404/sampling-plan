@@ -210,7 +210,7 @@ body {
 /* 模板必填列表头（带 * 列，浅红底提示） */
 table.survey thead th.req { background: #fdecea; color: #b3261e; }
 /* 固定布局：列宽恒定（colgroup 定义），长文本在单元格内换行，不把表格撑向右延伸 */
-table.survey { table-layout: fixed; width: max-content; min-width: 100%; }
+table.grid.survey { table-layout: fixed; width: 100%; }
 table.survey td, table.survey thead th { word-break: break-word; overflow-wrap: anywhere; }
 /* 非编辑态鼠标保持普通箭头（编辑态文本光标由 .grid td input:focus 规则覆盖，本表同样带 grid 类），与主表格一致 */
 table.survey tbody td { cursor: default; }
