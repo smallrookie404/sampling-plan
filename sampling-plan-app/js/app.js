@@ -3441,11 +3441,8 @@
     else alert("上传模块未加载，请刷新页面后重试。");
   });
 
-  // 退出登录（主页面顶栏）
-  $("btn-logout").addEventListener("click", () => {
-    if (window.SamplingUpload && window.SamplingUpload.logout) window.SamplingUpload.logout();
-    else alert("登录模块未加载，请刷新页面后重试。");
-  });
+  // 退出登录改由右上角用户菜单处理（点击姓名展开菜单 → 选「退出登录」），
+  // 此处不再直接绑定 btn-logout 的退出逻辑，避免与菜单开合冲突
 
   // ---------- 导入（仅主表测点布局，不导入危害因素库/检测项目） ----------
 

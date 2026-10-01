@@ -487,6 +487,48 @@
       if (loginOverlay) loginOverlay.classList.add('hidden');
     }
 
+    // ---------- 右上角用户菜单：按钮显示登录者姓名，点击展开菜单可选退出登录 ----------
+    function syncUserMenu() {
+      const wrap = $('user-menu-wrap');
+      const btn = $('btn-logout');
+      const nameEl = $('user-menu-name');
+      if (!wrap || !btn) return;
+      if (userInfo && (userInfo.userName || userInfo.userCode)) {
+        wrap.style.display = '';
+        btn.textContent = userInfo.userName || userInfo.userCode;
+        if (nameEl) nameEl.textContent = userInfo.userName + '（' + userInfo.userCode + '）';
+      } else {
+        wrap.style.display = 'none';
+        closeUserMenu();
+      }
+    }
+    function closeUserMenu() {
+      const menu = $('user-menu');
+      if (menu) menu.style.display = 'none';
+    }
+    (function initUserMenu() {
+      const btn = $('btn-logout');
+      const menu = $('user-menu');
+      const confirmBtn = $('btn-logout-confirm');
+      if (btn && menu) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          menu.style.display = menu.style.display === 'none' ? '' : 'none';
+        });
+      }
+      if (confirmBtn) {
+        confirmBtn.addEventListener('click', function () {
+          closeUserMenu();
+          logout();
+        });
+      }
+      // 点击菜单外任意位置关闭菜单
+      document.addEventListener('pointerdown', function (e) {
+        const wrap = $('user-menu-wrap');
+        if (wrap && e.target.closest && !e.target.closest('#user-menu-wrap')) closeUserMenu();
+      });
+    })();
+
     // 显示登录遮罩
     function showLogin() {
       if (loginOverlay) loginOverlay.classList.remove('hidden');
@@ -528,6 +570,7 @@
       orgId = null;
       userInfo = null;
       syncGhButton();
+      syncUserMenu();
       teamSaved = null;
       selectedProject = null;
       selectedFile = null;
@@ -567,6 +610,14 @@
         $('password').value = localStorage.getItem(PWD_KEY) || '';
       }
     } catch (e) { }
+
+    // 账号/密码/验证码框内按回车直接登入（等价点击「登 录」）
+    ['username', 'password', 'captcha'].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); $('btnLogin').click(); }
+      });
+    });
 
     $('btnLogin').addEventListener('click', async function () {
       const user = $('username').value.trim();
@@ -612,6 +663,7 @@
         } catch (e) { }
         $('greeting').textContent = greetingText();
         syncGhButton();
+        syncUserMenu();
         enterApp();
         log('登录成功：' + userInfo.userName + '（' + userInfo.userCode + '），上传主体为当前账号');
         prefetchYear();
@@ -1194,6 +1246,7 @@
           }
         } catch (e) {}
         syncGhButton();
+        syncUserMenu();
         enterApp();
       } else {
         showLogin();
