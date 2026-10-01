@@ -143,6 +143,25 @@
     if (document.visibilityState === "hidden") surveySaveFlush();
   });
 
+  // ---------- Ctrl+Z 撤销（快照式：批量变更前存全量 surveyData，逐级回退；与主表格一致） ----------
+  const sUndoStack = [];
+  const S_UNDO_MAX = 50;
+  function sPushUndo() {
+    sUndoStack.push(JSON.stringify(surveyData));
+    if (sUndoStack.length > S_UNDO_MAX) sUndoStack.shift();
+  }
+  function sUndoLast() {
+    if (!sUndoStack.length) return;
+    surveyData = JSON.parse(sUndoStack.pop());
+    surveySaveFlush();
+    sEditing = false;
+    sEditOriginal = null;
+    sRemoveArm();
+    sCur = null;
+    sSelAnchor = sSelStart = sSelEnd = null;
+    renderSurvey();
+  }
+
   function surveyRows() {
     return surveyLoad()[surveyCur];
   }
@@ -332,7 +351,7 @@
       // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
       // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
       const armOriginal = initVal;
-      const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; } };
+      const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; sPushUndo(); } };
       el.addEventListener("input", () => {
         markEditing();
         if (sCur && Number(el.dataset.r) === sCur.r && Number(el.dataset.c) === sCur.c) {
@@ -408,7 +427,7 @@
     // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
     // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
     const armOriginal = initVal;
-    const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; } };
+    const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; sPushUndo(); } };
     ta.addEventListener("input", () => {
       markEditing();
       if (sCur && Number(ta.dataset.r) === sCur.r && Number(ta.dataset.c) === sCur.c) {
@@ -694,6 +713,11 @@
         return;
       }
       if (["c", "v", "x"].includes(e.key.toLowerCase())) return; // 原生复制/粘贴/剪切（copy/paste 事件处理）
+      if (e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        sUndoLast(); // Ctrl+Z 撤销最近一次变更
+        return;
+      }
       return;
     }
 
@@ -899,6 +923,7 @@
     }
     const need = rect.r2 + 1;
     while (rows.length < need) rows.push(surveyBlankRow());
+    sPushUndo(); // 粘贴覆盖前存快照，可 Ctrl+Z 撤销
     for (let r = rect.r1; r <= rect.r2; r++) {
       for (let c = rect.c1; c <= rect.c2; c++) {
         if (c >= rows[r].length) break;
@@ -937,6 +962,7 @@
     if (n === null) return;
     const rows = surveyRows();
     if (rows.length + n > 5000) { alert("总行数不能超过 5000。"); return; }
+    sPushUndo();
     rows.push(...Array.from({ length: n }, () => surveyBlankRow()));
     surveySave();
     renderSurvey();
@@ -950,6 +976,7 @@
     const rows = surveyRows();
     if (rows.length + n > 5000) { alert("总行数不能超过 5000。"); return; }
     const at = anchorRow() >= 0 ? anchorRow() + 1 : rows.length;
+    sPushUndo();
     rows.splice(at, 0, ...Array.from({ length: n }, () => surveyBlankRow()));
     if (sCur && sCur.r >= at) sCur = { ...sCur, r: sCur.r + n };
     surveySave();
@@ -966,6 +993,7 @@
     if (at < 0) return;
     if (rows.length + n > 5000) { alert("总行数不能超过 5000。"); return; }
     const src = rows[at];
+    sPushUndo();
     rows.splice(at + 1, 0, ...Array.from({ length: n }, () => src.slice()));
     if (sCur && sCur.r > at) sCur = { ...sCur, r: sCur.r + n };
     surveySave();
@@ -975,6 +1003,7 @@
   // 清空录入区：6 个子表全部重置为默认 10 行空表
   $S("survey-clear").addEventListener("click", () => {
     if (!confirm("确定清空调查表全部 6 个表格的录入内容？此操作不可恢复。")) return;
+    sPushUndo(); // 清空前存快照，可 Ctrl+Z 撤销
     sCloseWsPanel();
     sEditing = false;
     sEditOriginal = null;
@@ -996,6 +1025,7 @@
     const cnt = Math.min(n, surveyRows().length - delAt);
     if (cnt < 1) return;
     if (!confirm(`确定删除从第 ${delAt + 1} 行起的 ${cnt} 行？`)) return;
+    sPushUndo();
     surveyRows().splice(delAt, cnt);
     sCur = null;
     sSelAnchor = sSelStart = sSelEnd = null;

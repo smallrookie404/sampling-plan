@@ -510,6 +510,7 @@
   gridBody.addEventListener("change", (e) => {
     const el = e.target;
     if (el.tagName !== "SELECT") return;
+    pushUndo(); // 下拉选择变更可撤销
     const tr = el.closest("tr");
     const r = Number(tr.dataset.r);
     const c = el.dataset.c;
@@ -541,6 +542,29 @@
     L.computeRows(rows, { hazardFactors, detectionItems });
     updateVisibleCells();
     refreshStatus();
+  }
+
+  // ---------- Ctrl+Z 撤销（快照式：每次批量变更前存全量 rows，逐级回退） ----------
+  const undoStack = [];
+  const UNDO_MAX = 50;
+  // 批量变更前调用（插入/删除/复制行、清空、粘贴、导入等）；连续打字提交由 commit 处聚合
+  function pushUndo() {
+    undoStack.push(JSON.stringify(rows));
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+  }
+  function undoLast() {
+    if (!undoStack.length) return;
+    const snap = JSON.parse(undoStack.pop());
+    rows.length = 0;
+    for (const r of snap) rows.push(r);
+    rowOffsets = null;
+    clampCur();
+    selAnchor = selStart = selEnd = cur ? { r: cur.r, c: cur.c } : null;
+    editing = false;
+    editOriginal = null;
+    removeArm();
+    renderWindow();
+    recomputeAndRefresh();
   }
 
   function updateVisibleCells() {
@@ -728,6 +752,7 @@
     const at = anchor >= 0 ? anchor + 1 : rows.length;
     const ins = [];
     for (let i = 0; i < n; i++) ins.push(blankRow());
+    pushUndo();
     rows.splice(at, 0, ...ins);
     rowHeights.splice(at, 0, ...Array(n).fill(ROW_H));
     rowOffsets = null;
@@ -749,6 +774,7 @@
     const src = rows[at];
     const copies = [];
     for (let i = 0; i < n; i++) copies.push(cloneRow(src));
+    pushUndo();
     rows.splice(at + 1, 0, ...copies);
     rowHeights.splice(at + 1, 0, ...Array(n).fill(ROW_H));
     rowOffsets = null;
@@ -778,6 +804,7 @@
     const cnt = Math.min(n, rows.length - delAt);
     if (cnt < 1) return;
     if (!confirm(`确定删除从第 ${delAt + 1} 行起的 ${cnt} 行？`)) return;
+    pushUndo();
     rows.splice(delAt, cnt);
     rowHeights.splice(delAt, cnt);
     rowOffsets = null;
@@ -856,6 +883,7 @@
     editing = true;
     editTyping = true; // 直接键入进入：方向键提交并移动（Excel 输入模式）
     editOriginal = getCellModelValue(r, c);
+    pushUndo(); // 进入编辑前存快照（本次编辑会话聚合为一次撤销）
     const el = td.querySelector("input");
     if (el) {
       // Excel 替换语义：选中态直接打字覆盖原内容，编辑框以键入文本开头
@@ -1128,6 +1156,22 @@
     updateVisibleCells();
   }
 
+  // 选区内是否存在可编辑内容（Delete 前预判，确保撤销快照在变更前生成）
+  function hasEditableInRect(rect) {
+    if (!rect) return false;
+    for (let rr = rect.r1; rr <= Math.min(rect.r2, rows.length - 1); rr++) {
+      const row = rows[rr];
+      for (let cc = rect.c1; cc <= rect.c2; cc++) {
+        const col = ALL_COLS[cc];
+        if (INPUT_COLS.includes(col)) { if (row.input[col] !== "") return true; }
+        else if (MANUAL_COLS.includes(col)) { if (row.manual[col] !== "") return true; }
+        else if (OVERRIDE_COLS.includes(col)) { if (row.values[col] !== "" || row.overridden[col]) return true; }
+        else if (TEXT_OVERRIDE_COLS.includes(col)) { if (row.values[col] !== "" || row.overridden[col]) return true; }
+      }
+    }
+    return false;
+  }
+
   // 清空选区内的可编辑内容（Delete/Backspace）
   function clearRange(rect) {
     if (!rect) return false;
@@ -1349,6 +1393,7 @@
     editing = true;
     editTyping = false; // 双击进入：方向键在格内移动光标（Excel 编辑模式）
     editOriginal = getCellModelValue(r, c);
+    pushUndo(); // 进入编辑前存快照
     const el = td.querySelector("input");
     if (el) {
       el.focus({ preventScroll: true });
@@ -1376,7 +1421,11 @@
     const key = e.key;
     const mod = e.ctrlKey || e.metaKey;
     const shift = e.shiftKey;
-    if (mod) return; // Ctrl 组合（复制粘贴等）交给浏览器
+    if (mod) {
+      // 布防态（焦点在 body 级布防框上）Ctrl+Z：撤销最近一次变更（gridBody 的键路由收不到，须在此处理）
+      if (key.toLowerCase() === "z") { e.preventDefault(); undoLast(); }
+      return; // 其余 Ctrl 组合（复制粘贴等）交给浏览器
+    }
     if (key === "Enter") { e.preventDefault(); removeArm(); moveCur(shift ? -1 : 1, 0, { grow: true }); return; }
     if (key === "Tab") { e.preventDefault(); removeArm(); moveCur(0, shift ? -1 : 1, { grow: true, wrap: true }); return; }
     if (key === "F2") { e.preventDefault(); armReveal(); return; }
@@ -1393,7 +1442,7 @@
       return;
     }
     if (key === "Delete") {
-      if (clearRange(selRect())) { e.preventDefault(); recomputeAndRefresh(); }
+      if (selRect() && hasEditableInRect(selRect())) { e.preventDefault(); pushUndo(); clearRange(selRect()); recomputeAndRefresh(); }
       return;
     }
     // 可打印字符/退格：不 preventDefault，交给布防框 input 事件显形（文本由 armReveal 带入编辑框）
@@ -1453,6 +1502,11 @@
         return;
       }
       if (["c", "v", "x"].includes(key.toLowerCase())) return; // 原生复制/粘贴/剪切
+      if (key.toLowerCase() === "z") {
+        e.preventDefault();
+        undoLast(); // Ctrl+Z 撤销最近一次变更
+        return;
+      }
       return;
     }
 
@@ -1463,6 +1517,7 @@
         editOriginal = getCellModelValue(r, c);
         editing = true;
         editTyping = false; // F2 进入：方向键在格内移动光标（Excel 编辑模式）
+        pushUndo(); // 进入编辑前存快照
         try { e.target.setSelectionRange(e.target.value.length, e.target.value.length); } catch {}
       }
       return;
@@ -1581,7 +1636,9 @@
         try { el.setSelectionRange(caret, caret); } catch {}
         return;
       }
-      if (clearRange(selRect())) {
+      if (selRect() && hasEditableInRect(selRect())) {
+        pushUndo(); // 清空前存快照，Ctrl+Z 可复原
+        clearRange(selRect());
         e.preventDefault();
         editing = false;
         editOriginal = null;
@@ -1590,7 +1647,9 @@
       return;
     }
     if (key === "Delete") {
-      if (clearRange(selRect())) {
+      if (selRect() && hasEditableInRect(selRect())) {
+        pushUndo(); // 清空前存快照，Ctrl+Z 可复原
+        clearRange(selRect());
         e.preventDefault();
         editing = false;
         editOriginal = null;
@@ -1704,8 +1763,8 @@
       editEl.dispatchEvent(new Event("input", { bubbles: true }));
       return;
     }
-    if (!cur && !editEl) return; // 无当前单元格时不劫持其他输入框的粘贴
     e.preventDefault();
+    pushUndo();
     const grid = parseTsvGrid(text);
     // Excel 复制区域末尾常带一个空行，去掉（中间空行保留）
     if (grid.length > 1 && grid[grid.length - 1].length === 1 && grid[grid.length - 1][0] === "") grid.pop();
