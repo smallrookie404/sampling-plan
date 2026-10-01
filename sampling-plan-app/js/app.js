@@ -2155,10 +2155,18 @@
     }
     if (storageMode === "server") {
       try {
+        // 请求体 gzip 压缩（CompressionStream）：大记录传输量降至 1/5~1/10，服务端 fetch 会自动解压
+        let body = JSON.stringify(rec);
+        if (typeof CompressionStream === "function") {
+          const cs = new CompressionStream("gzip");
+          const blob = new Blob([body]);
+          const buf = await new Response(blob.stream().pipeThrough(cs)).arrayBuffer();
+          body = buf;
+        }
         const res = await fetch("/api/records?id=" + encodeURIComponent(rec.id), {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(rec),
+          headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" },
+          body,
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
         upsertLocalFull(rec);
@@ -2657,14 +2665,15 @@
     // 主表无数据时仍可保存调查表：调查表 6 表全部为空才拦截
     const surveyData = window.SurveySheets && window.SurveySheets.getData ? window.SurveySheets.getData() : null;
     if (!contentRows.length && !surveyData) { alert("当前没有可保存的数据（主表格与调查表均为空）。"); return false; }
+    // 索引只拉一次：对话框搜索与覆盖判定共用（原实现搜索、保存各拉一次，多一次网络往返）
+    const list = (await loadRecords()).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
     const name = await askInput({
       title: "保存数据",
       hint: "为当前数据命名，也可在下方搜索并点选已有记录名，确定后覆盖该记录",
       value: defaultName,
       // 已保存记录列表（点选填入名称，覆盖保存）；_meta 显示行数与保存时间
       recordSearch: async () =>
-        (await loadRecords())
-          .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
+        list
           .map((r) => ({
             name: r.name,
             _meta: `${Array.isArray(r.rows) ? r.rows.length + " 行 · " : ""}保存于 ${new Date(r.updatedAt).toLocaleString("zh-CN", { hour12: false })}`,
@@ -2672,7 +2681,6 @@
     });
     if (name === null) return false;
     if (name === "") { alert("名称不能为空。"); return false; }
-    const list = await loadRecords();
     const now = new Date().toISOString();
     const snap = L.snapshotRows(contentRows);
     // 附带调查表 6 表数据（全部为空时不写入）

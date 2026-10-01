@@ -30,7 +30,8 @@ async function writeIndex(kv, index) {
   await kv.put(INDEX_KEY, JSON.stringify(index));
 }
 
-// 旧格式兼容：KV 里可能遗留整列表的 "records" key（元素含 rows）→ 拆分为分 key 结构
+// 旧格式兼容：KV 里可能遗留整列表的 "records" key（元素含 rows）→ 拆分为分 key 结构。
+// 仅在索引为空时调用（见各入口）：正常情况零额外 KV 读，迁移一次后索引非空不再进入
 async function migrateLegacy(kv) {
   try {
     const raw = await kv.get("records");
@@ -52,13 +53,16 @@ export async function onRequestGet(context) {
   const kv = context.env && context.env.SAMPLING_RECORDS;
   if (!kv) return json(500, { error: "未绑定 KV 命名空间 SAMPLING_RECORDS" });
   try {
-    await migrateLegacy(kv);
     const id = new URL(context.request.url).searchParams.get("id");
     if (id) {
       const raw = await kv.get(recKey(id));
       if (!raw) return json(404, { error: "记录不存在" });
       return json(200, JSON.parse(raw));
     }
+    // 旧格式迁移仅在索引为空时尝试（正常情况一次 KV 读即返回）
+    const index = await readIndex(kv);
+    if (index.length) return json(200, index);
+    await migrateLegacy(kv);
     return json(200, await readIndex(kv));
   } catch (e) {
     return json(500, { error: String((e && e.message) || e) });
@@ -72,8 +76,13 @@ async function saveRecord(context, kv) {
   if (!body || typeof body !== "object" || body.id !== id) {
     return json(400, { error: "数据格式错误（需含与 id 参数一致的 id 字段）" });
   }
+  // 索引为空时先尝试旧格式迁移（遗留数据并入索引后再保存，避免覆盖丢失）
+  let index = await readIndex(kv);
+  if (!index.length) {
+    await migrateLegacy(kv);
+    index = await readIndex(kv);
+  }
   await kv.put(recKey(id), JSON.stringify(body));
-  const index = await readIndex(kv);
   const meta = { id: body.id, name: body.name || "", createdAt: body.createdAt || "", updatedAt: body.updatedAt || "" };
   const pos = index.findIndex((r) => r.id === id);
   if (pos >= 0) index[pos] = meta;
@@ -86,7 +95,6 @@ export async function onRequestPut(context) {
   const kv = context.env && context.env.SAMPLING_RECORDS;
   if (!kv) return json(500, { error: "未绑定 KV 命名空间 SAMPLING_RECORDS" });
   try {
-    await migrateLegacy(kv);
     return await saveRecord(context, kv);
   } catch (e) {
     return json(500, { error: String((e && e.message) || e) });
