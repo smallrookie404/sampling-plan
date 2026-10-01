@@ -147,12 +147,24 @@
   const sUndoStack = [];
   const S_UNDO_MAX = 50;
   function sPushUndo() {
-    sUndoStack.push(JSON.stringify(surveyData));
+    sUndoStack.push({ type: "all", data: JSON.stringify(surveyData) });
+    if (sUndoStack.length > S_UNDO_MAX) sUndoStack.shift();
+  }
+  // 行级快照：单表单行（首次打字进入编辑用，序列化单行比全量 6 表快百倍）
+  function sPushUndoRow(key, r) {
+    const rows = surveyData[key];
+    if (!rows || !rows[r]) return;
+    sUndoStack.push({ type: "row", key, r, data: JSON.stringify(rows[r]) });
     if (sUndoStack.length > S_UNDO_MAX) sUndoStack.shift();
   }
   function sUndoLast() {
     if (!sUndoStack.length) return;
-    surveyData = JSON.parse(sUndoStack.pop());
+    const snap = sUndoStack.pop();
+    if (snap.type === "row" && surveyData[snap.key] && surveyData[snap.key][snap.r]) {
+      surveyData[snap.key][snap.r] = JSON.parse(snap.data);
+    } else {
+      surveyData = JSON.parse(snap.data);
+    }
     surveySaveFlush();
     sEditing = false;
     sEditOriginal = null;
@@ -351,7 +363,7 @@
       // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
       // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
       const armOriginal = initVal;
-      const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; sPushUndo(); } };
+      const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; sPushUndoRow(surveyCur, sCur.r); } };
       el.addEventListener("input", () => {
         markEditing();
         if (sCur && Number(el.dataset.r) === sCur.r && Number(el.dataset.c) === sCur.c) {
@@ -427,7 +439,7 @@
     // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
     // 首次输入（含 IME 组合）同时进入编辑态，Esc 才能还原到布防时的原值
     const armOriginal = initVal;
-    const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; sPushUndo(); } };
+    const markEditing = () => { if (!sEditing) { sEditing = true; sEditTyping = true; sEditOriginal = armOriginal; sPushUndoRow(surveyCur, sCur.r); } };
     ta.addEventListener("input", () => {
       markEditing();
       if (sCur && Number(ta.dataset.r) === sCur.r && Number(ta.dataset.c) === sCur.c) {

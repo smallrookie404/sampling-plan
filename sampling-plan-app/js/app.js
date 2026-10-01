@@ -510,7 +510,7 @@
   gridBody.addEventListener("change", (e) => {
     const el = e.target;
     if (el.tagName !== "SELECT") return;
-    pushUndo(); // 下拉选择变更可撤销
+    pushUndoRow(Number(el.closest("tr").dataset.r)); // 下拉选择变更可撤销（行级快照）
     const tr = el.closest("tr");
     const r = Number(tr.dataset.r);
     const c = el.dataset.c;
@@ -544,27 +544,38 @@
     refreshStatus();
   }
 
-  // ---------- Ctrl+Z 撤销（快照式：每次批量变更前存全量 rows，逐级回退） ----------
+  // ---------- Ctrl+Z 撤销（快照式：批量变更存全量、单行编辑存行级，逐级回退） ----------
   const undoStack = [];
   const UNDO_MAX = 50;
-  // 批量变更前调用（插入/删除/复制行、清空、粘贴、导入等）；连续打字提交由 commit 处聚合
+  // 行级快照：{ type:"row", r, data }，单行编辑/下拉变更用（序列化单行比全表快百倍）
+  function pushUndoRow(r) {
+    undoStack.push({ type: "row", r, data: JSON.stringify(rows[r]) });
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+  }
+  // 批量变更前调用（插入/删除/复制行、清空、粘贴等）
   function pushUndo() {
-    undoStack.push(JSON.stringify(rows));
+    undoStack.push({ type: "all", data: JSON.stringify(rows) });
     if (undoStack.length > UNDO_MAX) undoStack.shift();
   }
   function undoLast() {
     if (!undoStack.length) return;
-    const snap = JSON.parse(undoStack.pop());
-    rows.length = 0;
-    for (const r of snap) rows.push(r);
+    const snap = undoStack.pop();
+    if (snap.type === "row") {
+      // 行级快照：只替换该行（行号越界说明栈序异常，跳过恢复）
+      if (snap.r < rows.length) rows[snap.r] = JSON.parse(snap.data);
+    } else {
+      const all = JSON.parse(snap.data);
+      rows.length = 0;
+      for (const r of all) rows.push(r);
+    }
     rowOffsets = null;
     clampCur();
     selAnchor = selStart = selEnd = cur ? { r: cur.r, c: cur.c } : null;
     editing = false;
     editOriginal = null;
     removeArm();
-    renderWindow();
     recomputeAndRefresh();
+    renderWindow(); // 重算后一次性渲染（原来先渲染再重算会二次逐格刷新）
   }
 
   function updateVisibleCells() {
@@ -883,7 +894,7 @@
     editing = true;
     editTyping = true; // 直接键入进入：方向键提交并移动（Excel 输入模式）
     editOriginal = getCellModelValue(r, c);
-    pushUndo(); // 进入编辑前存快照（本次编辑会话聚合为一次撤销）
+    pushUndoRow(r); // 进入编辑前存行级快照（本次编辑会话聚合为一次撤销）
     const el = td.querySelector("input");
     if (el) {
       // Excel 替换语义：选中态直接打字覆盖原内容，编辑框以键入文本开头
@@ -1393,7 +1404,7 @@
     editing = true;
     editTyping = false; // 双击进入：方向键在格内移动光标（Excel 编辑模式）
     editOriginal = getCellModelValue(r, c);
-    pushUndo(); // 进入编辑前存快照
+    pushUndoRow(r); // 进入编辑前存行级快照
     const el = td.querySelector("input");
     if (el) {
       el.focus({ preventScroll: true });
@@ -1517,7 +1528,7 @@
         editOriginal = getCellModelValue(r, c);
         editing = true;
         editTyping = false; // F2 进入：方向键在格内移动光标（Excel 编辑模式）
-        pushUndo(); // 进入编辑前存快照
+        pushUndoRow(r); // 进入编辑前存行级快照
         try { e.target.setSelectionRange(e.target.value.length, e.target.value.length); } catch {}
       }
       return;
