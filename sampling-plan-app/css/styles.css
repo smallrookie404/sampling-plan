@@ -222,8 +222,8 @@ table.survey td textarea { width: 100%; height: 100%; box-sizing: border-box; re
 table.survey td input:focus, table.survey td textarea:focus { box-shadow: inset 0 0 0 1.5px var(--primary); }
 /* 车间下拉面板：body 级 fixed 定位，不被表格 overflow 裁剪；始终显示全部选项。
    加深投影 + 圆角 + 不透明纯白底，与背后表格内容明确分层，防止视觉混在一起 */
-.survey-ws-panel { position: fixed; z-index: 1000; background: #fff; border: 1px solid #94a3b8; border-radius: 6px; box-shadow: 0 8px 24px rgba(15,23,42,.28), 0 2px 6px rgba(15,23,42,.16); max-height: 220px; overflow-y: auto; }
-.survey-ws-panel .survey-ws-opt { padding: 5px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.survey-ws-panel { position: fixed; z-index: 1000; background: #fff; border: 1px solid #94a3b8; border-radius: 6px; box-shadow: 0 8px 24px rgba(15,23,42,.28), 0 2px 6px rgba(15,23,42,.16); max-height: 220px; max-width: 480px; overflow-y: auto; }
+.survey-ws-panel .survey-ws-opt { padding: 5px 10px; font-size: 12px; cursor: pointer; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
 .survey-ws-panel .survey-ws-opt:first-child { border-radius: 5px 5px 0 0; }
 .survey-ws-panel .survey-ws-opt:last-child { border-radius: 0 0 5px 5px; }
 .survey-ws-panel .survey-ws-opt:hover { background: #f1f5f9; }
