@@ -356,8 +356,13 @@
     }
     if (wsOpts) {
       sCloseWsPanel();
-      td.innerHTML = `<input data-r="${sCur.r}" data-c="${sCur.c}" value="${escAttr(initVal)}">`;
-      const el = td.querySelector("input");
+      // 一律用 textarea（与下方普通编辑路径一致）：多行内容编辑时排版保持不变，不变成一行
+      const cs = getComputedStyle(td);
+      const h = td.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+      td.innerHTML = `<textarea data-r="${sCur.r}" data-c="${sCur.c}">${escHtml(initVal)}</textarea>`;
+      const el = td.querySelector("textarea");
+      el.style.height = h + "px";
+      el.style.overflowY = "hidden";
       el.setSelectionRange(el.value.length, el.value.length);
       el.focus();
       // 布防即实时同步模型：焦点常驻编辑框，数据不能等到提交才取。
