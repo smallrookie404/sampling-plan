@@ -2816,6 +2816,8 @@
     const list = await loadAllFullRecords(all);
     const missing = all.length - list.length;
     if (!list.length) { alert("没有可导出的完整记录（均缺少行数据），无法备份。"); return; }
+    // downloadBlob 在 xlsxio 模块上（懒加载）：从未导出过 Excel 时 X 为 null，必须先 ensureXlsx
+    await ensureXlsx();
     const blob = new Blob(
       [JSON.stringify({ app: "采样计划软件", version: 1, exportedAt: new Date().toISOString(), records: list }, null, 2)],
       { type: "application/json" }
