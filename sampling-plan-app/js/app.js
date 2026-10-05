@@ -2157,18 +2157,12 @@
     }
     if (storageMode === "server") {
       try {
-        // 请求体 gzip 压缩（CompressionStream）：大记录传输量降至 1/5~1/10，服务端 fetch 会自动解压
-        let body = JSON.stringify(rec);
-        if (typeof CompressionStream === "function") {
-          const cs = new CompressionStream("gzip");
-          const blob = new Blob([body]);
-          const buf = await new Response(blob.stream().pipeThrough(cs)).arrayBuffer();
-          body = buf;
-        }
+        // 直发 JSON：Cloudflare Workers 的 request.json() 与本地 server.mjs 均按原样解析。
+        // 此前手工 gzip（Content-Encoding: gzip）两端都不会自动解压，保存一律失败
         const res = await fetch("/api/records?id=" + encodeURIComponent(rec.id), {
           method: "PUT",
-          headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" },
-          body,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(rec),
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
         upsertLocalFull(rec);

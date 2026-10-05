@@ -8,6 +8,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -103,6 +104,27 @@ export function createServer(opts = {}) {
     res.end(JSON.stringify(obj));
   }
 
+  // 读取请求体文本：前端 persistRecord 会 gzip 压缩（Content-Encoding: gzip，Cloudflare
+  // Functions 自动解压），本地 Node http 需自行解压，否则 JSON.parse 失败（保存报 400/500）
+  function readBody(req) {
+    return new Promise(async (resolve, reject) => {
+      try {
+        let stream = req;
+        if (String(req.headers["content-encoding"] || "").toLowerCase().includes("gzip")) {
+          stream = req.pipe(zlib.createGunzip());
+        }
+        let body = "";
+        for await (const chunk of stream) {
+          body += chunk;
+          if (body.length > 50 * 1024 * 1024) return reject(new Error("数据过大"));
+        }
+        resolve(body);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -127,9 +149,10 @@ export function createServer(opts = {}) {
           // PUT /api/records?id=<id>，body 为单条记录 → 写单条文件并更新索引
           if (!qid) return sendJson(res, 400, { error: "缺少记录 id 参数" });
           let body = "";
-          for await (const chunk of req) {
-            body += chunk;
-            if (body.length > 50 * 1024 * 1024) return sendJson(res, 413, { error: "数据过大" });
+          try {
+            body = await readBody(req);
+          } catch (e) {
+            return sendJson(res, String(e && e.message) === "数据过大" ? 413 : 400, { error: e && e.message ? e.message : "读取请求体失败" });
           }
           try {
             const rec = JSON.parse(body);
@@ -168,9 +191,10 @@ export function createServer(opts = {}) {
         }
         if (req.method === "PUT" || req.method === "POST") {
           let body = "";
-          for await (const chunk of req) {
-            body += chunk;
-            if (body.length > 50 * 1024 * 1024) return sendJson(res, 413, { error: "数据过大" });
+          try {
+            body = await readBody(req);
+          } catch (e) {
+            return sendJson(res, String(e && e.message) === "数据过大" ? 413 : 400, { error: e && e.message ? e.message : "读取请求体失败" });
           }
           try {
             const lib = JSON.parse(body);
