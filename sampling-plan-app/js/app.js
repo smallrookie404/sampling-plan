@@ -2747,10 +2747,12 @@
     await renderDbList();
     $("db-modal").classList.remove("hidden");
   });
-  $("db-close").addEventListener("click", () => $("db-modal").classList.add("hidden"));
-  $("db-modal").addEventListener("click", (e) => {
-    if (e.target.id === "db-modal") $("db-modal").classList.add("hidden");
-  });
+  // 关闭数据记录弹窗：同时清空搜索框，下次打开不留上次的筛选词
+  function closeDbModal() {
+    $("db-modal").classList.add("hidden");
+    $("db-search").value = "";
+  }
+  $("db-close").addEventListener("click", closeDbModal);
   $("db-search").addEventListener("input", () => renderDbList());
   $("db-refresh").addEventListener("click", () => renderDbList());
 
@@ -2776,7 +2778,7 @@
       renderWindow();
       // 同步还原调查表 6 表数据（旧记录无 survey 字段时清空为默认空表）
       if (window.SurveySheets && window.SurveySheets.setData) window.SurveySheets.setData(rec.survey || null);
-      $("db-modal").classList.add("hidden");
+      closeDbModal();
       const parts = rec.rows.length ? rec.rows.length + " 行" : (rec.survey ? "仅调查表" : "空记录");
       const suffix = rec.rows.length && rec.survey ? "，含调查表" : "";
       alert(`已调用「${rec.name}」（${parts}${suffix}）。`);
