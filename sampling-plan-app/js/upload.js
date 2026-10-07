@@ -352,13 +352,19 @@
       }));
     }
     if (toDel.length > 0) {
-      jobs.push(deleteProjectMembers(token, toDel.map(function (m) { return m.humanId; })).then(function (r) {
+      // 逐个删除：平台会拒绝删除项目负责人（整批提交时一人被拒全批失败）。
+      // 单个失败只记日志提示（负责人本就不该被删，平台拒绝=符合预期），不进失败摘要弹窗
+      for (const m of toDel) {
+        const name = m.humanIdName || m.humanId;
+        // eslint-disable-next-line no-await-in-loop
+        const r = await deleteProjectMembers(token, [m.humanId]);
         if (r.status === 200 && r.data && r.data.code === '200') {
-          logs.push('移除项目成员成功：' + toDel.map(function (m) { return m.humanIdName || m.humanId; }).join('、'));
+          logs.push('移除项目成员成功：' + name);
         } else {
-          logs.push('移除项目成员失败（' + toDel.map(function (m) { return m.humanIdName || m.humanId; }).join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
+          // 平台拒删（负责人等受保护成员）：静默保留，仅记提示日志
+          logs.push('成员「' + name + '」保留（平台不允许移除，如负责人）');
         }
-      }));
+      }
     }
     if (opts.investigatorId || opts.reviewerId || opts.investigateDate) {
       jobs.push((async function () {
@@ -1172,7 +1178,10 @@
               investigateDate: investigateDate.value
             });
             syncLogs.forEach(function (l) { log(l); });
-            const failed = syncLogs.filter(function (l) { return l.indexOf('失败') >= 0; });
+            // 「保留（平台不允许移除）」是预期行为（负责人等受保护成员），不算失败
+            const failed = syncLogs.filter(function (l) {
+              return l.indexOf('失败') >= 0 && l.indexOf('保留（平台不允许移除') < 0;
+            });
             // 弹窗直接列出失败项明细（冒号前短句），不再只给一句「有失败项」
             syncMsg = failed.length > 0 ? '，同步失败项：' + failed.map(function (l) { return l.split('：')[0]; }).join('；') : '，团队信息已同步';
           } catch (e) {
