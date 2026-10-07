@@ -324,7 +324,18 @@
     const existing = await fetchProjectMembers(token, projectId);
     const existingIds = existing.map(function (m) { return String(m.humanId); });
     const toAdd = want.filter(function (id) { return existingIds.indexOf(id) < 0; });
-    const toDel = existing.filter(function (m) { return want.indexOf(String(m.humanId)) < 0; });
+    // 项目负责人保护：平台项目表 responser 字段即负责人用户 id，负责人不能被移除
+    // （另有成员记录带非 '0' humanType 的负责人标记，也一并保护，双保险）
+    const leaderIds = [];
+    if (opts.project && opts.project.responser != null && opts.project.responser !== '') {
+      leaderIds.push(String(opts.project.responser));
+    }
+    const toDel = existing.filter(function (m) {
+      if (want.indexOf(String(m.humanId)) >= 0) return false;
+      if (leaderIds.indexOf(String(m.humanId)) >= 0) return false;
+      if (m.humanType != null && String(m.humanType) !== '0') return false; // 非 '0' 类型=负责人/管理员，不移除
+      return true;
+    });
     // 增删成员与调查人同步三者互不依赖：并行执行（原串行 5 次往返，现约 2 次）
     const jobs = [];
     if (toAdd.length > 0) {
@@ -336,7 +347,7 @@
         if (r.status === 200 && r.data && r.data.code === '200') {
           logs.push('添加项目成员成功：' + names.join('、'));
         } else {
-          logs.push('添加项目成员失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
+          logs.push('添加项目成员失败（' + names.join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
         }
       }));
     }
@@ -345,7 +356,7 @@
         if (r.status === 200 && r.data && r.data.code === '200') {
           logs.push('移除项目成员成功：' + toDel.map(function (m) { return m.humanIdName || m.humanId; }).join('、'));
         } else {
-          logs.push('移除项目成员失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
+          logs.push('移除项目成员失败（' + toDel.map(function (m) { return m.humanIdName || m.humanId; }).join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
         }
       }));
     }
@@ -363,7 +374,12 @@
         if (r.status === 200 && r.data && r.data.code === '200') {
           logs.push('调查人/复核人/调查日期已同步');
         } else {
-          logs.push('调查人/复核人同步失败：' + ((r.data && r.data.message) || ('HTTP ' + r.status)));
+          // 逐项列出本次要同步的内容与平台返回，便于定位哪一项失败
+          const parts = [];
+          if (opts.investigatorId) parts.push('调查人');
+          if (opts.reviewerId) parts.push('复核人');
+          if (opts.investigateDate) parts.push('调查日期=' + opts.investigateDate);
+          logs.push('同步失败（' + parts.join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
         }
       })());
     }
@@ -1150,13 +1166,15 @@
             const syncLogs = await syncProjectInfo(token, projectId, {
               memberIds: selectedMemberIds(),
               users: userList,
+              project: selectedProject, // 带 responser（负责人），同步时不移除负责人
               investigatorId: investigatorSelect.value,
               reviewerId: reviewerSelect.value,
               investigateDate: investigateDate.value
             });
             syncLogs.forEach(function (l) { log(l); });
             const failed = syncLogs.filter(function (l) { return l.indexOf('失败') >= 0; });
-            syncMsg = failed.length > 0 ? '，团队信息同步有失败项，详见日志' : '，团队信息已同步';
+            // 弹窗直接列出失败项明细（冒号前短句），不再只给一句「有失败项」
+            syncMsg = failed.length > 0 ? '，同步失败项：' + failed.map(function (l) { return l.split('：')[0]; }).join('；') : '，团队信息已同步';
           } catch (e) {
             log('同步团队信息失败：' + e.message);
             syncMsg = '，团队信息同步失败：' + e.message;
