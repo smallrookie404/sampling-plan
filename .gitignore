@@ -16,6 +16,11 @@ sampling-plan-app/server.log
 # 测试用数据库文件（不入库，正式库为 data/records.json）
 sampling-plan-app/data/test-*.json
 
+# 本地调试残留（登录探针 / 会话 token / 验证码截图，可能含真实凭据，严禁入库）
+sampling-plan-app/_login*.mjs
+sampling-plan-app/_session.txt
+sampling-plan-app/_captcha.png
+
 # 原版 Excel 模板（含调查数据，默认不入库；如需入库请删除下面一行）
 0.系统测点布局调查*.xlsx
 
@@ -25,3 +30,9 @@ sampling-plan-app/data/test-*.json
 sampling-plan-app/_worker.js
 sampling-plan-app/index.js
 sampling-plan-app/_routes.json
+
+# 工作区本地数据（记忆/日志等，不入库）
+.workbuddy-ai/
+
+# 平台导出的数据报告（派生文件，不入库）
+输出/

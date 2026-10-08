@@ -22,13 +22,15 @@ sampling-plan/
     ├── index.html                  # 唯一页面：主工具 + 调查表页签 + 登录遮罩 + 上传视图
     ├── server.mjs                  # 本地服务（Node 标准库，端口 8017，/api/records、/api/library）
     ├── css/styles.css              # 主界面样式（CSS 变量 --primary 等，.xcdc 作用域给登录/上传视图）
-    ├── .assetsignore               # Cloudflare 部署时排除 tests/ scripts/ data/ server.mjs *.bat README.md
+    ├── .assetsignore               # Cloudflare 部署时排除 tests/ scripts/ *.log server.mjs *.bat README.md data/
     ├── data/
     │   ├── records.json            # 记录「索引」[{id,name,createdAt,updatedAt}]（旧版整表格式会自动迁移）
     │   ├── records/<id>.json       # 单条完整记录（含 rows / survey），本地服务按需创建
     │   └── library.json            # 危害因素库 + 检测项目（应用自动写回，勿手工改格式）
     ├── js/
-    │   ├── data.js                 # 内置危害因素库/检测项目（由 scripts/extract-data.mjs 生成，勿手改）
+    │   ├── data.js                 # 全量数据 {mainHeaders,hazardFactors,detectionItems}，仅 Node 测试 require（勿手改）
+    │   ├── data-core.js            # 主表列结构（仅 mainHeaders），页面启动同步加载（勿手改）
+    │   ├── data-library.js         # 内置危害因素库/检测项目，页面端懒加载（勿手改）
     │   ├── logic.js                # 计算引擎（浏览器/Node 通用，纯函数）
     │   ├── xlsxio.js + jszip.min.js# xlsx 读写（懒加载，首次导入/导出时加载）
     │   ├── app.js                  # 主工具界面逻辑；暴露 window.SamplingApp（导出/错误数/车间岗位映射）
@@ -38,18 +40,19 @@ sampling-plan/
     │   ├── records.js / library.js # KV 数据读写（binding: SAMPLING_RECORDS）
     │   ├── team.js                 # 团队配置云端存取（按账号分 key team:<账号>）
     │   └── platform/[[path]].js    # 平台接口同源代理（cloudflare:sockets 原始 TCP 转发）
-    ├── scripts/extract-data.mjs    # 从原 Excel 生成 js/data.js
+    ├── scripts/extract-data.mjs    # 从原 Excel 生成 js/data.js + data-core.js + data-library.js
     └── tests/                      # 自动化测试（Node + Playwright）；另有 check_shots.py、validate_export.py
 ```
 
 ## 运行时组成与模块契约
 
-- **加载顺序**（`index.html` 末尾，不可随意调整）：`data.js → logic.js → survey.js → app.js → upload.js`；`xlsxio.js` 与 `jszip.min.js` 由 app.js/survey.js 的 `ensureXlsx()` 在首次导入/导出时懒加载。app.js/survey.js 有大量顶层 `$()` 元素绑定与 `init()`，因此脚本必须放在 `</body>` 前。
+- **加载顺序**（`index.html` 末尾，不可随意调整）：`data-core.js → logic.js → survey.js → app.js → upload.js`；`data-library.js`（内置库，~125KB）、`xlsxio.js` 与 `jszip.min.js` 均为**懒加载**——内置库由 app.js `ensureLibraryDefaults()` 在「无云端/本地参考库」时经 `loadScript()` 拉取，xlsx 由 app.js/survey.js 的 `ensureXlsx()` 在首次导入/导出时拉取。app.js/survey.js 有大量顶层 `$()` 元素绑定与 `init()`，因此脚本必须放在 `</body>` 前。
 - **模块间只通过全局对象通信**：
 
 | 全局对象 | 定义处 | 主要成员 |
 |---|---|---|
-| `SamplingData` | js/data.js | 内置 `{ hazardFactors, detectionItems }` |
+| `SamplingData` | js/data-core.js（页面启动）/ js/data.js（Node 测试） | data-core.js 仅 `{ mainHeaders }`；data.js 为全量 `{ mainHeaders, hazardFactors, detectionItems }` |
+| `SamplingLibrary` | js/data-library.js | 内置 `{ hazardFactors, detectionItems }`（页面端懒加载） |
 | `SamplingLogic` | js/logic.js | `computeRows` `validateRow` `countErrors` `snapshotRows` `restoreRows` `findDuplicates` |
 | `SamplingXlsx` | js/xlsxio.js | `readWorkbook` `sheetToArray` `writeWorkbook`（支持 `[{name,rows,widths}]` 多表）`downloadBlob` `colToIndex` `indexToCol` |
 | `SamplingApp` | app.js `window.SamplingApp` | `exportWorkbookBytes` `exportName` `countErrors` `promptSave` `askRowCount` `workshopNames` `computedHeaders` `workshopPosts` |
@@ -85,6 +88,7 @@ sampling-plan/
 |---|---|---|
 | `samplingPlanRecords_v1` | localStorage | 完整记录镜像（离线兜底） |
 | `samplingPlanLibrary_v1` | localStorage | 参考库镜像 |
+| `samplingPlanLibraryDefaults_v1` | localStorage | 内置参考库默认值缓存（懒加载 data-library.js 解析后写入，见 app.js `ensureLibraryDefaults`） |
 | `samplingPlanGithubConfig_v1` | localStorage | 仓库/分支/路径/**Token 明文** |
 | `samplingPlanSurvey_v2` | localStorage | 调查表 6 子表数据（改动结构须升版本号） |
 | `xcdc_session_v1` | sessionStorage | 平台登录会话 `{token, orgId, userInfo}` |

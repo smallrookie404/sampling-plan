@@ -69,10 +69,14 @@ sampling-plan-app/
 ├─ js/
 │  ├─ logic.js           计算与校验引擎（浏览器/Node 通用）
 │  ├─ xlsxio.js          xlsx 导入导出（仅依赖内置 jszip）
-│  ├─ data.js            内置危害因素库与检测项目（由原表提取）
+│  ├─ data.js            全量内置数据（供 Node 测试 require）
+│  ├─ data-core.js       主表列结构（页面启动同步加载）
+│  ├─ data-library.js    内置危害因素库与检测项目（页面端懒加载）
 │  ├─ jszip.min.js       第三方压缩库
-│  └─ app.js             界面逻辑
-├─ scripts/extract-data.mjs  从原 Excel 重新提取内置数据的脚本
+│  ├─ app.js             主工具界面逻辑
+│  ├─ survey.js          调查表模块（6 个现场子表）
+│  └─ upload.js          统一登录 + 现场调查上传
+├─ scripts/extract-data.mjs  从原 Excel 重新提取内置数据的脚本（生成 data.js / data-core.js / data-library.js）
 └─ tests/                自动化测试（见下）
 ```
 
