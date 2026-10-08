@@ -1498,6 +1498,7 @@
   document.addEventListener("copy", (e) => {
     if (!arm || document.activeElement !== arm.ta) return;
     if (!$("tab-main").classList.contains("active")) return;
+    if (hasTextSelection()) return; // 用户用鼠标划选了文字：放行原生复制
     const rect = selRect();
     if (!rect || (rect.r1 === rect.r2 && rect.c1 === rect.c2)) return; // 单格：交给默认行为也无内容，忽略
     e.preventDefault();
@@ -1727,12 +1728,20 @@
     }
   });
 
+  // 存在鼠标划选的文字选区时返回 true（放行 Ctrl+C 原生复制选中文字，
+  // 不被单元格/调查表的 copy 处理器拦截；表格矩形选区不产生 DOM 文字选区，互不影响）
+  function hasTextSelection() {
+    const s = window.getSelection();
+    return !!(s && s.rangeCount > 0 && !s.isCollapsed && String(s).trim() !== "");
+  }
+
   // 复制：与调查表一致挂 document（布防框/选区态焦点不在表格内也能响应）；
   // 编辑中（焦点在表格输入框上）走浏览器原生复制。
   // 仅主表页签生效：调查表的 copy 处理器同样挂 document，需避免互相覆盖剪贴板内容
   document.addEventListener("copy", (e) => {
     if (!$("tab-main").classList.contains("active")) return;
     const ae = document.activeElement;
+    if (hasTextSelection()) return; // 用户用鼠标划选了文字：放行原生复制
     if (ae && (ae.tagName === "INPUT" || ae.tagName === "SELECT") && gridBody.contains(ae)) return; // 编辑中走原生复制
     if (!cur) return;
     const rect = selRect();
@@ -3411,6 +3420,8 @@
 
   // 供上传模块（js/upload.js）复用的导出能力
   window.SamplingApp = {
+    // 有鼠标划选的文字选区（供 survey.js 的 copy 处理器共用，放行原生复制）
+    hasTextSelection,
     exportWorkbookBytes: exportWorkbook,
     exportName: () => "系统测点布局调查_自动计算区.xlsx",
     countErrors: () => L.countErrors(rows).total,

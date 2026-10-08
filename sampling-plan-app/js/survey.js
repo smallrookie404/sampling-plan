@@ -862,6 +862,8 @@
 
   document.addEventListener("copy", (e) => {
     if (!$S("tab-survey").classList.contains("active")) return;
+    const hasTextSel = window.SamplingApp && window.SamplingApp.hasTextSelection ? window.SamplingApp.hasTextSelection() : false;
+    if (hasTextSel) return; // 用户用鼠标划选了文字：放行原生复制
     if (!sCur) return;
     const ae = document.activeElement;
     if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") && $S("survey-body").contains(ae)) return; // 编辑中走原生复制
