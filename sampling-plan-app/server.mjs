@@ -86,6 +86,15 @@ export function createServer(opts = {}) {
     writeJson(dataFile, list);
   }
 
+  // 写队列：读索引→改→写回的序列必须串行执行，否则两个请求并发保存时
+  // 后写者会用旧索引覆盖先写者的更新（丢记录）。所有“读-改-写”整体入队。
+  let writeQueue = Promise.resolve();
+  function enqueueWrite(task) {
+    const run = writeQueue.then(task, task);
+    writeQueue = run.catch(() => {}); // 队列不被单个任务失败卡死
+    return run;
+  }
+
   function readLibrary() {
     try {
       const lib = JSON.parse(fs.readFileSync(path.join(appDir, "data", "library.json"), "utf8"));
@@ -159,27 +168,31 @@ export function createServer(opts = {}) {
             if (!rec || typeof rec !== "object" || rec.id !== qid) {
               return sendJson(res, 400, { error: "数据格式错误（需含与 id 参数一致的 id 字段）" });
             }
-            const recs = readRecord(qid);
-            if (recs) rec.updatedAt = rec.updatedAt || new Date().toISOString();
-            writeRecord(rec);
-            const index = readIndex();
-            const meta = { id: rec.id, name: rec.name || "", createdAt: rec.createdAt || "", updatedAt: rec.updatedAt || "" };
-            const pos = index.findIndex((r) => r.id === qid);
-            if (pos >= 0) index[pos] = meta;
-            else index.push(meta);
-            writeJson(dataFile, index);
-            return sendJson(res, 200, { ok: true, id: qid });
+            return enqueueWrite(() => {
+              const recs = readRecord(qid);
+              if (recs) rec.updatedAt = rec.updatedAt || new Date().toISOString();
+              writeRecord(rec);
+              const index = readIndex();
+              const meta = { id: rec.id, name: rec.name || "", createdAt: rec.createdAt || "", updatedAt: rec.updatedAt || "" };
+              const pos = index.findIndex((r) => r.id === qid);
+              if (pos >= 0) index[pos] = meta;
+              else index.push(meta);
+              writeJson(dataFile, index);
+              return { ok: true, id: qid };
+            }).then((result) => sendJson(res, 200, result));
           } catch {
             return sendJson(res, 400, { error: "JSON 解析失败" });
           }
         }
         if (req.method === "DELETE") {
-          // DELETE /api/records?id=<id> → 删除单条并更新索引
+          // DELETE /api/records?id=<id> → 删除单条并更新索引（入写队列，与 PUT 串行）
           if (!qid) return sendJson(res, 400, { error: "缺少记录 id 参数" });
-          deleteRecord(qid);
-          const index = readIndex().filter((r) => r.id !== qid);
-          writeJson(dataFile, index);
-          return sendJson(res, 200, { ok: true });
+          return enqueueWrite(() => {
+            deleteRecord(qid);
+            const index = readIndex().filter((r) => r.id !== qid);
+            writeJson(dataFile, index);
+            return { ok: true };
+          }).then((result) => sendJson(res, 200, result));
         }
         return sendJson(res, 405, { error: "不支持的方法" });
       }
