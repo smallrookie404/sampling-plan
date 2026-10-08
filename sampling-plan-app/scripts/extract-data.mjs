@@ -165,16 +165,28 @@ for (let c = 0; c < 61; c++) {
 if (mainHeaders[28] === "作业方式") mainHeaders[28] = "*作业方式";
 
 const data = { hazardFactors, detectionItems, mainHeaders };
-const body =
+const wrap = (varName, obj, comment) =>
   "/* 由 scripts/extract-data.mjs 从原 Excel 自动生成，请勿手工编辑 */\n" +
+  comment +
   "(function (root, factory) {\n" +
   "  if (typeof module === 'object' && module.exports) module.exports = factory();\n" +
-  "  else root.SamplingData = factory();\n" +
+  "  else root." + varName + " = factory();\n" +
   "})(typeof self !== 'undefined' ? self : this, function () {\n" +
-  "  return " + JSON.stringify(data) + ";\n" +
+  "  return " + JSON.stringify(obj) + ";\n" +
   "});\n";
-
-fs.writeFileSync(OUT, body, "utf8");
+// data.js：全量（Node 测试用）；data-core.js：仅列结构（页面启动同步加载，轻量）；
+// data-library.js：内置库（页面端懒加载，~125KB）
+fs.writeFileSync(OUT, wrap("SamplingData", data, ""), "utf8");
+fs.writeFileSync(
+  path.resolve("js/data-core.js"),
+  wrap("SamplingData", { mainHeaders }, "// 主表列结构（轻量，页面启动同步加载）\n"),
+  "utf8"
+);
+fs.writeFileSync(
+  path.resolve("js/data-library.js"),
+  wrap("SamplingLibrary", { hazardFactors, detectionItems }, "// 内置危害因素库 + 检测项目（较大，首次用库时按需加载）\n"),
+  "utf8"
+);
 console.log(
   `OK hazard=${hazardFactors.length} items=${detectionItems.length} headers=${mainHeaders.length}`
 );

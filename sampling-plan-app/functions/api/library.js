@@ -3,6 +3,17 @@
 
 const KEY = "library";
 
+// 读取响应头：max-age=0 + SWR——浏览器立即用缓存渲染并后台再验证；
+// 应用端按 updatedAt 比较同步，缓存旧值不会造成数据回退。写入仍 no-store。
+const READ_CACHE = "public, max-age=0, stale-while-revalidate=30";
+
+function jsonCache(code, obj) {
+  return new Response(JSON.stringify(obj), {
+    status: code,
+    headers: { "Content-Type": "application/json", "Cache-Control": READ_CACHE },
+  });
+}
+
 function json(code, obj) {
   return new Response(JSON.stringify(obj), {
     status: code,
@@ -15,9 +26,9 @@ export async function onRequestGet(context) {
   if (!kv) return json(500, { error: "未绑定 KV 命名空间 SAMPLING_RECORDS" });
   try {
     const raw = await kv.get(KEY);
-    if (!raw) return json(200, {});
+    if (!raw) return jsonCache(200, {});
     const obj = JSON.parse(raw);
-    return json(200, obj && typeof obj === "object" && !Array.isArray(obj) ? obj : {});
+    return jsonCache(200, obj && typeof obj === "object" && !Array.isArray(obj) ? obj : {});
   } catch (e) {
     return json(500, { error: String((e && e.message) || e) });
   }

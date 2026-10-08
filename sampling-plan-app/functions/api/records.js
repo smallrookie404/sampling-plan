@@ -20,6 +20,17 @@ function json(code, obj) {
   });
 }
 
+// 索引响应头：max-age=0 + SWR——浏览器立即用缓存渲染并后台再验证，
+// 弱网/高延迟下列表秒开；写入/单条读取仍 no-store 保证即时一致
+const INDEX_CACHE = "public, max-age=0, stale-while-revalidate=30";
+
+function jsonCache(code, obj) {
+  return new Response(JSON.stringify(obj), {
+    status: code,
+    headers: { "Content-Type": "application/json", "Cache-Control": INDEX_CACHE },
+  });
+}
+
 async function readIndex(kv) {
   const raw = await kv.get(INDEX_KEY);
   const list = raw ? JSON.parse(raw) : [];
@@ -61,9 +72,9 @@ export async function onRequestGet(context) {
     }
     // 旧格式迁移仅在索引为空时尝试（正常情况一次 KV 读即返回）
     const index = await readIndex(kv);
-    if (index.length) return json(200, index);
+    if (index.length) return jsonCache(200, index);
     await migrateLegacy(kv);
-    return json(200, await readIndex(kv));
+    return jsonCache(200, await readIndex(kv));
   } catch (e) {
     return json(500, { error: String((e && e.message) || e) });
   }

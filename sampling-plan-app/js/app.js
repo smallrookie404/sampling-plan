@@ -2,7 +2,9 @@
   "use strict";
 
   const L = window.SamplingLogic;
+  // 轻量列结构（同步）；内置危害因素库/检测项目较大（~125KB），首次用库时按需加载
   const DEFAULT_DATA = window.SamplingData;
+  const DEFAULT_LIBRARY_KEY = "samplingPlanLibraryDefaults_v1";
 
   // xlsx 读写模块（jszip + xlsxio）改为按需加载：首次导入/导出时才加载，加快页面启动
   let X = null;
@@ -15,6 +17,33 @@
       s.onerror = () => reject(new Error("脚本加载失败：" + src));
       document.head.appendChild(s);
     });
+  }
+
+  // 内置库懒加载：返回 {hazardFactors, detectionItems}；localStorage 缓存 + 脚本兜底
+  let libDefaultsPromise = null;
+  function ensureLibraryDefaults() {
+    if (libDefaultsPromise) return libDefaultsPromise;
+    libDefaultsPromise = (async () => {
+      try {
+        const cached = localStorage.getItem(DEFAULT_LIBRARY_KEY);
+        if (cached) {
+          const obj = JSON.parse(cached);
+          if (obj && Array.isArray(obj.hazardFactors) && obj.hazardFactors.length && Array.isArray(obj.detectionItems)) {
+            return obj;
+          }
+        }
+      } catch {}
+      try {
+        await loadScript("js/data-library.js");
+        if (window.SamplingLibrary && Array.isArray(window.SamplingLibrary.hazardFactors)) {
+          const obj = { hazardFactors: window.SamplingLibrary.hazardFactors, detectionItems: window.SamplingLibrary.detectionItems };
+          try { localStorage.setItem(DEFAULT_LIBRARY_KEY, JSON.stringify(obj)); } catch {}
+          return obj;
+        }
+      } catch {}
+      return { hazardFactors: [], detectionItems: [] }; // 加载失败：空库兜底（云端/本地参考库仍可用）
+    })();
+    return libDefaultsPromise;
   }
   function ensureXlsx() {
     if (X) return Promise.resolve(X);
@@ -3277,9 +3306,10 @@
     renderHazard();
     onHazardChange();
   });
-  $("hazard-restore").addEventListener("click", () => {
+  $("hazard-restore").addEventListener("click", async () => {
     if (!confirm("恢复为软件内置的默认危害因素库？当前库将被替换。")) return;
-    hazardFactors = DEFAULT_DATA.hazardFactors.map((h) => ({ ...h }));
+    const defaults = await ensureLibraryDefaults();
+    hazardFactors = defaults.hazardFactors.map((h) => ({ ...h }));
     selectedHazard = -1;
     renderHazard();
     onHazardChange();
@@ -3659,8 +3689,9 @@
 
   // ---------- 启动 ----------
   async function init() {
-    hazardFactors = DEFAULT_DATA.hazardFactors.map((h) => ({ ...h }));
-    detectionItems = DEFAULT_DATA.detectionItems.slice();
+    // 先用空库快速启动（列结构 data-core 已同步就绪），内置库懒加载后再填充
+    hazardFactors = [];
+    detectionItems = [];
     emptyGrid();
     buildHead();
     renderHazardHead();
@@ -3675,6 +3706,14 @@
         if (lib.detectionItems) detectionItems = lib.detectionItems.map(String);
       }
     } catch {}
+    if (!hazardFactors.length && !detectionItems.length) {
+      // 无云端/本地参考库时回退内置库（懒加载）
+      try {
+        const defaults = await ensureLibraryDefaults();
+        if (!hazardFactors.length && defaults.hazardFactors.length) hazardFactors = defaults.hazardFactors.map((h) => ({ ...h }));
+        if (!detectionItems.length && defaults.detectionItems.length) detectionItems = defaults.detectionItems.map(String);
+      } catch {}
+    }
     rebuildDatalist();
     if (hasGithubConfig()) {
       loadRecords().catch(() => {}); // 打开时自动从 GitHub 同步
