@@ -86,6 +86,12 @@ body {
   font-weight: 600;
   box-shadow: 0 -2px 6px rgba(0,0,0,.04);
 }
+/* 页签行右侧的操作按钮（如「检测报告导出」） */
+.tabs-right {
+  margin-left: auto;
+  align-self: center;
+  margin-bottom: 6px;
+}
 .badge {
   display: inline-block;
   min-width: 20px;

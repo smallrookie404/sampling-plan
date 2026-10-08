@@ -1242,11 +1242,87 @@
     // 视图切换：返回采样计划 / 退出登录
     $('xcdcBack').addEventListener('click', hideUpload);
 
+    // ---------- 检测报告导出（按项目编号导出平台 Word 检测报告） ----------
+    // 文本输入：优先复用主程序的统一输入弹窗，取不到时回退原生 prompt
+    function askText(opts) {
+      const app = window.SamplingApp;
+      if (app && typeof app.askInput === 'function') return app.askInput(opts);
+      const v = window.prompt(opts.hint || opts.title || '请输入');
+      return Promise.resolve(v === null ? null : String(v).trim());
+    }
+
+    // 下载平台文件：优先 fetch+blob（保留中文文件名），失败时回退直接打开地址
+    async function downloadPlatformFile(path) {
+      const enc = String(path).split('/').map(encodeURIComponent).join('/');
+      const name = decodeURIComponent(String(path).split('/').pop() || 'download');
+      const url = API_BASE + enc;
+      try {
+        const resp = await fetch(url, { headers: token ? { Authorization: token } : {} });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(objUrl); }, 10000);
+        return name;
+      } catch (e) {
+        window.open(url, '_blank');
+        return name;
+      }
+    }
+
+    // 按项目编号导出检测报告 Word：编号 → 项目 id → jcbgYl 生成 → 下载 .docx
+    async function exportJcbgReport() {
+      if (!token) { showLogin(); return; }
+      const code = await askText({ title: '导出检测报告', hint: '请输入项目编号（如 BTC26-SZJC0959）', value: '' });
+      if (!code) return;
+      const btn = $('btn-jcbg');
+      const oldText = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '导出中…'; }
+      try {
+        // 1) 按编号查项目，取 id
+        const q = 'pageNumber=1&pageSize=50&code=' + encodeURIComponent(code);
+        const sr = await apiRequest('GET', '/api/reportData/findList?' + q, { token: token, orgId: orgId, timeout: 60000 });
+        if (sr.status !== 200) throw new Error('查询项目失败(HTTP ' + sr.status + ')');
+        const records = (sr.data && sr.data.body && sr.data.body.records) || [];
+        if (!records.length) { alert('未找到项目编号为「' + code + '」的项目，请核对后重试。'); return; }
+        const proj = records[0];
+        // 2) 生成检测报告，拿到文件路径（PDF 路径，Word 为同路径 .docx）
+        const rr = await apiRequest(
+          'GET',
+          '/api/jcbgReport/jcbgYl?projectId=' + encodeURIComponent(proj.id) + '&organizationId=' + encodeURIComponent(orgId || ''),
+          { token: token, orgId: orgId, timeout: 120000 }
+        );
+        const body = rr.data && rr.data.body;
+        if (rr.status !== 200 || typeof body !== 'string' || !body) {
+          const msg = (rr.data && (rr.data.message || rr.data.msg)) || ('HTTP ' + rr.status);
+          alert('生成检测报告失败：' + msg);
+          return;
+        }
+        // 3) 下载 Word
+        const name = await downloadPlatformFile(body.replace(/\.pdf$/i, '.docx'));
+        alert('检测报告已导出：' + name + '\n（项目：' + code + (proj.belongInspectName ? ' · ' + proj.belongInspectName : '') + '）');
+      } catch (e) {
+        alert('导出异常：' + (e && e.message ? e.message : e));
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText; }
+      }
+    }
+
+    const btnJcbg = $('btn-jcbg');
+    if (btnJcbg) btnJcbg.addEventListener('click', exportJcbgReport);
+
     // 暴露给采样计划主程序：数据上传按钮调用
     window.SamplingUpload = {
       show: showUpload,
       hide: hideUpload,
       logout: logout,
+      // 按项目编号导出检测报告 Word（供「检测报告导出」按钮及其它模块调用）
+      exportReport: exportJcbgReport,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null
       defaultSaveName: function () {
         if (!selectedProject) return null;
