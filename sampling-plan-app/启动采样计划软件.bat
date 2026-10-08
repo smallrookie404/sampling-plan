@@ -2,10 +2,16 @@
 setlocal
 cd /d "%~dp0"
 
-rem Find Node.js: system node first, then the bundled runtime on this machine
+rem Find Node.js: system PATH first, then common bundled runtime locations (per-user, machine-independent)
 set "NODE_EXE="
 where node >nul 2>nul && set "NODE_EXE=node"
-if not defined NODE_EXE if exist "C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" set "NODE_EXE=C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+if not defined NODE_EXE for %%P in (
+  "%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
+  "%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
+  "%ProgramFiles%\nodejs\node.exe"
+  "%ProgramFiles(x86)%\nodejs\node.exe"
+  "%LOCALAPPDATA%\Programs\nodejs\node.exe"
+) do if not defined NODE_EXE if exist %%P set "NODE_EXE=%%~P"
 if not defined NODE_EXE (
   echo Node.js not found. Please install Node.js from https://nodejs.org
   pause
