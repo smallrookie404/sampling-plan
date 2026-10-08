@@ -216,11 +216,13 @@ await page.screenshot({ path: SHOT_DIR + "/1-main.png" });
 // 2) 输入校验联动：把第 2 行班制改成非法值
 // 岗位工作班制（R）改为可手动录入的输入框，校验联动改为：把第 2 行接害因素改为不存在的因素
 await page.fill(`#main-grid tr[data-r="1"] td[data-c="D"] input`, "不存在的因素XYZ");
-await page.waitForTimeout(150);
+// 重算+窗口刷新是异步合帧的，轮询等待（最多 2s）而非固定 150ms，避免时序抖动误报
+await page.waitForFunction(
+  () => document.querySelector(`#main-grid tr[data-r="1"] td[data-c="AN"].error`),
+  null, { timeout: 2000 }
+);
 const status2 = await page.textContent("#grid-status");
 if (!status2.includes("错误 1 处")) throw new Error("非法因素应产生 1 处错误: " + status2);
-const errCell = await page.$(`#main-grid tr[data-r="1"] td[data-c="AN"].error`);
-if (!errCell) throw new Error("AN 错误单元格未标红");
 console.log("错误联动校验通过 ✔");
 
 // 恢复第 2 行

@@ -1272,18 +1272,29 @@
     }
   });
 
+  // 拖动调整行高：mousemove 用 rAF 合帧，避免高频 mousemove 每次都全量渲染窗口
+  let rowResizeRaf = 0;
+  let rowResizePendingH = null;
   document.addEventListener("mousemove", (e) => {
     if (!resizingRow) return;
     const h = Math.max(MIN_ROW_H, Math.min(MAX_ROW_H, Math.round(resizingRow.startH + (e.clientY - resizingRow.startY))));
-    if (h !== rowHeights[resizingRow.r]) {
-      rowHeights[resizingRow.r] = h;
+    if (h === rowHeights[resizingRow.r]) return;
+    rowResizePendingH = h;
+    if (rowResizeRaf) return;
+    rowResizeRaf = requestAnimationFrame(() => {
+      rowResizeRaf = 0;
+      if (!resizingRow || rowResizePendingH === null) return;
+      rowHeights[resizingRow.r] = rowResizePendingH;
+      rowResizePendingH = null;
       rowOffsets = null;
       renderWindow();
-    }
+    });
   });
 
   document.addEventListener("mouseup", () => {
     resizingRow = null;
+    if (rowResizeRaf) { cancelAnimationFrame(rowResizeRaf); rowResizeRaf = 0; }
+    rowResizePendingH = null; // 松手后丢弃未应用的挂起值（最后一次 move 帧已渲染）
   });
 
   // ---------- 列宽拖动调整：按住表头列右边缘左右拖动（类似 Excel） ----------
@@ -1303,17 +1314,28 @@
     }
   });
 
+  // 拖动调整列宽：mousemove 用 rAF 合帧（applyGridWidths 重建全部 col 元素，逐事件触发开销大）
+  let colResizeRaf = 0;
+  let colResizePendingW = null;
   document.addEventListener("mousemove", (e) => {
     if (!resizingCol) return;
     const w = Math.max(MIN_COL_W, Math.min(MAX_COL_W, Math.round(resizingCol.startW + (e.clientX - resizingCol.startX))));
-    if (w !== colWidths[resizingCol.idx]) {
-      colWidths[resizingCol.idx] = w;
+    if (w === colWidths[resizingCol.idx]) return;
+    colResizePendingW = w;
+    if (colResizeRaf) return;
+    colResizeRaf = requestAnimationFrame(() => {
+      colResizeRaf = 0;
+      if (!resizingCol || colResizePendingW === null) return;
+      colWidths[resizingCol.idx] = colResizePendingW;
+      colResizePendingW = null;
       applyGridWidths();
-    }
+    });
   });
 
   document.addEventListener("mouseup", () => {
     resizingCol = null;
+    if (colResizeRaf) { cancelAnimationFrame(colResizeRaf); colResizeRaf = 0; }
+    colResizePendingW = null; // 松手后丢弃未应用的挂起值（最后一次 move 帧已渲染）
   });
 
   gridBody.addEventListener("mousedown", (e) => {
@@ -2753,7 +2775,12 @@
     $("db-search").value = "";
   }
   $("db-close").addEventListener("click", closeDbModal);
-  $("db-search").addEventListener("input", () => renderDbList());
+  // 弹窗搜索框防抖：记录可能上千条，逐键全量过滤+重建 DOM 开销大
+  let dbSearchTimer = null;
+  $("db-search").addEventListener("input", () => {
+    if (dbSearchTimer) clearTimeout(dbSearchTimer);
+    dbSearchTimer = setTimeout(() => { dbSearchTimer = null; renderDbList(); }, 200);
+  });
   $("db-refresh").addEventListener("click", () => renderDbList());
 
   $("db-list").addEventListener("click", async (e) => {
@@ -3194,7 +3221,7 @@
     if (el.tagName !== "INPUT") return;
     const idx = Number(el.closest("tr").dataset.h);
     hazardFactors[idx][el.dataset.k] = el.value;
-    onHazardChange();
+    scheduleHazardChange(); // 按键合并重算，降低逐键全量计算的 CPU 占用
   });
   $("hazard-body").addEventListener("change", (e) => {
     const el = e.target;
@@ -3216,9 +3243,15 @@
       if (rno) rno.classList.toggle("selected", sel);
     }
   });
+  // 危害因素库搜索防抖：逐键 renderHazard 全量重建开销大
+  let hazardSearchTimer = null;
   $("hazard-search").addEventListener("input", () => {
-    if (hazardWrap) hazardWrap.scrollTop = 0;
-    renderHazard();
+    if (hazardSearchTimer) clearTimeout(hazardSearchTimer);
+    hazardSearchTimer = setTimeout(() => {
+      hazardSearchTimer = null;
+      if (hazardWrap) hazardWrap.scrollTop = 0;
+      renderHazard();
+    }, 200);
   });
   $("hazard-add").addEventListener("click", () => {
     hazardFactors.push(blankHazard());
@@ -3243,7 +3276,18 @@
     onHazardChange();
   });
 
+  // 危害因素库按键编辑：合并重算（rebuildDatalist+computeRows 全量较重，逐键触发 CPU 飙升）
+  let hazardChangeTimer = null;
+  function scheduleHazardChange() {
+    if (hazardChangeTimer) clearTimeout(hazardChangeTimer);
+    hazardChangeTimer = setTimeout(() => {
+      hazardChangeTimer = null;
+      onHazardChange();
+    }, 300);
+  }
+
   function onHazardChange() {
+    if (hazardChangeTimer) { clearTimeout(hazardChangeTimer); hazardChangeTimer = null; }
     rebuildDatalist();
     $("hazard-count").textContent = hazardFactors.length;
     recomputeAndRefresh();
@@ -3264,7 +3308,12 @@
       .join("");
     $("items-status").textContent = `共 ${detectionItems.length} 项 · 显示 ${list.length} 项${dups.size ? " · 重复 " + dups.size + " 项" : ""}`;
   }
-  $("items-search").addEventListener("input", renderItems);
+  // 检测项目搜索防抖：列表逐键全量重建开销大
+  let itemsSearchTimer = null;
+  $("items-search").addEventListener("input", () => {
+    if (itemsSearchTimer) clearTimeout(itemsSearchTimer);
+    itemsSearchTimer = setTimeout(() => { itemsSearchTimer = null; renderItems(); }, 200);
+  });
   $("items-list").addEventListener("click", (e) => {
     const div = e.target.closest(".item");
     if (!div) return;
