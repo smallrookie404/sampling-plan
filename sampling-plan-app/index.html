@@ -199,7 +199,7 @@
     <button class="tab" data-tab="survey">调查表</button>
     <button class="tab" data-tab="hazard">危害因素库 <span id="hazard-count" class="badge"></span></button>
     <button class="tab" data-tab="items">检测项目参考 <span id="items-count" class="badge"></span></button>
-    <button id="btn-jcbg" class="btn small ghost tabs-right" title="导出「数据上传」中选中项目的检测报告 Word">检测报告导出</button>
+    <button class="tab tabs-right" data-tab="noise">噪声数据结果</button>
   </nav>
   <div id="storage-notice" class="notice hidden">
     当前为「直接打开页面」模式，数据仅暂存于浏览器。请通过「启动采样计划软件.bat」打开软件，数据将保存到项目文件夹 <b>data\records.json</b>。
@@ -297,6 +297,19 @@
       </div>
     </div>
     <div id="items-list" class="items-list"></div>
+  </section>
+
+  <section id="tab-noise" class="tab-panel">
+    <div class="grid-toolbar">
+      <div class="left">
+        <button id="noise-refresh" class="btn small">刷新</button>
+        <span id="noise-status" class="status"></span>
+      </div>
+    </div>
+    <div class="noise-wrap">
+      <div id="noise-empty" class="noise-empty">尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再查看噪声数据结果。</div>
+      <div id="noise-table-box"></div>
+    </div>
   </section>
 
   <div id="help-modal" class="modal hidden">

@@ -89,12 +89,17 @@ body {
   font-weight: 600;
   box-shadow: 0 -2px 6px rgba(0,0,0,.04);
 }
-/* 页签行右侧的操作按钮（如「检测报告导出」） */
-.tabs-right {
-  margin-left: auto;
-  align-self: center;
-  margin-bottom: 6px;
-}
+/* 页签行右侧区：第一个右置元素用 margin-left:auto 把整组推到右边 */
+.tabs-right { margin-left: auto; }
+/* 噪声数据结果页签 */
+.noise-wrap { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 10px; }
+.noise-empty { color: #64748b; font-size: 13px; padding: 18px 4px; }
+.noise-empty.hidden { display: none; }
+table.noise-table { border-collapse: collapse; font-size: 12px; background: #fff; }
+table.noise-table th,
+table.noise-table td { border: 1px solid var(--line); padding: 4px 8px; white-space: pre-line; text-align: center; vertical-align: middle; }
+table.noise-table th { background: #eef2f7; color: #334155; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+table.noise-table tbody tr:nth-child(even) { background: #f8fafc; }
 .badge {
   display: inline-block;
   min-width: 20px;

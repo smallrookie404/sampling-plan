@@ -3697,8 +3697,8 @@
     promptSave: (defaultName) => saveRecordFlow(defaultName || defaultRecordName()),
     // 行数输入弹窗（调查表等模块复用，保持交互一致）
     askRowCount,
-    // 通用输入弹窗（供上传/检测报告导出等模块复用，保持交互一致）
-    askInput,
+    // 脚本懒加载（供 upload.js 解析 docx 时加载 jszip 等）
+    loadScript,
     // 主表格已填车间名称（去重、保序），供调查表「单元/工作场所」下拉引用
     workshopNames: () => {
       const out = [];

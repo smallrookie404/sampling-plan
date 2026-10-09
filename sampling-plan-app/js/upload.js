@@ -1242,78 +1242,231 @@
     // 视图切换：返回采样计划 / 退出登录
     $('xcdcBack').addEventListener('click', hideUpload);
 
-    // ---------- 检测报告导出（导出「数据上传」中选用项目的平台 Word 检测报告） ----------
-
-    // 下载平台文件：优先 fetch+blob（保留中文文件名），失败时回退直接打开地址
-    async function downloadPlatformFile(path) {
-      const enc = String(path).split('/').map(encodeURIComponent).join('/');
-      const name = decodeURIComponent(String(path).split('/').pop() || 'download');
-      const url = API_BASE + enc;
-      try {
-        const resp = await fetch(url, { headers: token ? { Authorization: token } : {} });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const blob = await resp.blob();
-        const objUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = objUrl;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(function () { URL.revokeObjectURL(objUrl); }, 10000);
-        return name;
-      } catch (e) {
-        window.open(url, '_blank');
-        return name;
+    // ---------- 噪声数据结果页签（按「数据上传」选中的项目生成检测报告 → 解析「工作场所噪声评判结果」表） ----------
+    let jszipPromise = null;
+    function ensureJSZip() {
+      if (window.JSZip) return Promise.resolve(window.JSZip);
+      if (!jszipPromise) {
+        const load = window.SamplingApp && window.SamplingApp.loadScript;
+        jszipPromise = (load ? load('js/jszip.min.js') : Promise.reject(new Error('缺少脚本加载能力')))
+          .then(function () {
+            if (!window.JSZip) throw new Error('jszip 加载失败');
+            return window.JSZip;
+          });
       }
+      return jszipPromise;
     }
 
-    // 按项目编号导出检测报告 Word：项目编号取「数据上传」中选用的项目；
-    // 未选择项目时提示先去「数据上传」选择
-    async function exportJcbgReport() {
+    const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    function noiseEsc(s) {
+      return String(s === null || s === undefined ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    // 取文本：报告里一个单元格内的多行值写在同一个 <w:t> 里、用 <w:br/> 分隔
+    // （WPS/Aspose 生成的非标准写法），须把 <w:br/> 还原成换行；单元格内多个段落用空格连接
+    function runText(scope) {
+      const ts = scope.getElementsByTagNameNS(W_NS, 't');
+      const parts = [];
+      for (let i = 0; i < ts.length; i++) {
+        let s = '';
+        const kids = ts[i].childNodes;
+        for (let n = 0; n < kids.length; n++) {
+          const c = kids[n];
+          if (c.nodeType === 3) s += c.nodeValue || '';
+          else if (c.nodeType === 1 && c.localName === 'br') s += '\n';
+          else if (c.nodeType === 1 && c.localName === 'tab') s += '\t';
+        }
+        parts.push(s);
+      }
+      return parts.join('').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').replace(/^\s+|\s+$/g, '');
+    }
+    function xmlText(el) {
+      const ps = el.getElementsByTagNameNS(W_NS, 'p');
+      if (ps.length) {
+        const parts = [];
+        for (let i = 0; i < ps.length; i++) {
+          const t = runText(ps[i]);
+          if (t) parts.push(t);
+        }
+        return parts.join(' ');
+      }
+      return runText(el);
+    }
+
+    // 从 docx 二进制提取「工作场所噪声评判结果」表，返回 { rows: string[][] }
+    async function parseNoiseTableFromDocx(buf) {
+      const JSZip = await ensureJSZip();
+      const zip = await JSZip.loadAsync(buf);
+      const f = zip.file('word/document.xml');
+      if (!f) throw new Error('docx 结构异常：缺少 word/document.xml');
+      const xml = await f.async('string');
+      const doc = new DOMParser().parseFromString(xml, 'application/xml');
+      const body = doc.getElementsByTagNameNS(W_NS, 'body')[0];
+      if (!body) throw new Error('docx 结构异常：缺少 body');
+      let prev = '';
+      let tbl = null;
+      for (let i = 0; i < body.childNodes.length; i++) {
+        const node = body.childNodes[i];
+        if (node.nodeType !== 1) continue;
+        if (node.localName === 'p') {
+          const t = xmlText(node);
+          if (t) prev = t;
+        } else if (node.localName === 'tbl' && prev.indexOf('工作场所噪声评判结果') >= 0) {
+          tbl = node;
+          break;
+        }
+      }
+      if (!tbl) throw new Error('未在报告中找到「工作场所噪声评判结果」表');
+      const rows = [];
+      const trs = tbl.getElementsByTagNameNS(W_NS, 'tr');
+      for (let i = 0; i < trs.length; i++) {
+        const cells = [];
+        const tcs = trs[i].getElementsByTagNameNS(W_NS, 'tc');
+        for (let j = 0; j < tcs.length; j++) cells.push(xmlText(tcs[j]));
+        rows.push(cells);
+      }
+      return { rows: rows };
+    }
+
+    // 展示用表格：① 删除「测量起止时间」列；② 在「岗位/工种/测量点/对象」右侧新增一列，
+    // 把该列每个值按首个「/」拆分——「/」前留在原列，「/」后放进新列（多行值逐行处理）
+    function splitBySlash(v) {
+      const lines = String(v === null || v === undefined ? '' : v).split('\n');
+      const left = [];
+      const right = [];
+      for (const ln of lines) {
+        const i = ln.indexOf('/');
+        if (i < 0) { left.push(ln); right.push(''); }
+        else { left.push(ln.slice(0, i).trim()); right.push(ln.slice(i + 1).trim()); }
+      }
+      return { left: left.join('\n'), right: right.join('\n') };
+    }
+
+    function buildNoiseDisplay(rows) {
+      if (!rows || !rows.length) return rows;
+      const head = rows[0];
+      const norm = (s) => String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
+      const dropIdx = head.findIndex((h) => norm(h).indexOf('测量起止时间') >= 0);
+      let jobIdx = head.findIndex((h) => norm(h).indexOf('岗位/工种/测量点/对象') >= 0);
+      if (jobIdx < 0) jobIdx = head.findIndex((h) => norm(h).indexOf('岗位/工种') >= 0);
+      const outHead = [];
+      const keep = [];
+      for (let i = 0; i < head.length; i++) {
+        if (i === dropIdx) continue;
+        outHead.push(head[i]);
+        keep.push(i);
+        if (i === jobIdx) outHead.push('测量点/对象');
+      }
+      const out = [outHead];
+      for (let r = 1; r < rows.length; r++) {
+        const src = rows[r] || [];
+        const line = [];
+        for (const i of keep) {
+          const v = src[i] || '';
+          if (i === jobIdx) {
+            const sp = splitBySlash(v);
+            line.push(sp.left, sp.right);
+          } else {
+            line.push(v);
+          }
+        }
+        out.push(line);
+      }
+      return out;
+    }
+
+    function renderNoiseTable(box, data) {
+      const rows = buildNoiseDisplay((data && data.rows) || []);
+      if (!rows.length) { box.innerHTML = ''; return; }
+      const head = rows[0];
+      let html = '<table class="noise-table"><thead><tr>';
+      for (const h of head) html += '<th>' + noiseEsc(h) + '</th>';
+      html += '</tr></thead><tbody>';
+      for (let r = 1; r < rows.length; r++) {
+        html += '<tr>';
+        for (let c = 0; c < head.length; c++) html += '<td>' + noiseEsc(rows[r][c] || '') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      box.innerHTML = html;
+    }
+
+    let noiseCache = null; // { projectId, data }
+    let noiseLoading = false;
+
+    // 加载并展示噪声数据结果：项目取「数据上传」中选用的项目
+    async function loadNoiseResult(force) {
+      const box = document.getElementById('noise-table-box');
+      const empty = document.getElementById('noise-empty');
+      const status = document.getElementById('noise-status');
+      if (!box) return;
       if (!token) { showLogin(); return; }
       if (!selectedProject || !selectedProject.id) {
-        alert('尚未在「数据上传」中选择项目。\n\n请先点击顶部工具栏的「数据上传」，查询并选中项目后，再导出检测报告。');
+        box.innerHTML = '';
+        if (empty) {
+          empty.textContent = '尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再查看噪声数据结果。';
+          empty.classList.remove('hidden');
+        }
+        if (status) status.textContent = '';
         return;
       }
-      const proj = selectedProject;
-      const code = proj.code || '';
-      const btn = $('btn-jcbg');
-      const oldText = btn ? btn.textContent : '';
-      if (btn) { btn.disabled = true; btn.textContent = '导出中…'; }
+      const pid = selectedProject.id;
+      if (noiseLoading) return;
+      if (!force && noiseCache && noiseCache.projectId === pid) {
+        if (empty) empty.classList.add('hidden');
+        renderNoiseTable(box, noiseCache.data);
+        if (status) status.textContent = '项目 ' + (selectedProject.code || '') + ' · 共 ' + Math.max(0, noiseCache.data.rows.length - 1) + ' 行';
+        return;
+      }
+      noiseLoading = true;
+      if (empty) empty.classList.add('hidden');
+      box.innerHTML = '';
+      if (status) status.textContent = '加载中…（正在生成并解析检测报告）';
       try {
-        // 生成检测报告，拿到文件路径（PDF 路径，Word 为同路径 .docx）
         const rr = await apiRequest(
           'GET',
-          '/api/jcbgReport/jcbgYl?projectId=' + encodeURIComponent(proj.id) + '&organizationId=' + encodeURIComponent(orgId || ''),
+          '/api/jcbgReport/jcbgYl?projectId=' + encodeURIComponent(pid) + '&organizationId=' + encodeURIComponent(orgId || ''),
           { token: token, orgId: orgId, timeout: 120000 }
         );
         const body = rr.data && rr.data.body;
         if (rr.status !== 200 || typeof body !== 'string' || !body) {
-          const msg = (rr.data && (rr.data.message || rr.data.msg)) || ('HTTP ' + rr.status);
-          alert('生成检测报告失败：' + msg);
-          return;
+          throw new Error((rr.data && (rr.data.message || rr.data.msg)) || ('HTTP ' + rr.status));
         }
-        // 下载 Word
-        const name = await downloadPlatformFile(body.replace(/\.pdf$/i, '.docx'));
-        alert('检测报告已导出：' + name + '\n（项目：' + code + (proj.belongInspectName ? ' · ' + proj.belongInspectName : '') + '）');
+        const enc = body.replace(/\.pdf$/i, '.docx').split('/').map(encodeURIComponent).join('/');
+        const resp = await fetch(API_BASE + enc, { headers: token ? { Authorization: token } : {} });
+        if (!resp.ok) throw new Error('下载检测报告失败(HTTP ' + resp.status + ')');
+        const data = await parseNoiseTableFromDocx(await resp.arrayBuffer());
+        noiseCache = { projectId: pid, data: data };
+        renderNoiseTable(box, data);
+        if (status) status.textContent = '项目 ' + (selectedProject.code || '') + ' · 共 ' + Math.max(0, data.rows.length - 1) + ' 行';
       } catch (e) {
-        alert('导出异常：' + (e && e.message ? e.message : e));
+        box.innerHTML = '';
+        if (empty) {
+          empty.textContent = '加载失败：' + (e && e.message ? e.message : e);
+          empty.classList.remove('hidden');
+        }
+        if (status) status.textContent = '';
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = oldText; }
+        noiseLoading = false;
       }
     }
 
-    const btnJcbg = $('btn-jcbg');
-    if (btnJcbg) btnJcbg.addEventListener('click', exportJcbgReport);
+    const noiseTabBtn = document.querySelector('.tab[data-tab="noise"]');
+    if (noiseTabBtn) noiseTabBtn.addEventListener('click', function () { loadNoiseResult(false); });
+    const noiseRefreshBtn = document.getElementById('noise-refresh');
+    if (noiseRefreshBtn) noiseRefreshBtn.addEventListener('click', function () { loadNoiseResult(true); });
 
     // 暴露给采样计划主程序：数据上传按钮调用
     window.SamplingUpload = {
       show: showUpload,
       hide: hideUpload,
       logout: logout,
-      // 按项目编号导出检测报告 Word（供「检测报告导出」按钮及其它模块调用）
-      exportReport: exportJcbgReport,
+      // 加载「噪声数据结果」页签（供其它模块触发）
+      loadNoise: loadNoiseResult,
+      // 解析报告 docx 中的「工作场所噪声评判结果」表（供测试/复用）
+      parseNoiseTable: parseNoiseTableFromDocx,
+      // 渲染噪声表（供测试/复用）
+      renderNoiseTable: renderNoiseTable,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null
       defaultSaveName: function () {
         if (!selectedProject) return null;
