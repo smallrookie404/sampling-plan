@@ -411,6 +411,12 @@ table.grid {
 /* 非编辑态鼠标保持普通箭头，进入编辑态（输入框聚焦）才显示文本光标（与调查表一致） */
 .grid td input { cursor: default; }
 .grid td input:focus { cursor: text; }
+/* 自动计算区（只读计算列 + 手工填写列 + 可覆盖下拉列）：非编辑态鼠标为箭头，与录入区一致。
+   只读计算列渲染为 div.computed-text，其 cursor:auto 在文字上会变成文本光标，故显式置为 default */
+.grid tbody td.computed,
+.grid tbody td.manual,
+.grid tbody td.override,
+.grid .computed-text { cursor: default; }
 .cell-num { text-align: right; }
 .cell-num input { text-align: right; }
 
