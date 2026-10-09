@@ -2072,7 +2072,9 @@
       for (let c = rect.c1; c <= rect.c2; c++) {
         if (c >= ALL_COLS.length) break;
         const col = ALL_COLS[c];
-        if (!INPUT_COLS.includes(col) && !TEXT_OVERRIDE_COLS.includes(col)) continue;
+        const isManual = MANUAL_COLS.includes(col);
+        // 录入区、自动计算区的手工填写列、备注列均可粘贴（与录入区编辑逻辑一致）
+        if (!INPUT_COLS.includes(col) && !TEXT_OVERRIDE_COLS.includes(col) && !isManual) continue;
         const val = (grid[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
         while (rows.length <= r) { rows.push(blankRow()); rowHeights.push(ROW_H); }
         rowOffsets = null;
@@ -2083,6 +2085,8 @@
             delete rows[r].overridden.BI;
             rows[r].values.BI = "";
           }
+        } else if (isManual) {
+          rows[r].manual[col] = val; // 手工填写列写入 manual（与手工输入同一数据位）
         } else {
           rows[r].values[col] = val;
           rows[r].overridden[col] = true;
