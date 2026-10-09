@@ -189,17 +189,157 @@
     ).join("");
   }
 
+  // ---------- Excel 式列筛选（与危害因素库一致：列内勾选值「或」，列间「与」；筛选仅影响显示，不改动数据） ----------
+  // sFilter: { 子表key: { 列索引: Set(勾选的显示值) } }；sFilterMode=false 时整体关闭并清空
+  let sFilter = {};
+  let sFilterMode = false;
+  let sFilterCi = null; // 当前打开弹层的列 { sheet, col }
+
+  function sFilterCount(sh) {
+    const f = sFilter[sh.key];
+    return f ? Object.keys(f).length : 0;
+  }
+
+  // 当前子表应用筛选后的行：返回 [{ r: 原始行数组, ri: 原始行号 }]，编辑/选择仍按原行号定位
+  function sFilteredRows(sh) {
+    const rows = surveyRows();
+    if (!sFilterMode) return rows.map((r, ri) => ({ r, ri }));
+    const f = sFilter[sh.key] || {};
+    const entries = Object.entries(f);
+    if (!entries.length) return rows.map((r, ri) => ({ r, ri }));
+    return rows
+      .map((r, ri) => ({ r, ri }))
+      .filter((x) => entries.every(([ci, set]) => set.has(esc(x.r[ci]))));
+  }
+
+  function sCloseFilterPop() {
+    const pop = document.getElementById("survey-filter-pop");
+    if (pop) pop.remove();
+    if (sFilterCi) {
+      sFilterCi = null;
+      renderSurvey(); // 移除列箭头的蓝色选中态
+    }
+    document.removeEventListener("click", sFilterOutside, true);
+  }
+
+  function sFilterOutside(e) {
+    const pop = document.getElementById("survey-filter-pop");
+    if (pop && !pop.contains(e.target) && !e.target.closest(".th-filter")) sCloseFilterPop();
+  }
+
+  function sOpenFilter(col, anchor) {
+    sCloseFilterPop();
+    const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
+    sFilterCi = { sheet: sh.key, col };
+    // 计数基准：其他列筛选后的行（不含本列）
+    const f = sFilter[sh.key] || {};
+    const others = Object.entries(f).filter(([k]) => Number(k) !== col);
+    const base = surveyRows().filter((r) => others.every(([ci, set]) => set.has(esc(r[ci]))));
+    const counts = new Map();
+    for (const r of base) {
+      const v = esc(r[col]);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const values = [...counts.keys()].sort((a, b) => a.localeCompare(b, "zh-CN"));
+    const checked = f[col] || new Set(values);
+    const pop = document.createElement("div");
+    pop.id = "survey-filter-pop";
+    pop.innerHTML =
+      `<div class="hfp-title">筛选（${escHtml(sh.headers[col])}）</div>` +
+      `<div class="hfp-ops">` +
+      `<button type="button" data-op="all">全选</button>` +
+      `<button type="button" data-op="none">反选</button>` +
+      `<button type="button" data-op="clear">清除本列</button>` +
+      `</div>` +
+      `<div class="hfp-list">` +
+      values.map((v) => {
+        const has = checked.has(v);
+        return `<label class="hfp-item"><input type="checkbox" value="${escAttr(v)}"${has ? " checked" : ""}/>` +
+          `<span class="hfp-val">${v === "" ? "（空）" : escHtml(v)}</span>` +
+          `<span class="hfp-cnt">${counts.get(v)}</span></label>`;
+      }).join("") +
+      `</div>` +
+      `<div class="hfp-foot"><button type="button" class="btn small primary" data-op="ok">确定</button>` +
+      `<button type="button" class="btn small ghost" data-op="cancel">取消</button></div>`;
+    document.body.appendChild(pop);
+    const position = () => {
+      const r = anchor.getBoundingClientRect();
+      pop.style.left = Math.min(r.left, window.innerWidth - 260) + "px";
+      pop.style.top = Math.min(r.bottom + 4, window.innerHeight - 320) + "px";
+    };
+    position();
+    // 勾选即时生效；取消则还原打开弹层前的快照
+    const snapshot = new Set(checked);
+    const applyChecked = () => {
+      const cur = new Set([...pop.querySelectorAll(".hfp-item input:checked")].map((el) => el.value));
+      if (!sFilter[sh.key]) sFilter[sh.key] = {};
+      if (cur.size === values.length) delete sFilter[sh.key][col];
+      else sFilter[sh.key][col] = cur;
+      if (!Object.keys(sFilter[sh.key]).length) delete sFilter[sh.key];
+      renderSurvey();
+      // 重渲染表头后按钮节点被替换，重新定位弹层
+      const btn2 = $S("survey-head").querySelector(`.th-filter[data-col="${col}"]`);
+      if (btn2 && sFilterCi && sFilterCi.sheet === sh.key && sFilterCi.col === col) {
+        anchor = btn2;
+        position();
+      }
+    };
+    pop.addEventListener("change", applyChecked);
+    pop.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-op]");
+      if (!btn) return;
+      const op = btn.dataset.op;
+      if (op === "all" || op === "none") {
+        const target = op === "all";
+        for (const el of pop.querySelectorAll(".hfp-item input")) el.checked = target;
+        applyChecked();
+      } else if (op === "clear" || op === "cancel") {
+        // 取消/清除本列：还原为打开弹层前的状态
+        if (snapshot.size === values.length || snapshot.size === 0) {
+          if (sFilter[sh.key]) { delete sFilter[sh.key][col]; if (!Object.keys(sFilter[sh.key]).length) delete sFilter[sh.key]; }
+        } else {
+          if (!sFilter[sh.key]) sFilter[sh.key] = {};
+          sFilter[sh.key][col] = snapshot;
+        }
+        sCloseFilterPop();
+      } else if (op === "ok") {
+        applyChecked();
+        sCloseFilterPop();
+      }
+    });
+    setTimeout(() => document.addEventListener("click", sFilterOutside, true), 0);
+  }
+
+  // 表头筛选箭头点击（事件委托在 thead 上，重渲染不失效）
+  $S("survey-head").addEventListener("click", (e) => {
+    const btn = e.target.closest(".th-filter");
+    if (!btn) return;
+    e.stopPropagation();
+    const col = Number(btn.dataset.col);
+    if (sFilterCi && sFilterCi.sheet === surveyCur && sFilterCi.col === col) sCloseFilterPop();
+    else sOpenFilter(col, btn);
+  });
+
+  // 工具栏「筛选」按钮：切换筛选模式；关闭时清空全部列筛选
+  $S("survey-filter").addEventListener("click", () => {
+    sFilterMode = !sFilterMode;
+    sCloseFilterPop();
+    if (!sFilterMode) sFilter = {};
+    renderSurvey();
+  });
+
   function renderSurvey() {
     sCellCommit(); // 重建 tbody 前先提交未完成的编辑，防止 sEditing 残留导致首次点击无法进入编辑
     sCloseWsPanel(); // tbody 重建会销毁编辑框，下拉面板一并清理
     sEditing = false; // tbody 重建销毁编辑框，编辑态同步复位（布防框在末尾重建）
     sEditOriginal = null;
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
-    const rows = surveyRows();
+    const rows = sFilteredRows(sh);
     // 表头（模板原格式：必填列带 *，样式上以浅红底提示）；首列（设备名称/物料名称等）横向锁定
     $S("survey-head").innerHTML =
       `<tr>${sh.headers.map((h, i) =>
-        `<th class="${h.startsWith("*") ? "req" : ""}${i === 0 ? " s-sticky-name" : ""}" data-i="${i}">${escHtml(h)}</th>`
+        `<th class="${h.startsWith("*") ? "req" : ""}${i === 0 ? " s-sticky-name" : ""}" data-i="${i}">${escHtml(h)}` +
+        `${sFilterMode ? `<button class="th-filter${sFilter[sh.key] && sFilter[sh.key][i] ? " active" : ""}${sFilterCi && sFilterCi.sheet === sh.key && sFilterCi.col === i ? " open" : ""}" data-col="${i}" title="筛选本列">▼</button>` : ""}</th>`
       ).join("")}</tr>`;
     // colgroup：首列稍窄，其余均分；列数少的表（原辅物料/主要产品/职业防护/个体防护）所有列平均分铺满整表宽度
     if (["material", "product", "protect", "ppe"].includes(sh.key)) {
@@ -208,17 +348,17 @@
     } else {
       $S("survey-cols").innerHTML = sh.headers.map((h, i) => `<col style="width:${i === 0 ? 150 : 140}px">`).join("");
     }
-    // 全量渲染（调查表行数有限，无需虚拟化）；不显示序号列
+    // 全量渲染（调查表行数有限，无需虚拟化）；不显示序号列；data-r 始终为原始行号，筛选仅隐藏行
     $S("survey-body").innerHTML = rows.length
-      ? rows.map((r, ri) =>
-          `<tr data-r="${ri}">` +
+      ? rows.map((x) =>
+          `<tr data-r="${x.ri}">` +
           sh.headers.map((h, ci) =>
-            `<td data-c="${ci}"${ci === 0 ? ' class="s-sticky-name"' : ""}><div class="ctext">${escHtml(r[ci])}</div></td>`
+            `<td data-c="${ci}"${ci === 0 ? ' class="s-sticky-name"' : ""}><div class="ctext">${escHtml(x.r[ci])}</div></td>`
           ).join("") +
           `</tr>`
         ).join("")
       : `<tr class="empty-row"><td colspan="${sh.headers.length}" style="text-align:center;color:#94a3b8;padding:16px">暂无数据，点击「+ 新增行」开始填写</td></tr>`;
-    $S("survey-status").textContent = `${sh.name} · 共 ${rows.length} 行`;
+    $S("survey-status").textContent = `${sh.name} · 共 ${rows.length} 行` + (sFilterMode && sFilterCount(sh) ? `（已筛选，原 ${surveyRows().length} 行）` : "");
     updateSurveySelection();
     // 重建 tbody 后为当前格重新布防隐形编辑器（焦点常在，打字/输入法随时可写）
     if (sCur) sArmCell(sCur.r, sCur.c);

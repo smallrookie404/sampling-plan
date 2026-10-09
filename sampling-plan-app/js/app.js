@@ -231,14 +231,21 @@
   function buildHead() {
     const groupTh = (label, colSpan) =>
       `<th class="group" colspan="${colSpan}">${label}</th>`;
-    const fieldTh = (label, cls, col) => `<th class="field${cls ? " " + cls : ""}"${col ? ` data-c="${col}"` : ""}>${label || "&nbsp;"}</th>`;
+    const fieldTh = (label, cls, col, extra) => `<th class="field${cls ? " " + cls : ""}"${col ? ` data-c="${col}"` : ""}>${label || "&nbsp;"}${extra || ""}</th>`;
     let groupHtml = `<th class="corner sticky-corner" rowspan="2" style="width:40px">行</th>`;
     groupHtml += groupTh("录 入 区", INPUT_COLS.length);
     groupHtml += groupTh("自动计算区（与原表 W~BI 列一致）", COMPUTED_COLS.length);
     let fieldHtml = "";
     for (const c of ALL_COLS) {
       const cls = c === "A" ? "sticky-col-a" : c === "B" ? "sticky-col-b" : c === "C" ? "sticky-col-c" : c === "D" ? "sticky-col-d" : "";
-      fieldHtml += fieldTh(HEADERS[colIdx(c)], cls, c);
+      // 筛选模式下每列表头显示下拉箭头（与危害因素库/调查表一致）；有激活筛选的列高亮，打开弹层的列为蓝色选中态
+      let extra = "";
+      if (gridFilterMode) {
+        const active = gridFilter[c] && gridFilter[c].size > 0;
+        const open = gridFilterCi === c;
+        extra = `<button class="th-filter${active ? " active" : ""}${open ? " open" : ""}" data-col="${c}" title="筛选本列">▼</button>`;
+      }
+      fieldHtml += fieldTh(HEADERS[colIdx(c)], cls, c, extra);
     }
     gridHead.innerHTML =
       `<tr class="group-row">${groupHtml}</tr>` +
@@ -325,6 +332,145 @@
     return escHtml(s).replace(/"/g, "&quot;");
   }
 
+  // ---------- 主表格 Excel 式列筛选（与危害因素库/调查表一致：列内勾选值「或」，列间「与」；仅影响显示，行号保持原行号） ----------
+  // gridFilter: { 列字母: Set(勾选的显示值) }；筛选值取该格的实际显示值（input/manual/覆盖后的 values）
+  let gridFilter = {};
+  let gridFilterMode = false;
+  let gridFilterCi = null; // 当前打开弹层的列字母
+
+  // 某行某列的实际显示值（优先级与 cellHtml 一致：覆盖值 > 手工值 > 自动值 > 录入值）
+  function gridCellText(row, col) {
+    if (OVERRIDE_COLS.includes(col)) return fmt(row.values[col] ?? row.manual?.[col] ?? "");
+    if (col === "U") return fmt(row.input[col] ?? "");
+    if (col === "R" || col === "S") return fmt(row.input[col] ?? "");
+    if (MANUAL_COLS.includes(col)) {
+      if (col === "AI" || col === "AJ" || col === "BH") return fmt(row.manual[col] ?? "");
+      return fmt(row.values[col] ?? row.manual[col] ?? "");
+    }
+    if (TEXT_OVERRIDE_COLS.includes(col)) return fmt(row.values[col] ?? "");
+    if (COMPUTED_COLS.includes(col)) return fmt(row.values[col] ?? "");
+    return fmt(row.input[col] ?? "");
+  }
+
+  function gridFilteredRows() {
+    const entries = Object.entries(gridFilter).filter(([, set]) => set.size > 0);
+    if (!gridFilterMode || !entries.length) return rows;
+    return rows.filter((r) => entries.every(([col, set]) => set.has(gridCellText(r, col))));
+  }
+
+  function closeGridFilterPop() {
+    const pop = $("grid-filter-pop");
+    if (pop) pop.remove();
+    if (gridFilterCi) {
+      gridFilterCi = null;
+      buildHead(); // 移除列箭头的蓝色选中态
+    }
+    document.removeEventListener("click", gridFilterOutside, true);
+  }
+
+  function gridFilterOutside(e) {
+    const pop = $("grid-filter-pop");
+    if (pop && !pop.contains(e.target) && !e.target.closest(".th-filter")) closeGridFilterPop();
+  }
+
+  function openGridFilter(col, anchor) {
+    closeGridFilterPop();
+    gridFilterCi = col;
+    // 计数基准：其他列筛选后的行（不含本列），与列表实际显示一致
+    const others = Object.entries(gridFilter).filter(([k, set]) => k !== col && set.size > 0);
+    const base = rows.filter((r) => others.every(([k, set]) => set.has(gridCellText(r, k))));
+    const counts = new Map();
+    for (const r of base) {
+      const v = gridCellText(r, col);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const values = [...counts.keys()].sort((a, b) => a.localeCompare(b, "zh-CN"));
+    const checked = gridFilter[col] || new Set(values);
+    const headerName = HEADERS[colIdx(col)] || col;
+    const pop = document.createElement("div");
+    pop.id = "grid-filter-pop";
+    pop.innerHTML =
+      `<div class="hfp-title">筛选（${escHtml(headerName)}）</div>` +
+      `<div class="hfp-ops">` +
+      `<button type="button" data-op="all">全选</button>` +
+      `<button type="button" data-op="none">反选</button>` +
+      `<button type="button" data-op="clear">清除本列</button>` +
+      `</div>` +
+      `<div class="hfp-list">` +
+      values.map((v) => {
+        const has = checked.has(v);
+        return `<label class="hfp-item"><input type="checkbox" value="${escAttr(v)}"${has ? " checked" : ""}/>` +
+          `<span class="hfp-val">${v === "" ? "（空）" : escHtml(v)}</span>` +
+          `<span class="hfp-cnt">${counts.get(v)}</span></label>`;
+      }).join("") +
+      `</div>` +
+      `<div class="hfp-foot"><button type="button" class="btn small primary" data-op="ok">确定</button>` +
+      `<button type="button" class="btn small ghost" data-op="cancel">取消</button></div>`;
+    document.body.appendChild(pop);
+    const position = () => {
+      const r = anchor.getBoundingClientRect();
+      pop.style.left = Math.min(r.left, window.innerWidth - 260) + "px";
+      pop.style.top = Math.min(r.bottom + 4, window.innerHeight - 320) + "px";
+    };
+    position();
+    // 勾选即时生效；取消则还原打开弹层前的快照
+    const snapshot = new Set(checked);
+    const applyChecked = () => {
+      const cur = new Set([...pop.querySelectorAll(".hfp-item input:checked")].map((el) => el.value));
+      if (cur.size === values.length) delete gridFilter[col];
+      else gridFilter[col] = cur;
+      renderWindow();
+      buildHead();
+      // 重渲染表头后按钮节点被替换，重新定位弹层
+      const btn2 = gridHead.querySelector(`.th-filter[data-col="${col}"]`);
+      if (btn2 && gridFilterCi === col) {
+        anchor = btn2;
+        position();
+      }
+    };
+    pop.addEventListener("change", applyChecked);
+    pop.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-op]");
+      if (!btn) return;
+      const op = btn.dataset.op;
+      if (op === "all" || op === "none") {
+        const target = op === "all";
+        for (const el of pop.querySelectorAll(".hfp-item input")) el.checked = target;
+        applyChecked();
+      } else if (op === "clear" || op === "cancel") {
+        // 取消/清除本列：还原为打开弹层前的状态
+        delete gridFilter[col];
+        if (snapshot.size > 0 && snapshot.size < values.length) gridFilter[col] = snapshot;
+        closeGridFilterPop();
+        renderWindow();
+      } else if (op === "ok") {
+        applyChecked();
+        closeGridFilterPop();
+        renderWindow();
+      }
+    });
+    setTimeout(() => document.addEventListener("click", gridFilterOutside, true), 0);
+  }
+
+  // 表头筛选箭头点击（事件委托在 thead 上，重渲染不失效）
+  gridHead.addEventListener("click", (e) => {
+    const btn = e.target.closest(".th-filter");
+    if (!btn) return;
+    e.stopPropagation();
+    const col = btn.dataset.col;
+    if (gridFilterCi === col) closeGridFilterPop();
+    else openGridFilter(col, btn);
+  });
+
+  // 工具栏「筛选」按钮：切换筛选模式；关闭时清空全部列筛选
+  $("btn-filter").addEventListener("click", () => {
+    gridFilterMode = !gridFilterMode;
+    closeGridFilterPop();
+    if (!gridFilterMode) gridFilter = {};
+    buildHead();
+    renderWindow();
+  });
+
   // ---------- 虚拟滚动渲染 ----------
   let renderedRows = [];
   let scrollRenderQueued = false;
@@ -375,12 +521,54 @@
   const RENDER_OVERSCAN = 24;
 
   // 单行 HTML（renderWindow 与增量渲染共用）
+  // 行可见性：筛选模式下仅显示各筛选列勾选值匹配的行（行号保持原行号，编辑/选择仍按原行定位）
+  function rowVisible(i) {
+    if (!gridFilterMode) return true;
+    const entries = Object.entries(gridFilter).filter(([, set]) => set.size > 0);
+    if (!entries.length) return true;
+    const r = rows[i];
+    if (!r) return false;
+    return entries.every(([col, set]) => set.has(gridCellText(r, col)));
+  }
+
   function rowHtml(i) {
+    if (!rowVisible(i)) return "";
     const r = rows[i];
     const h = rowHeightAt(i);
     let cells = `<td class="rowno sticky-corner${i === selectedRow ? " selected" : ""}" data-r="${i}">${i + 1}</td>`;
     for (const c of ALL_COLS) cells += cellHtml(r, i, c);
     return `<tr data-r="${i}" style="height:${h}px"${i === selectedRow ? ' class="selected"' : ""}>${cells}</tr>`;
+  }
+
+  // 从 start 起第一个通过筛选的行号（无则 -1）
+  function firstVisibleAtOrAfter(start) {
+    for (let i = Math.max(0, start); i < rows.length; i++) {
+      if (rowVisible(i)) return i;
+    }
+    return -1;
+  }
+
+  // 筛选激活时占位高度只按可见行累计（隐藏行不占位），否则按原行号偏移
+  function spacerHeightUpTo(rowIndex) {
+    if (!gridFilterMode || !Object.values(gridFilter).some((s) => s.size > 0)) return rowOffsetAt(rowIndex);
+    let h = 0;
+    for (let i = 0; i < rowIndex; i++) if (rowVisible(i)) h += rowHeightAt(i);
+    return h;
+  }
+
+  function spacerHeightFrom(rowIndex) {
+    if (!gridFilterMode || !Object.values(gridFilter).some((s) => s.size > 0)) {
+      const lastVis = lastVisibleIndex();
+      return lastVis < 0 || rowIndex > lastVis ? 0 : rowOffsetAt(lastVis + 1) - rowOffsetAt(rowIndex);
+    }
+    let h = 0;
+    for (let i = rowIndex; i < rows.length; i++) if (rowVisible(i)) h += rowHeightAt(i);
+    return h;
+  }
+
+  function lastVisibleIndex() {
+    for (let i = rows.length - 1; i >= 0; i--) if (rowVisible(i)) return i;
+    return -1;
   }
 
   function renderWindow() {
@@ -389,23 +577,28 @@
     const ch = gridWrap.clientHeight;
     const start = Math.max(0, rowIndexAt(st) - RENDER_OVERSCAN);
     const visible = Math.ceil(ch / ROW_H) + RENDER_OVERSCAN * 2;
-    let end = start;
-    let count = 0;
-    while (end < total && count < visible) {
-      end++;
-      count++;
-    }
     let html = "";
     renderedRows = [];
     lastRenderedStart = start;
     // 顶部占位行：保证总高度恒定，虚拟滚动才能稳定滚动到底（始终保留，供增量渲染调整高度）
-    const topSpacer = rowOffsetAt(start);
+    // 筛选模式下被隐藏行不占位，占位高度只按可见行累计，避免顶部/底部出现空白
+    const visStart = firstVisibleAtOrAfter(start);
+    const topSpacer = visStart < 0 ? 0 : spacerHeightUpTo(visStart);
     html += `<tr class="row-spacer" style="height:${topSpacer}px${topSpacer > 0 ? "" : ";display:none"}"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
-    for (let i = start; i < end; i++) {
-      renderedRows.push(i);
-      html += rowHtml(i);
+    let i = visStart < 0 ? total : visStart;
+    let end = i;
+    let count = 0;
+    while (i < total && count < visible) {
+      if (rowVisible(i)) { end = i + 1; count++; i++; }
+      else i++;
     }
-    const spacer = Math.max(0, totalGridHeight() - rowOffsetAt(end));
+    for (let j = visStart < 0 ? total : visStart; j < end; j++) {
+      if (!rowVisible(j)) continue;
+      renderedRows.push(j);
+      html += rowHtml(j);
+    }
+    // 底部占位：end 之后剩余可见行的累计高度
+    const spacer = end > total ? 0 : spacerHeightFrom(end);
     // 底部占位行始终保留（高度可为 0），供增量渲染调整
     html += `<tr class="row-spacer-b" style="height:${spacer}px${spacer > 0 ? "" : ";display:none"}"><td colspan="${ALL_COLS.length + 1}"></td></tr>`;
     gridBody.innerHTML = html;
@@ -423,6 +616,8 @@
   function ensureWindow() {
     const total = rows.length;
     if (!total) return;
+    // 筛选激活时可见行不连续，增量渲染按行号与 DOM 节点一一对应的假设不再成立，整体重建
+    if (gridFilterMode && Object.values(gridFilter).some((s) => s.size > 0)) { renderWindow(); return; }
     const st = gridWrap.scrollTop;
     const ch = gridWrap.clientHeight;
     const visStart = rowIndexAt(st);
@@ -646,7 +841,9 @@
   function refreshStatus() {
     const { total, byCol } = L.countErrors(rows);
     const status = $("grid-status");
-    status.textContent = `共 ${rows.length} 行 · 错误 ${total} 处`;
+    const filtered = gridFilterMode && Object.values(gridFilter).some((s) => s.size > 0);
+    const visCount = filtered ? rows.reduce((n, _, i) => n + (rowVisible(i) ? 1 : 0), 0) : rows.length;
+    status.textContent = `共 ${rows.length} 行` + (filtered ? `（已筛选，显示 ${visCount} 行）` : "") + ` · 错误 ${total} 处`;
     status.className = "status" + (total > 0 ? " err" : "");
     if (total > 0) status.title = Object.entries(byCol).map(([c, n]) => `${c}列 ${n}处`).join("，");
     else status.title = "";
