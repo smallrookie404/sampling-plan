@@ -59,6 +59,9 @@ body {
 .btn.small { padding: 4px 10px; font-size: 12px; background: #fff; color: #1f2937; border-color: var(--line); }
 .btn.small.danger { background: #fdecea; color: #b3261e; border-color: #f5c6c2; }
 .btn.small.ghost { background: #fff; color: #555; border-color: var(--line); }
+/* 工具栏「筛选」按钮：筛选开启时加深颜色，关闭后恢复默认白底 */
+.btn.small.active { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
+.btn.small.active:hover { background: var(--primary-dark); }
 
 /* 页签 */
 .tabs {

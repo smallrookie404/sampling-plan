@@ -376,6 +376,13 @@
   function openGridFilter(col, anchor) {
     closeGridFilterPop();
     gridFilterCi = col;
+    // closeGridFilterPop 会重建表头（移除上一列的选中态），传入的 anchor 此时已脱离文档，
+    // getBoundingClientRect() 全为 0 会把弹层定位到左上角；因此重新取当前表头里的箭头按钮
+    const freshBtn = gridHead.querySelector(`.th-filter[data-col="${col}"]`);
+    if (freshBtn) {
+      anchor = freshBtn;
+      freshBtn.classList.add("open");
+    }
     // 计数基准：其他列筛选后的行（不含本列），与列表实际显示一致
     const others = Object.entries(gridFilter).filter(([k, set]) => k !== col && set.size > 0);
     const base = rows.filter((r) => others.every(([k, set]) => set.has(gridCellText(r, k))));
@@ -465,6 +472,7 @@
   // 工具栏「筛选」按钮：切换筛选模式；关闭时清空全部列筛选
   $("btn-filter").addEventListener("click", () => {
     gridFilterMode = !gridFilterMode;
+    $("btn-filter").classList.toggle("active", gridFilterMode); // 筛选开启时按钮加深
     closeGridFilterPop();
     if (!gridFilterMode) gridFilter = {};
     buildHead();
@@ -3299,6 +3307,13 @@
   function openHazardFilter(ki, anchor) {
     closeHazardFilterPop();
     hazardFilterCi = ki;
+    // closeHazardFilterPop 会重建表头（移除上一列的选中态），传入的 anchor 此时已脱离文档，
+    // getBoundingClientRect() 全为 0 会把弹层定位到左上角；因此重新取当前表头里的箭头按钮
+    const freshBtn = $("hazard-head").querySelector(`.th-filter[data-ki="${ki}"]`);
+    if (freshBtn) {
+      anchor = freshBtn;
+      freshBtn.classList.add("open");
+    }
     // 计数基准：搜索 + 其他列筛选后的行（不含本列），与列表实际显示一致
     const q = $("hazard-search").value.trim();
     const others = Object.entries(hazardFilter).filter(([k]) => Number(k) !== ki);
@@ -3411,6 +3426,7 @@
   // 关闭时清空全部列筛选，恢复显示原始内容
   $("hazard-filter").addEventListener("click", () => {
     hazardFilterMode = !hazardFilterMode;
+    $("hazard-filter").classList.toggle("active", hazardFilterMode); // 筛选开启时按钮加深
     closeHazardFilterPop();
     if (!hazardFilterMode) hazardFilter = {};
     renderHazardHead();

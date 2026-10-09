@@ -231,6 +231,13 @@
     sCloseFilterPop();
     const sh = SURVEY_SHEETS.find((s) => s.key === surveyCur);
     sFilterCi = { sheet: sh.key, col };
+    // sCloseFilterPop 会重建表头（移除上一列的选中态），传入的 anchor 此时已脱离文档，
+    // getBoundingClientRect() 全为 0 会把弹层定位到左上角；因此重新取当前表头里的箭头按钮
+    const freshBtn = $S("survey-head").querySelector(`.th-filter[data-col="${col}"]`);
+    if (freshBtn) {
+      anchor = freshBtn;
+      freshBtn.classList.add("open");
+    }
     // 计数基准：其他列筛选后的行（不含本列）
     const f = sFilter[sh.key] || {};
     const others = Object.entries(f).filter(([k]) => Number(k) !== col);
@@ -323,6 +330,7 @@
   // 工具栏「筛选」按钮：切换筛选模式；关闭时清空全部列筛选
   $S("survey-filter").addEventListener("click", () => {
     sFilterMode = !sFilterMode;
+    $S("survey-filter").classList.toggle("active", sFilterMode); // 筛选开启时按钮加深
     sCloseFilterPop();
     if (!sFilterMode) sFilter = {};
     renderSurvey();
