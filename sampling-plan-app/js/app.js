@@ -66,7 +66,7 @@
   const MANUAL_COLS = L.MANUAL_COLS;
   const OVERRIDE_COLS = L.OVERRIDE_COLS;
   const TEXT_OVERRIDE_COLS = L.TEXT_OVERRIDE_COLS || ["BI"];
-  const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "U", "AI", "AJ", "BH"]); // 下拉单元格列
+  const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "U", "BH"]); // 下拉单元格列（AI/AJ 已改为普通文本格）
   // 录入区下拉联想选项：作业方式 / 采样方式（datalist，可手动录入）
   const ZUOYE_FS = ["手工作业", "半手工作业", "全自动作业"];
   const CAIYANG_FS = ["定点", "个体"];
@@ -278,7 +278,7 @@
       const dl = col === "R" ? ' list="banzhi-r-dl"' : ' list="banzhi-s-dl"';
       inner = `<input data-c="${col}"${dl} value="${escAttr(fmt(row.input[col]))}">`;
     } else if (MANUAL_COLS.includes(col)) {
-      if (col === "AI" || col === "AJ" || col === "BH") {
+      if (col === "BH") {
         inner = selectHtml(col, row.manual[col], false, true);
       } else {
         inner = `<input data-c="${col}" value="${escAttr(fmt(row.values[col] ?? row.manual[col]))}">`;
@@ -306,8 +306,6 @@
       Z: ["", ...L.JIECHU_LX],
       AO: ["", ...L.SHI_FOU],
       AR: ["", ...L.JIANCE_FS],
-      AI: ["", ...L.SHI_FOU],
-      AJ: ["", ...L.SHI_FOU],
       BH: ["", ...L.SHI_FOU],
     }[col] || [];
     const cur = value;
@@ -344,7 +342,7 @@
     if (col === "U") return fmt(row.input[col] ?? "");
     if (col === "R" || col === "S") return fmt(row.input[col] ?? "");
     if (MANUAL_COLS.includes(col)) {
-      if (col === "AI" || col === "AJ" || col === "BH") return fmt(row.manual[col] ?? "");
+      if (col === "BH") return fmt(row.manual[col] ?? "");
       return fmt(row.values[col] ?? row.manual[col] ?? "");
     }
     if (TEXT_OVERRIDE_COLS.includes(col)) return fmt(row.values[col] ?? "");
@@ -3686,6 +3684,41 @@
     return X.writeWorkbook({ mainRows, mainWidths: COMPUTED_WIDTHS });
   }
 
+  // ---------- 非噪声岗位同步（供「噪声数据结果」页签调用） ----------
+  // list: [{ unit, job, site, lex }]（unit/job/site 对应自动计算区 W/X/AL；lex 为该项 LEX,8h/LEX,40h 的数值）
+  // 规则：与 W(*单元/工作场所)、X(*岗位/工种)、AL(*点位/采样对象) 一一对应；
+  //       命中的行若 AN(*检测项目) 含「噪声」且 lex < 80，则把 AI(是否噪声作业岗位) 置为「否」
+  function syncNonNoiseJobs(list) {
+    const norm = (s) => String(s === null || s === undefined ? "" : s).replace(/\s+/g, "");
+    const keyOf = (a, b, c) => norm(a) + "\u0001" + norm(b) + "\u0001" + norm(c);
+    const want = new Map();
+    for (const it of list || []) {
+      if (!it) continue;
+      const k = keyOf(it.unit, it.job, it.site);
+      const prev = want.get(k);
+      // 同一岗位多点位时取更小的 LEX（只要有任一项 < 80 即命中）
+      if (!prev || (it.lex !== null && (prev.lex === null || it.lex < prev.lex))) want.set(k, it);
+    }
+    const targets = [];
+    let matched = 0;
+    for (const row of rows) {
+      if (isBlankRow(row)) continue; // 跳过空行：自动计算区 W/X/AL 会下填，空行会误匹配
+      const it = want.get(keyOf(row.values["W"], row.values["X"], row.values["AL"]));
+      if (!it) continue;
+      matched++;
+      if (String(row.values["AN"] || "").indexOf("噪声") < 0) continue; // 检测项目须为噪声
+      if (it.lex === null || !(it.lex < 80)) continue; // LEX,8h 或 LEX,40h < 80
+      if ((row.manual["AI"] || "") === "否") continue;
+      targets.push(row);
+    }
+    if (targets.length) {
+      pushUndo();
+      for (const row of targets) row.manual["AI"] = "否";
+      recomputeAndRefresh();
+    }
+    return { matched: matched, changed: targets.length };
+  }
+
   // 供上传模块（js/upload.js）复用的导出能力
   window.SamplingApp = {
     // 有鼠标划选的文字选区（供 survey.js 的 copy 处理器共用，放行原生复制）
@@ -3699,6 +3732,8 @@
     askRowCount,
     // 脚本懒加载（供 upload.js 解析 docx 时加载 jszip 等）
     loadScript,
+    // 非噪声岗位同步（供「噪声数据结果」页签调用）
+    syncNonNoiseJobs,
     // 主表格已填车间名称（去重、保序），供调查表「单元/工作场所」下拉引用
     workshopNames: () => {
       const out = [];

@@ -1375,9 +1375,11 @@
       return out;
     }
 
+    // 渲染并记录当前「展示用行」（供「非噪声岗位同步」复用）
     function renderNoiseTable(box, data) {
       const rows = buildNoiseDisplay((data && data.rows) || []);
-      if (!rows.length) { box.innerHTML = ''; return; }
+      noiseCache = { projectId: (noiseCache && noiseCache.projectId) || null, data: data, display: rows };
+      if (!rows.length) { box.innerHTML = ''; return rows; }
       const head = rows[0];
       let html = '<table class="noise-table"><thead><tr>';
       for (const h of head) html += '<th>' + noiseEsc(h) + '</th>';
@@ -1389,6 +1391,7 @@
       }
       html += '</tbody></table>';
       box.innerHTML = html;
+      return rows;
     }
 
     let noiseCache = null; // { projectId, data }
@@ -1456,6 +1459,69 @@
     const noiseRefreshBtn = document.getElementById('noise-refresh');
     if (noiseRefreshBtn) noiseRefreshBtn.addEventListener('click', function () { loadNoiseResult(true); });
 
+    // ---------- 非噪声岗位同步 ----------
+    function splitLines(v) {
+      const arr = String(v === null || v === undefined ? '' : v).split('\n').map(function (s) { return s.trim(); });
+      while (arr.length > 1 && arr[arr.length - 1] === '') arr.pop();
+      return arr.length ? arr : [''];
+    }
+    function pickLine(arr, i) { return arr.length === 1 ? arr[0] : (arr[i] === undefined ? '' : arr[i]); }
+    function toNum(v) {
+      const n = parseFloat(String(v === null || v === undefined ? '' : v).replace(/[^\d.\-]/g, ''));
+      return isNaN(n) ? null : n;
+    }
+
+    // 取噪声表中 单元/岗位/点位 与 LEX 值，交给主程序按自动计算区 W/X/AL 匹配并置「是否噪声作业岗位」为「否」
+    function syncNonNoiseJobs() {
+      const disp = noiseCache && noiseCache.display;
+      if (!disp || disp.length < 2) {
+        alert('请先加载噪声数据结果（需在「数据上传」中选择项目），再执行同步。');
+        return;
+      }
+      const head = disp[0];
+      const norm = function (s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); };
+      const findCol = function (name) {
+        const want = norm(name);
+        // 优先精确匹配：「测量点/对象」是「岗位/工种/测量点/对象」的子串，含匹配会取错列
+        for (let i = 0; i < head.length; i++) if (norm(head[i]) === want) return i;
+        for (let i = 0; i < head.length; i++) if (norm(head[i]).indexOf(want) >= 0) return i;
+        return -1;
+      };
+      const cUnit = findCol('单元/工作场所');
+      const cJob = findCol('岗位/工种/测量点/对象');
+      const cSite = findCol('测量点/对象');
+      const cL8 = findCol('LEX,8h');
+      const cL40 = findCol('LEX,40h');
+      if (cUnit < 0 || cJob < 0 || cSite < 0) { alert('噪声表缺少「单元/工作场所」「岗位/工种/测量点/对象」「测量点/对象」列，无法同步。'); return; }
+
+      const list = [];
+      for (let r = 1; r < disp.length; r++) {
+        const src = disp[r] || [];
+        const units = splitLines(src[cUnit]);
+        const jobs = splitLines(src[cJob]);
+        const sites = splitLines(src[cSite]);
+        const l8 = cL8 >= 0 ? splitLines(src[cL8]) : [''];
+        const l40 = cL40 >= 0 ? splitLines(src[cL40]) : [''];
+        const n = Math.max(units.length, jobs.length, sites.length);
+        for (let i = 0; i < n; i++) {
+          const nums = [toNum(pickLine(l8, i)), toNum(pickLine(l40, i))].filter(function (v) { return v !== null; });
+          list.push({
+            unit: pickLine(units, i),
+            job: pickLine(jobs, i),
+            site: pickLine(sites, i),
+            lex: nums.length ? Math.min.apply(null, nums) : null,
+          });
+        }
+      }
+
+      const app = window.SamplingApp;
+      if (!app || typeof app.syncNonNoiseJobs !== 'function') { alert('主程序未提供同步能力，请刷新页面后重试。'); return; }
+      const res = app.syncNonNoiseJobs(list) || { matched: 0, changed: 0 };
+      alert('非噪声岗位同步完成：\n· 与主表格匹配到 ' + res.matched + ' 个岗位\n· 其中 ' + res.changed + ' 个「是否噪声作业岗位」已置为「否」');
+    }
+    const noiseSyncBtn = document.getElementById('noise-sync');
+    if (noiseSyncBtn) noiseSyncBtn.addEventListener('click', syncNonNoiseJobs);
+
     // 暴露给采样计划主程序：数据上传按钮调用
     window.SamplingUpload = {
       show: showUpload,
@@ -1467,6 +1533,8 @@
       parseNoiseTable: parseNoiseTableFromDocx,
       // 渲染噪声表（供测试/复用）
       renderNoiseTable: renderNoiseTable,
+      // 非噪声岗位同步（供测试/复用）
+      syncNonNoise: syncNonNoiseJobs,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null
       defaultSaveName: function () {
         if (!selectedProject) return null;
