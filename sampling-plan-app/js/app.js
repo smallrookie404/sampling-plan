@@ -2228,9 +2228,9 @@
         upsertLocalFull(rec);
         return true;
       } catch (e) {
-        setStorageNotice(true, "数据已暂存浏览器，未能同步到项目文件夹（本地服务未响应：" + e.message + "）。请通过「启动采样计划软件.bat」打开软件后重试。");
+        setStorageNotice(true, "数据保存失败：未能同步到项目文件夹（本地服务未响应：" + e.message + "）。数据已暂存浏览器，请通过「启动采样计划软件.bat」打开软件后重试。");
         upsertLocalFull(rec);
-        return true;
+        return false; // 主目标（项目文件夹）写入失败：按保存失败处理，由调用方弹窗提示
       }
     }
     if (storageMode === "github") {
@@ -2756,8 +2756,29 @@
     }
     if (surveyData) rec.survey = surveyData;
     else delete rec.survey;
-    const ok = await persistRecord(rec);
-    if (ok) alert(`已保存「${name}」（${contentRows.length ? contentRows.length + " 行" : ""}${contentRows.length && surveyData ? "，含调查表" : surveyData ? "仅调查表" : ""}）。`);
+    // 保存中提示（状态栏 + notice 位），完成或失败后更新
+    const notice = $("storage-notice");
+    const noticePrev = notice ? notice.innerHTML : "";
+    const noticeWasHidden = notice ? notice.classList.contains("hidden") : true;
+    if (notice) {
+      notice.innerHTML = "⟳ 数据保存中…";
+      notice.classList.remove("hidden");
+    }
+    let ok;
+    try {
+      ok = await persistRecord(rec);
+    } finally {
+      // 仅当提示仍是「保存中」才还原；persistRecord 写入的失败说明要保持可见
+      if (notice && notice.innerHTML === "⟳ 数据保存中…") {
+        if (noticeWasHidden) notice.classList.add("hidden");
+        notice.innerHTML = noticePrev;
+      }
+    }
+    if (ok) {
+      alert(`已保存「${name}」（${contentRows.length ? contentRows.length + " 行" : ""}${contentRows.length && surveyData ? "，含调查表" : surveyData ? "仅调查表" : ""}）。`);
+    } else {
+      alert(`数据保存失败：「${name}」未能写入存储，请检查网络或存储配置后重试。`);
+    }
     return ok;
   }
 
