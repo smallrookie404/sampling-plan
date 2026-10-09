@@ -1397,6 +1397,13 @@
     let noiseCache = null; // { projectId, data }
     let noiseLoading = false;
 
+    // 页签按钮加载态：加载中显示「数据加载中」+ 转圈，结束恢复文案
+    const noiseTabBtnEl = document.querySelector('.tab[data-tab="noise"]');
+    function setNoiseTabLoading(on) {
+      if (!noiseTabBtnEl) return;
+      noiseTabBtnEl.innerHTML = on ? '数据加载中<span class="spinner"></span>' : '噪声数据结果';
+    }
+
     // 加载并展示噪声数据结果：项目取「数据上传」中选用的项目
     async function loadNoiseResult(force) {
       const box = document.getElementById('noise-table-box');
@@ -1411,6 +1418,7 @@
           empty.classList.remove('hidden');
         }
         if (status) status.textContent = '';
+        alert('尚未在「数据上传」中选择项目。\n请先到「数据上传」查询并选中项目，再查看噪声数据结果。');
         return;
       }
       const pid = selectedProject.id;
@@ -1422,6 +1430,7 @@
         return;
       }
       noiseLoading = true;
+      setNoiseTabLoading(true);
       if (empty) empty.classList.add('hidden');
       box.innerHTML = '';
       if (status) status.textContent = '加载中…（正在生成并解析检测报告）';
@@ -1451,6 +1460,7 @@
         if (status) status.textContent = '';
       } finally {
         noiseLoading = false;
+        setNoiseTabLoading(false);
       }
     }
 
