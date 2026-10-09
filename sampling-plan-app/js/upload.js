@@ -1242,14 +1242,7 @@
     // 视图切换：返回采样计划 / 退出登录
     $('xcdcBack').addEventListener('click', hideUpload);
 
-    // ---------- 检测报告导出（按项目编号导出平台 Word 检测报告） ----------
-    // 文本输入：优先复用主程序的统一输入弹窗，取不到时回退原生 prompt
-    function askText(opts) {
-      const app = window.SamplingApp;
-      if (app && typeof app.askInput === 'function') return app.askInput(opts);
-      const v = window.prompt(opts.hint || opts.title || '请输入');
-      return Promise.resolve(v === null ? null : String(v).trim());
-    }
+    // ---------- 检测报告导出（导出「数据上传」中选用项目的平台 Word 检测报告） ----------
 
     // 下载平台文件：优先 fetch+blob（保留中文文件名），失败时回退直接打开地址
     async function downloadPlatformFile(path) {
@@ -1275,23 +1268,21 @@
       }
     }
 
-    // 按项目编号导出检测报告 Word：编号 → 项目 id → jcbgYl 生成 → 下载 .docx
+    // 按项目编号导出检测报告 Word：项目编号取「数据上传」中选用的项目；
+    // 未选择项目时提示先去「数据上传」选择
     async function exportJcbgReport() {
       if (!token) { showLogin(); return; }
-      const code = await askText({ title: '导出检测报告', hint: '请输入项目编号（如 BTC26-SZJC0959）', value: '' });
-      if (!code) return;
+      if (!selectedProject || !selectedProject.id) {
+        alert('尚未在「数据上传」中选择项目。\n\n请先点击顶部工具栏的「数据上传」，查询并选中项目后，再导出检测报告。');
+        return;
+      }
+      const proj = selectedProject;
+      const code = proj.code || '';
       const btn = $('btn-jcbg');
       const oldText = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; btn.textContent = '导出中…'; }
       try {
-        // 1) 按编号查项目，取 id
-        const q = 'pageNumber=1&pageSize=50&code=' + encodeURIComponent(code);
-        const sr = await apiRequest('GET', '/api/reportData/findList?' + q, { token: token, orgId: orgId, timeout: 60000 });
-        if (sr.status !== 200) throw new Error('查询项目失败(HTTP ' + sr.status + ')');
-        const records = (sr.data && sr.data.body && sr.data.body.records) || [];
-        if (!records.length) { alert('未找到项目编号为「' + code + '」的项目，请核对后重试。'); return; }
-        const proj = records[0];
-        // 2) 生成检测报告，拿到文件路径（PDF 路径，Word 为同路径 .docx）
+        // 生成检测报告，拿到文件路径（PDF 路径，Word 为同路径 .docx）
         const rr = await apiRequest(
           'GET',
           '/api/jcbgReport/jcbgYl?projectId=' + encodeURIComponent(proj.id) + '&organizationId=' + encodeURIComponent(orgId || ''),
@@ -1303,7 +1294,7 @@
           alert('生成检测报告失败：' + msg);
           return;
         }
-        // 3) 下载 Word
+        // 下载 Word
         const name = await downloadPlatformFile(body.replace(/\.pdf$/i, '.docx'));
         alert('检测报告已导出：' + name + '\n（项目：' + code + (proj.belongInspectName ? ' · ' + proj.belongInspectName : '') + '）');
       } catch (e) {
