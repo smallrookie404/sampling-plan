@@ -417,6 +417,12 @@ table.grid {
 .grid tbody td.manual,
 .grid tbody td.override,
 .grid .computed-text { cursor: default; }
+/* 单元格拖动只做选区，不选中格内文字（与录入区一致；只读计算列是纯文本，默认会被选中）。
+   输入框/下拉/文本域内部仍可正常选择文本，故显式放行 user-select:text */
+#main-grid tbody td { user-select: none; -webkit-user-select: none; }
+#main-grid tbody td input,
+#main-grid tbody td select,
+#main-grid tbody td textarea { user-select: text; -webkit-user-select: text; }
 .cell-num { text-align: right; }
 .cell-num input { text-align: right; }
 
