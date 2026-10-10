@@ -3758,6 +3758,14 @@
       }
       return map;
     },
+    // 「生成2个xlsx」用：主表行快照（录入区 input + 自动计算区 values）、参考库快照、列顺序
+    rowsSnapshot: () => rows.map((r) => ({
+      input: Object.assign({}, r.input),
+      values: Object.assign({}, r.values),
+    })),
+    librarySnapshot: () => libraryObject(),
+    inputCols: () => INPUT_COLS.slice(),
+    computedCols: () => COMPUTED_COLS.slice(),
   };
 
   // 导出选择菜单：测点布局调查（主表格）或 调查表（6 个子表合一份）

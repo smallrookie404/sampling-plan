@@ -1737,6 +1737,18 @@
         if (!selectedProject) return null;
         const ym = /^BTC(\d{2})/.exec(selectedProject.code || '');
         return (ym ? ym[1] + '年' : '') + (selectedProject.belongInspectName || '');
+      },
+      // 供「生成2个xlsx」按选中项目到上游取数：登录态 + 当前项目
+      getUpstreamContext: function () {
+        return {
+          apiBase: API_BASE,
+          token: token,
+          orgId: orgId,
+          loggedIn: !!token,
+          project: selectedProject
+            ? { id: selectedProject.id, code: selectedProject.code, name: selectedProject.belongInspectName || '' }
+            : null,
+        };
       }
     };
 

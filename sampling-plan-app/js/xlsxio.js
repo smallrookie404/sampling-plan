@@ -129,7 +129,13 @@
   }
 
   // ---------- 写入 ----------
-  function sheetXml(header, rows, colWidths) {
+  // 单元格值可为：字符串 / 数字 / 公式对象 {f:"数组公式", ref:"AA2:AA9", v:缓存值}
+  function isFormula(v) {
+    return v && typeof v === "object" && typeof v.f === "string";
+  }
+
+  function sheetXml(header, rows, colWidths, opts) {
+    opts = opts || {};
     const dim = { row: 0, col: 0 };
     const data = [header, ...rows];
     for (let r = 0; r < data.length; r++) {
@@ -147,6 +153,13 @@
       const parts = colWidths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("");
       colsXml = `<cols>${parts}</cols>`;
     }
+    let viewsXml = "";
+    if (opts.freeze) {
+      viewsXml =
+        `<sheetViews><sheetView workbookViewId="0">` +
+        `<pane ySplit="${opts.freeze}" topLeftCell="A${opts.freeze + 1}" activePane="bottomLeft" state="frozen"/>` +
+        `<selection pane="bottomLeft" activeCell="A${opts.freeze + 1}" sqref="A${opts.freeze + 1}"/></sheetView></sheetViews>`;
+    }
     let body = "";
     for (let r = 0; r < data.length; r++) {
       let cells = "";
@@ -154,17 +167,45 @@
         const v = data[r][c];
         if (v === null || v === undefined || v === "") continue;
         const refCell = `${indexToCol(c)}${r + 1}`;
-        if (typeof v === "number") {
-          cells += `<c r="${refCell}"${r === 0 ? ' s="1"' : ""}><v>${v}</v></c>`;
+        const style = r === 0 ? ' s="1"' : "";
+        if (isFormula(v)) {
+          const cached = v.v;
+          const cacheXml =
+            cached === undefined || cached === null || cached === ""
+              ? ""
+              : typeof cached === "number"
+                ? `<v>${cached}</v>`
+                : `<v>${esc(cached)}</v>`;
+          const tAttr = typeof cached === "number" || cached === undefined ? "" : ' t="str"';
+          const refAttr = v.ref ? ` ref="${v.ref}"` : "";
+          cells += `<c r="${refCell}"${style}${tAttr}><f ca="1" t="array"${refAttr}>${esc(v.f)}</f>${cacheXml}</c>`;
+        } else if (typeof v === "number") {
+          cells += `<c r="${refCell}"${style}><v>${v}</v></c>`;
         } else {
-          cells += `<c r="${refCell}" t="inlineStr"${r === 0 ? ' s="1"' : ""}><is><t>${esc(v)}</t></is></c>`;
+          cells += `<c r="${refCell}" t="inlineStr"${style}><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
         }
       }
       body += `<row r="${r + 1}">${cells}</row>`;
     }
+    let dvXml = "";
+    if (Array.isArray(opts.dataValidations) && opts.dataValidations.length) {
+      const items = opts.dataValidations
+        .map((d) => {
+          if (!d || !d.sqref) return "";
+          const f = d.formula1
+            ? `<formula1>${esc(d.formula1)}</formula1>`
+            : "";
+          return (
+            `<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1"` +
+            ` sqref="${esc(d.sqref)}">${f}</dataValidation>`
+          );
+        })
+        .join("");
+      dvXml = `<dataValidations count="${opts.dataValidations.length}">${items}</dataValidations>`;
+    }
     return (
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
-      `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="${ref}"/>${colsXml}<sheetData>${body}</sheetData></worksheet>`
+      `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="${ref}"/>${viewsXml}${colsXml}<sheetData>${body}</sheetData>${dvXml}</worksheet>`
     );
   }
 
@@ -262,8 +303,14 @@
   async function writeWorkbook(arg) {
     let sheets;
     if (Array.isArray(arg)) {
-      // 通用形式：[{ name, rows: aoa, widths? }]，供任意多工作表导出（如调查表 6 表合一）
-      sheets = arg.map((s) => ({ name: s.name, rows: s.rows, widths: s.widths }));
+      // 通用形式：[{ name, rows: aoa, widths?, freeze?, dataValidations? }]，供任意多工作表导出（如调查表 6 表合一）
+      sheets = arg.map((s) => ({
+        name: s.name,
+        rows: s.rows,
+        widths: s.widths,
+        freeze: s.freeze,
+        dataValidations: s.dataValidations,
+      }));
     } else {
       const { hazardRows, mainRows, itemRows, mainWidths } = arg;
       sheets = [];
@@ -281,7 +328,13 @@
     zip.file("docProps/core.xml", CORE_XML);
     zip.file("docProps/app.xml", APP_XML);
     sheets.forEach((s, i) => {
-      zip.file(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows[0], s.rows.slice(1), s.widths || null));
+      zip.file(
+        `xl/worksheets/sheet${i + 1}.xml`,
+        sheetXml(s.rows[0], s.rows.slice(1), s.widths || null, {
+          freeze: s.freeze,
+          dataValidations: s.dataValidations,
+        })
+      );
     });
     const out = await zip.generateAsync({
       type: "uint8array",
