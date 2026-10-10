@@ -1379,6 +1379,7 @@
     function renderNoiseTable(box, data) {
       const rows = buildNoiseDisplay((data && data.rows) || []);
       noiseCache = { projectId: (noiseCache && noiseCache.projectId) || null, data: data, display: rows };
+      renderNoiseSummary(rows);
       if (!rows.length) { box.innerHTML = ''; return rows; }
       const head = rows[0];
       let html = '<table class="noise-table"><thead><tr>';
@@ -1397,6 +1398,171 @@
     let noiseCache = null; // { projectId, data }
     let noiseLoading = false;
 
+    // ---------- 噪声筛选汇总（非噪声车间岗位 / 噪声超标车间岗位） ----------
+    // 判定口径与参考表《非噪声岗位筛选26.10.10.xlsx》右侧数组公式一致：
+    //   ① 分组键 = 单元/工作场所 + 岗位（岗位取「/」前的部分；同一岗位的多个测量点合并为一组）；
+    //   ② 组内取值 = 该组内所有含「LEX」列的所有数值的最大值（非数字按 0 处理）；
+    //   ③ 非噪声车间岗位：max < 80；噪声超标车间岗位：max ≥ 85；
+    //   ④ 输出按车间合并：同一车间只出现一次，岗位归到该车间下——
+    //      「车间岗位、岗位；车间岗位、岗位」（车间之间用「；」，同车间岗位之间用「、」）。
+    const NOISE_NON_LIMIT = 80;
+    const NOISE_OVER_LIMIT = 85;
+    const NOISE_SUMMARY_DEFS = [
+      { key: 'nonNoise', title: '非噪声车间岗位', rule: 'LEX 最大值 < 80 dB', cls: 'ok' },
+      { key: 'overWorkshop', title: '噪声超标车间岗位', rule: 'LEX 最大值 ≥ 85 dB', cls: 'over' },
+    ];
+    let noiseSummaryData = null;
+
+    function beforeSlash(v) {
+      const s = String(v === null || v === undefined ? '' : v);
+      const i = s.indexOf('/');
+      return (i < 0 ? s : s.slice(0, i)).trim();
+    }
+    function noiseNorm(s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); }
+
+    // 由「展示用噪声行」计算筛选结果，返回 { nonNoise, overWorkshop, groupCount }
+    // nonNoise / overWorkshop 为「按车间合并」后的数组：[{ unit, jobs:[岗位, ...] }]（顺序=首次出现）
+    function buildNoiseSummary(display) {
+      const out = { nonNoise: [], overWorkshop: [], groupCount: 0 };
+      if (!display || display.length < 2) return out;
+      const head = display[0];
+      const findCol = function (name) {
+        const want = noiseNorm(name);
+        // 优先精确匹配：「测量点/对象」是「岗位/工种/测量点/对象」的子串，含匹配会取错列
+        for (let i = 0; i < head.length; i++) if (noiseNorm(head[i]) === want) return i;
+        for (let i = 0; i < head.length; i++) if (noiseNorm(head[i]).indexOf(want) >= 0) return i;
+        return -1;
+      };
+      const cUnit = findCol('单元/工作场所');
+      const cJob = findCol('岗位/工种/测量点/对象');
+      if (cUnit < 0 || cJob < 0) return out;
+      const lexCols = [];
+      for (let i = 0; i < head.length; i++) if (noiseNorm(head[i]).indexOf('LEX') >= 0) lexCols.push(i);
+
+      // 展开为「车间+岗位」分组：先对空单元格做向下填充（与参考表 SCAN 一致，兼容纵向合并的报表），
+      // 再把单元格内的多行值逐行对齐展开（与「非噪声岗位同步」同一方式）
+      const groups = new Map();
+      let prevUnit = '';
+      let prevJob = '';
+      for (let r = 1; r < display.length; r++) {
+        const src = display[r] || [];
+        const unitRaw = String(src[cUnit] === null || src[cUnit] === undefined ? '' : src[cUnit]);
+        const jobRaw = String(src[cJob] === null || src[cJob] === undefined ? '' : src[cJob]);
+        if (unitRaw.trim() !== '') prevUnit = unitRaw;
+        if (jobRaw.trim() !== '') prevJob = jobRaw;
+        const units = splitLines(prevUnit);
+        const jobs = splitLines(prevJob);
+        const n = Math.max(units.length, jobs.length);
+        for (let i = 0; i < n; i++) {
+          const unit = pickLine(units, i);
+          const job = beforeSlash(pickLine(jobs, i));
+          if (!unit && !job) continue;
+          const key = noiseNorm(unit) + '\u0001' + noiseNorm(job);
+          let g = groups.get(key);
+          if (!g) { g = { unit: unit, job: job, max: 0 }; groups.set(key, g); }
+          for (let k = 0; k < lexCols.length; k++) {
+            const num = toNum(pickLine(splitLines(src[lexCols[k]]), i));
+            if (num !== null && num > g.max) g.max = num;
+          }
+        }
+      }
+      out.groupCount = groups.size;
+      // 按车间合并：同一车间只保留一项，岗位依次归入（车间/岗位均保持首次出现顺序）
+      const addGroup = function (list, index, g) {
+        let ws = index.get(g.unit);
+        if (!ws) { ws = { unit: g.unit, jobs: [] }; index.set(g.unit, ws); list.push(ws); }
+        if (g.job && ws.jobs.indexOf(g.job) < 0) ws.jobs.push(g.job);
+      };
+      const nonIdx = new Map();
+      const overIdx = new Map();
+      groups.forEach(function (g) {
+        if (g.max < NOISE_NON_LIMIT) addGroup(out.nonNoise, nonIdx, g);
+        if (g.max >= NOISE_OVER_LIMIT) addGroup(out.overWorkshop, overIdx, g);
+      });
+      return out;
+    }
+
+    // 把「按车间合并」的结果拼成文本：车间岗位、岗位；车间岗位、岗位
+    function noiseSummaryText(list) {
+      return (list || []).map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
+    }
+    // 岗位总数（用于计数徽标）
+    function noiseSummaryJobCount(list) {
+      return (list || []).reduce(function (n, g) { return n + g.jobs.length; }, 0);
+    }
+
+    function copyNoiseText(text, btn) {
+      const t = String(text === null || text === undefined ? '' : text);
+      const ok = function () {
+        if (!btn) return;
+        const old = btn.textContent;
+        btn.textContent = '已复制';
+        setTimeout(function () { btn.textContent = old; }, 1200);
+      };
+      const fallback = function () {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = t;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          ok();
+        } catch (err) { alert('复制失败，请手动选择复制。'); }
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok, fallback);
+      else fallback();
+    }
+
+    function renderNoiseSummary(display) {
+      const box = document.getElementById('noise-summary');
+      if (!box) return;
+      const s = buildNoiseSummary(display);
+      noiseSummaryData = s;
+      const hasAny = s.nonNoise.length || s.overWorkshop.length;
+      if (!hasAny) { box.innerHTML = ''; box.classList.add('hidden'); return; }
+      let html = '<div class="noise-summary-head"><strong>筛选结果</strong>'
+        + '<span class="noise-summary-hint">同一「车间+岗位」合并全部测量点，取所有 LEX 列的最大值（非数字按 0）；结果按车间合并</span>'
+        + '<button class="btn small ghost" data-copy-all="1">复制全部</button></div>';
+      html += '<div class="noise-summary-grid">';
+      for (const d of NOISE_SUMMARY_DEFS) {
+        const list = s[d.key] || [];
+        const n = noiseSummaryJobCount(list);
+        html += '<div class="noise-summary-item ' + d.cls + '">'
+          + '<div class="nsi-head"><span class="nsi-title">' + d.title + '</span>'
+          + '<span class="nsi-rule">' + d.rule + '</span>'
+          + '<span class="nsi-count" title="共 ' + list.length + ' 个车间 / ' + n + ' 个岗位">' + n + '</span>'
+          + '<button class="btn small ghost nsi-copy" data-copy-key="' + d.key + '">复制</button></div>'
+          + '<div class="nsi-body' + (list.length ? '' : ' empty') + '">' + noiseEsc(list.length ? noiseSummaryText(list) : '（无）') + '</div>'
+          + '</div>';
+      }
+      html += '</div>';
+      box.innerHTML = html;
+      box.classList.remove('hidden');
+    }
+
+    const noiseSummaryEl = document.getElementById('noise-summary');
+    if (noiseSummaryEl) {
+      noiseSummaryEl.addEventListener('click', function (e) {
+        const btn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (!btn) return;
+        let text = '';
+        if (btn.hasAttribute('data-copy-all')) {
+          text = NOISE_SUMMARY_DEFS.map(function (d) {
+            const list = (noiseSummaryData && noiseSummaryData[d.key]) || [];
+            return d.title + '（' + d.rule + '）：' + (list.length ? noiseSummaryText(list) : '无');
+          }).join('\n');
+        } else {
+          const key = btn.getAttribute('data-copy-key');
+          text = noiseSummaryText((noiseSummaryData && noiseSummaryData[key]) || []);
+        }
+        if (!text) return;
+        copyNoiseText(text, btn);
+      });
+    }
+
     // 页签按钮加载态：加载中显示「数据加载中」+ 转圈，结束恢复文案
     const noiseTabBtnEl = document.querySelector('.tab[data-tab="noise"]');
     function setNoiseTabLoading(on) {
@@ -1413,6 +1579,7 @@
       if (!token) { showLogin(); return; }
       if (!selectedProject || !selectedProject.id) {
         box.innerHTML = '';
+        renderNoiseSummary(null);
         if (empty) {
           empty.textContent = '尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再查看噪声数据结果。';
           empty.classList.remove('hidden');
@@ -1453,6 +1620,7 @@
         if (status) status.textContent = '项目 ' + (selectedProject.code || '') + ' · 共 ' + Math.max(0, data.rows.length - 1) + ' 行';
       } catch (e) {
         box.innerHTML = '';
+        renderNoiseSummary(null);
         if (empty) {
           empty.textContent = '加载失败：' + (e && e.message ? e.message : e);
           empty.classList.remove('hidden');
@@ -1489,39 +1657,55 @@
         return;
       }
       const head = disp[0];
-      const norm = function (s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); };
       const findCol = function (name) {
-        const want = norm(name);
+        const want = noiseNorm(name);
         // 优先精确匹配：「测量点/对象」是「岗位/工种/测量点/对象」的子串，含匹配会取错列
-        for (let i = 0; i < head.length; i++) if (norm(head[i]) === want) return i;
-        for (let i = 0; i < head.length; i++) if (norm(head[i]).indexOf(want) >= 0) return i;
+        for (let i = 0; i < head.length; i++) if (noiseNorm(head[i]) === want) return i;
+        for (let i = 0; i < head.length; i++) if (noiseNorm(head[i]).indexOf(want) >= 0) return i;
         return -1;
       };
       const cUnit = findCol('单元/工作场所');
       const cJob = findCol('岗位/工种/测量点/对象');
       const cSite = findCol('测量点/对象');
-      const cL8 = findCol('LEX,8h');
-      const cL40 = findCol('LEX,40h');
+      const lexCols = [];
+      for (let i = 0; i < head.length; i++) if (noiseNorm(head[i]).indexOf('LEX') >= 0) lexCols.push(i);
       if (cUnit < 0 || cJob < 0 || cSite < 0) { alert('噪声表缺少「单元/工作场所」「岗位/工种/测量点/对象」「测量点/对象」列，无法同步。'); return; }
 
+      // 口径与参考表《非噪声岗位筛选》一致：先对空单元格向下填充，再按「车间+岗位」分组，
+      // 组内取所有 LEX 列的最大值（非数字按 0）；每个点位都带上其所属岗位的组最大值。
       const list = [];
+      const groupMax = new Map();
+      let prevUnit = '';
+      let prevJob = '';
       for (let r = 1; r < disp.length; r++) {
         const src = disp[r] || [];
-        const units = splitLines(src[cUnit]);
-        const jobs = splitLines(src[cJob]);
+        const unitRaw = String(src[cUnit] === null || src[cUnit] === undefined ? '' : src[cUnit]);
+        const jobRaw = String(src[cJob] === null || src[cJob] === undefined ? '' : src[cJob]);
+        if (unitRaw.trim() !== '') prevUnit = unitRaw;
+        if (jobRaw.trim() !== '') prevJob = jobRaw;
+        const units = splitLines(prevUnit);
+        const jobs = splitLines(prevJob);
         const sites = splitLines(src[cSite]);
-        const l8 = cL8 >= 0 ? splitLines(src[cL8]) : [''];
-        const l40 = cL40 >= 0 ? splitLines(src[cL40]) : [''];
         const n = Math.max(units.length, jobs.length, sites.length);
         for (let i = 0; i < n; i++) {
-          const nums = [toNum(pickLine(l8, i)), toNum(pickLine(l40, i))].filter(function (v) { return v !== null; });
-          list.push({
-            unit: pickLine(units, i),
-            job: pickLine(jobs, i),
-            site: pickLine(sites, i),
-            lex: nums.length ? Math.min.apply(null, nums) : null,
-          });
+          const unit = pickLine(units, i);
+          const job = beforeSlash(pickLine(jobs, i));
+          if (!unit && !job) continue;
+          let mx = null;
+          for (let k = 0; k < lexCols.length; k++) {
+            const num = toNum(pickLine(splitLines(src[lexCols[k]]), i));
+            if (num !== null && (mx === null || num > mx)) mx = num;
+          }
+          const key = noiseNorm(unit) + '\u0001' + noiseNorm(job);
+          const cur = groupMax.get(key);
+          groupMax.set(key, (cur === undefined || cur === null) ? mx : (mx === null ? cur : Math.max(cur, mx)));
+          list.push({ unit: unit, job: job, site: pickLine(sites, i), key: key });
         }
+      }
+      // 把「同岗位最大值」写回每个点位（组内无任何数值时按 0，与参考表一致）
+      for (const it of list) {
+        const g = groupMax.get(it.key);
+        it.lex = (g === null || g === undefined) ? 0 : g;
       }
 
       const app = window.SamplingApp;
@@ -1543,6 +1727,9 @@
       parseNoiseTable: parseNoiseTableFromDocx,
       // 渲染噪声表（供测试/复用）
       renderNoiseTable: renderNoiseTable,
+      // 噪声筛选汇总：由展示用行计算四类结果（供测试/复用）
+      buildNoiseSummary: buildNoiseSummary,
+      renderNoiseSummary: renderNoiseSummary,
       // 非噪声岗位同步（供测试/复用）
       syncNonNoise: syncNonNoiseJobs,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null

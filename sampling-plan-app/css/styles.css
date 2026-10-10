@@ -113,6 +113,24 @@ table.noise-table th,
 table.noise-table td { border: 1px solid var(--line); padding: 4px 8px; white-space: pre-line; text-align: center; vertical-align: middle; }
 table.noise-table th { background: #eef2f7; color: #334155; font-weight: 600; position: sticky; top: 0; z-index: 1; }
 table.noise-table tbody tr:nth-child(even) { background: #f8fafc; }
+
+/* 噪声筛选汇总（非噪声车间岗位 / 噪声超标车间岗位） */
+.noise-summary { margin: 8px 2px 10px; }
+.noise-summary.hidden { display: none; }
+.noise-summary-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.noise-summary-head strong { font-size: 13px; color: #334155; }
+.noise-summary-hint { flex: 1; color: #64748b; font-size: 12px; }
+.noise-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; }
+.noise-summary-item { border: 1px solid var(--line); border-left-width: 4px; border-radius: 6px; background: #fff; padding: 6px 10px 8px; }
+.noise-summary-item.ok { border-left-color: #16a34a; }
+.noise-summary-item.over { border-left-color: #dc2626; }
+.nsi-head { display: flex; align-items: center; gap: 6px; }
+.nsi-title { font-size: 13px; font-weight: 600; color: #334155; }
+.nsi-rule { font-size: 11px; color: #94a3b8; }
+.nsi-count { font-size: 11px; color: #475569; background: #eef2f7; border-radius: 8px; padding: 0 6px; }
+.nsi-head .nsi-copy { margin-left: auto; }
+.nsi-body { margin-top: 4px; font-size: 12px; color: #0f172a; line-height: 1.6; word-break: break-all; white-space: pre-wrap; }
+.nsi-body.empty { color: #94a3b8; }
 .badge {
   display: inline-block;
   min-width: 20px;

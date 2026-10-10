@@ -3685,7 +3685,8 @@
   }
 
   // ---------- 非噪声岗位同步（供「噪声数据结果」页签调用） ----------
-  // list: [{ unit, job, site, lex }]（unit/job/site 对应自动计算区 W/X/AL；lex 为该项 LEX,8h/LEX,40h 的数值）
+  // list: [{ unit, job, site, lex }]（unit/job/site 对应自动计算区 W/X/AL；
+  //       lex = 该项所属「车间+岗位」在全部测量点、全部 LEX 列上的最大值，口径见 upload.js 的 buildNoiseSummary）
   // 规则：与 W(*单元/工作场所)、X(*岗位/工种)、AL(*点位/采样对象) 一一对应；
   //       命中的行若 AN(*检测项目) 含「噪声」且 lex < 80，则把 AI(是否噪声作业岗位) 置为「否」
   function syncNonNoiseJobs(list) {
@@ -3696,7 +3697,7 @@
       if (!it) continue;
       const k = keyOf(it.unit, it.job, it.site);
       const prev = want.get(k);
-      // 同一岗位多点位时取更小的 LEX（只要有任一项 < 80 即命中）
+      // 同一点位可能来自多行，取更小的 LEX（只要任一项 < 80 即命中）
       if (!prev || (it.lex !== null && (prev.lex === null || it.lex < prev.lex))) want.set(k, it);
     }
     const targets = [];
