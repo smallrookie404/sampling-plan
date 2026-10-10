@@ -1707,8 +1707,26 @@
 
       const app = window.SamplingApp;
       if (!app || typeof app.syncNonNoiseJobs !== 'function') { alert('主程序未提供同步能力，请刷新页面后重试。'); return; }
-      const res = app.syncNonNoiseJobs(list) || { matched: 0, changed: 0 };
-      alert('非噪声岗位同步完成：\n· 与主表格匹配到 ' + res.matched + ' 个岗位\n· 其中 ' + res.changed + ' 个「是否噪声作业岗位」已置为「否」');
+      const res = app.syncNonNoiseJobs(list) || { total: 0, matched: 0, changed: 0, unmatched: [] };
+      const un = res.unmatched || [];
+      let msg = '非噪声岗位同步完成：\n'
+        + '· 噪声数据结果表共 ' + (res.total || 0) + ' 个岗位\n'
+        + '· 与主表格匹配到 ' + (res.matched || 0) + ' 个\n'
+        + '· 其中 ' + (res.changed || 0) + ' 个「是否噪声作业岗位」已置为「否」';
+      if (un.length) {
+        const MAX = 20;
+        msg += '\n\n未匹配到的岗位（' + un.length + ' 个）：\n' + un.slice(0, MAX).map(function (it) {
+          const parts = [];
+          if (it.unit) parts.push(it.unit);
+          if (it.job) parts.push(it.job);
+          if (it.site) parts.push(it.site);
+          return '· ' + (parts.join(' / ') || '(空)');
+        }).join('\n');
+        if (un.length > MAX) msg += '\n· …（其余 ' + (un.length - MAX) + ' 个未列出）';
+      } else {
+        msg += '\n\n未匹配到的岗位：无';
+      }
+      alert(msg);
     }
     const noiseSyncBtn = document.getElementById('noise-sync');
     if (noiseSyncBtn) noiseSyncBtn.addEventListener('click', syncNonNoiseJobs);

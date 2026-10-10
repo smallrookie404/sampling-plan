@@ -3700,13 +3700,14 @@
       // 同一点位可能来自多行，取更小的 LEX（只要任一项 < 80 即命中）
       if (!prev || (it.lex !== null && (prev.lex === null || it.lex < prev.lex))) want.set(k, it);
     }
+    const hit = new Set();   // 主表格中命中的（单元/岗位/点位）
     const targets = [];
-    let matched = 0;
     for (const row of rows) {
       if (isBlankRow(row)) continue; // 跳过空行：自动计算区 W/X/AL 会下填，空行会误匹配
-      const it = want.get(keyOf(row.values["W"], row.values["X"], row.values["AL"]));
+      const k = keyOf(row.values["W"], row.values["X"], row.values["AL"]);
+      const it = want.get(k);
       if (!it) continue;
-      matched++;
+      hit.add(k);
       if (String(row.values["AN"] || "").indexOf("噪声") < 0) continue; // 检测项目须为噪声
       if (it.lex === null || !(it.lex < 80)) continue; // LEX,8h 或 LEX,40h < 80
       if ((row.manual["AI"] || "") === "否") continue;
@@ -3717,7 +3718,12 @@
       for (const row of targets) row.manual["AI"] = "否";
       recomputeAndRefresh();
     }
-    return { matched: matched, changed: targets.length };
+    // 未匹配到的岗位：噪声数据结果表里有，但主表格自动计算区 W/X/AL 中找不到对应行
+    const unmatched = [];
+    want.forEach(function (it, k) {
+      if (!hit.has(k)) unmatched.push({ unit: it.unit, job: it.job, site: it.site });
+    });
+    return { total: want.size, matched: hit.size, changed: targets.length, unmatched: unmatched };
   }
 
   // 供上传模块（js/upload.js）复用的导出能力
