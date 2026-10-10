@@ -263,6 +263,42 @@ table.survey td, table.survey thead th { word-break: break-word; overflow-wrap: 
 table.survey tbody td { cursor: default; }
 /* 显示态与编辑态共用同一套字体度量（与主表格 .grid input 一致：12px、padding 2px 6px），排版零变动 */
 table.survey td .ctext { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-size: 12px; line-height: 1.4; padding: 2px 6px; }
+/* 生产工艺调查：工艺名称单元格里的「工艺图」按钮/缩略图（单元格内右侧、上下居中） */
+table.survey td.s-proc-name { position: relative; }
+table.survey td.s-proc-name .ctext { padding-right: 66px; }
+.proc-img-btn {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  padding: 1px 6px; font-size: 11px; line-height: 1.4; white-space: nowrap;
+  border: 1px solid var(--line); border-radius: 4px; background: #fff; color: #64748b; cursor: pointer;
+}
+.proc-img-btn:hover { border-color: var(--primary); color: var(--primary); }
+.proc-img-box {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center;
+}
+.proc-img-thumb {
+  width: 24px; height: 24px; object-fit: cover; display: block;
+  border: 1px solid var(--line); border-radius: 3px; background: #fff; cursor: zoom-in;
+}
+.proc-img-thumb:hover { border-color: var(--primary); }
+.proc-img-del {
+  margin-left: 3px; width: 16px; height: 16px; padding: 0; line-height: 1;
+  font-size: 13px; border: 1px solid var(--line); border-radius: 50%;
+  background: #fff; color: #94a3b8; cursor: pointer;
+}
+.proc-img-del:hover { border-color: #cf1322; color: #cf1322; background: #fef2f2; }
+/* 工艺图预览遮罩 */
+.proc-img-preview {
+  position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 1200;
+  background: rgba(15, 23, 42, 0.6);
+  display: flex; align-items: center; justify-content: center; cursor: zoom-out;
+}
+.proc-img-preview .pip-box {
+  background: #fff; padding: 10px; border-radius: 8px;
+  max-width: 88vw; max-height: 88vh; overflow: auto; text-align: center;
+}
+.proc-img-preview img { display: block; max-width: 84vw; max-height: 76vh; }
+.proc-img-preview .pip-cap { margin-top: 6px; font-size: 12px; color: #475569; }
 table.survey td input { width: 100%; height: 100%; box-sizing: border-box; border: none; outline: none; background: transparent; padding: 2px 6px; font-size: 12px; font-family: inherit; line-height: 1.4; color: inherit; }
 /* 编辑态多行文本框：无边框（聚焦用 inset 阴影，不占布局），高度由 JS 锁定为单元格原高度，度量与显示态完全一致 */
 table.survey td textarea { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: none; outline: none; background: #fff; padding: 2px 6px; font-size: 12px; font-family: inherit; line-height: 1.4; color: inherit; margin: 0; display: block; word-break: break-word; overflow-wrap: anywhere; }

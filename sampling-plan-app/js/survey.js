@@ -143,6 +143,151 @@
     if (document.visibilityState === "hidden") surveySaveFlush();
   });
 
+  // ---------- 生产工艺调查：工艺图片（每行 1 张，压缩后本地留存，上传时随接口一起提交） ----------
+  const PROC_IMG_KEY = "samplingPlanSurveyImages_v1";
+  let processImages = null; // { [工艺名称]: dataURL }
+  function procImgLoad() {
+    if (processImages) return processImages;
+    try {
+      const s = localStorage.getItem(PROC_IMG_KEY);
+      processImages = s ? JSON.parse(s) : {};
+    } catch (e) { processImages = {}; }
+    return processImages;
+  }
+  function procImgSave() {
+    try { localStorage.setItem(PROC_IMG_KEY, JSON.stringify(processImages || {})); } catch (e) {}
+  }
+  // 读取并压缩为 JPEG（长边 ≤1280、质量 0.75），避免 localStorage 超限
+  function procImgCompress(file) {
+    return new Promise(function (resolve, reject) {
+      const reader = new FileReader();
+      reader.onerror = function () { reject(new Error("读取图片失败")); };
+      reader.onload = function () {
+        const img = new Image();
+        img.onerror = function () { reject(new Error("图片解析失败")); };
+        img.onload = function () {
+          const max = 1280;
+          let w = img.naturalWidth || img.width || 1;
+          let h = img.naturalHeight || img.height || 1;
+          const k = Math.min(1, max / Math.max(w, h));
+          w = Math.max(1, Math.round(w * k));
+          h = Math.max(1, Math.round(h * k));
+          const cv = document.createElement("canvas");
+          cv.width = w; cv.height = h;
+          cv.getContext("2d").drawImage(img, 0, 0, w, h);
+          resolve(cv.toDataURL("image/jpeg", 0.75));
+        };
+        img.src = String(reader.result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  function procImgPick(cb) {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "image/*";
+    inp.style.display = "none";
+    document.body.appendChild(inp);
+    inp.addEventListener("change", function () {
+      const f = inp.files && inp.files[0];
+      if (inp.parentNode) inp.remove();
+      if (f) cb(f);
+    });
+    inp.click();
+  }
+  function procImgClick(name) {
+    const nm = String(name || "").trim();
+    if (!nm) return;
+    procImgPick(function (f) {
+      procImgCompress(f).then(function (dataUrl) {
+        procImgLoad()[nm] = dataUrl;
+        procImgSave();
+        renderSurvey();
+      }).catch(function (e) { alert("工艺图处理失败：" + e.message); });
+    });
+  }
+  // 预览：全屏遮罩显示大图，点任意处关闭
+  function procImgPreview(name) {
+    const nm = String(name || "").trim();
+    const url = procImgLoad()[nm];
+    if (!url) return;
+    const ov = document.createElement("div");
+    ov.className = "proc-img-preview";
+    ov.innerHTML = '<div class="pip-box"><img src="' + url + '" alt="">' +
+      '<div class="pip-cap">' + escHtml(nm) + '（点击任意处关闭）</div></div>';
+    ov.addEventListener("click", function () { ov.remove(); });
+    document.body.appendChild(ov);
+  }
+  // 取消：确认后删除本地留存的工艺图
+  function procImgRemove(name) {
+    const nm = String(name || "").trim();
+    if (!nm || !procImgLoad()[nm]) return;
+    if (!confirm('取消「' + nm + '」的工艺图？')) return;
+    delete procImgLoad()[nm];
+    procImgSave();
+    renderSurvey();
+  }
+  function procImgBtnHtml(name) {
+    const url = procImgLoad()[name];
+    if (url) {
+      // 已上传：缩略图（点击预览）+ ×（取消）
+      return `<span class="proc-img-box" data-procimg="${escAttr(name)}">` +
+        `<img class="proc-img-thumb" src="${url}" alt="" title="点击预览工艺图">` +
+        `<button type="button" class="proc-img-del" title="取消工艺图">×</button>` +
+        `</span>`;
+    }
+    return `<button type="button" class="proc-img-btn" data-procimg="${escAttr(name)}" title="上传工艺图">上传工艺图</button>`;
+  }
+  // 「工艺名称」单元格里的按钮/缩略图：拦截 mousedown 避免触发单元格选中/编辑
+  function sProcImgHit(t) {
+    return t && t.closest ? t.closest(".proc-img-box, .proc-img-btn") : null;
+  }
+  $S("survey-body").addEventListener("mousedown", function (e) {
+    if (sProcImgHit(e.target)) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  $S("survey-body").addEventListener("click", function (e) {
+    const t = e.target;
+    if (!t || !t.classList) return;
+    const box = sProcImgHit(t);
+    if (!box) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const nm = box.getAttribute("data-procimg");
+    if (t.classList.contains("proc-img-del")) { procImgRemove(nm); return; }   // × 取消
+    if (t.classList.contains("proc-img-thumb")) { procImgPreview(nm); return; } // 缩略图 → 预览
+    procImgClick(nm); // 「上传工艺图」按钮
+  });
+
+  // 按当前 DOM 实时同步「工艺名称」列单元格里的按钮（新增/删除/更新），
+  // 只在实际有变化时写 DOM，避免观察器反复触发。
+  function sSyncProcImgButtons() {
+    if (surveyCur !== "process") return;
+    const body = $S("survey-body");
+    if (!body) return;
+    const tds = body.querySelectorAll('td[data-c="0"]');
+    for (const td of tds) {
+      const ct = td.querySelector(".ctext");
+      const nm = (ct ? ct.textContent : "").trim();
+      const holder = td.querySelector(".proc-img-box, .proc-img-btn");
+      if (!nm) {
+        if (holder) holder.remove();
+        td.classList.remove("s-proc-name");
+        continue;
+      }
+      td.classList.add("s-proc-name");
+      if (!holder) { td.insertAdjacentHTML("beforeend", procImgBtnHtml(nm)); continue; }
+      const hasImg = !!procImgLoad()[nm];
+      const isBox = holder.classList.contains("proc-img-box");
+      // 名称变化或「有无图片」状态不一致时整体替换（缩略图内容由上传/取消后的整表重渲染刷新）
+      if (holder.getAttribute("data-procimg") !== nm || hasImg !== isBox) {
+        holder.outerHTML = procImgBtnHtml(nm);
+      }
+    }
+  }
+  // 编辑提交 / 粘贴 / 清空 / 撤销等都会重建单元格（tbody 不整体替换，观察器长期有效）
+  new MutationObserver(function () { sSyncProcImgButtons(); })
+    .observe($S("survey-body"), { childList: true, subtree: true, characterData: true });
+
   // ---------- Ctrl+Z 撤销（快照式：批量变更前存全量 surveyData，逐级回退；与主表格一致） ----------
   const sUndoStack = [];
   const S_UNDO_MAX = 50;
@@ -360,9 +505,15 @@
     $S("survey-body").innerHTML = rows.length
       ? rows.map((x) =>
           `<tr data-r="${x.ri}">` +
-          sh.headers.map((h, ci) =>
-            `<td data-c="${ci}"${ci === 0 ? ' class="s-sticky-name"' : ""}><div class="ctext">${escHtml(x.r[ci])}</div></td>`
-          ).join("") +
+          sh.headers.map((h, ci) => {
+            // 生产工艺调查：工艺名称列（第 0 列）有内容的单元格挂一个「工艺图」上传按钮
+            const isProcImg = sh.key === "process" && ci === 0 && String(x.r[0] || "").trim() !== "";
+            const tdCls = ci === 0 ? ("s-sticky-name" + (isProcImg ? " s-proc-name" : "")) : "";
+            return `<td data-c="${ci}"${tdCls ? ` class="${tdCls}"` : ""}>` +
+              `<div class="ctext">${escHtml(x.r[ci])}</div>` +
+              `${isProcImg ? procImgBtnHtml(String(x.r[0]).trim()) : ""}` +
+              `</td>`;
+          }).join("") +
           `</tr>`
         ).join("")
       : `<tr class="empty-row"><td colspan="${sh.headers.length}" style="text-align:center;color:#94a3b8;padding:16px">暂无数据，点击「+ 新增行」开始填写</td></tr>`;
@@ -1345,6 +1496,21 @@
       });
       surveySave();
       renderSurvey();
+    },
+    // 工艺图片（生产工艺调查）：{ [工艺名称]: dataURL }，供「数据上传」时随接口一起提交。
+    // 只返回**当前调查表里仍然存在**的工艺名称——本地字典是全局的，历史遗留的键（行已删/改名）
+    // 不应参与上传，否则会出现「界面上没有、却报未匹配」的幽灵条目。
+    getProcessImages: () => {
+      const all = procImgLoad();
+      const live = {};
+      const rows = (surveyData && Array.isArray(surveyData.process)) ? surveyData.process : [];
+      for (const r of rows) {
+        const n = String((r && r[0]) || "").trim();
+        if (n) live[n] = 1;
+      }
+      const out = {};
+      for (const k of Object.keys(all)) if (live[k] && all[k]) out[k] = all[k];
+      return out;
     },
   };
 

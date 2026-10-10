@@ -279,6 +279,47 @@
     });
   }
 
+  // 工艺图片补传：调查表导入成功后，按「工艺名称」匹配平台的生产工艺记录，
+  // 逐条调 /api/productionProcess/upload?id=<记录id>（multipart 字段名 imgs）上传工艺图。
+  // 返回一段可拼接的中文说明（无图片时返回空串）。
+  async function uploadProcessImages(token, orgId, projectId) {
+    const all = (window.SurveySheets && window.SurveySheets.getProcessImages) ? (window.SurveySheets.getProcessImages() || {}) : {};
+    const names = Object.keys(all).filter(function (k) { return k && all[k]; });
+    if (!names.length) return '';
+    let recs = [];
+    try {
+      const r = await apiRequest(
+        'GET',
+        '/api/productionProcess?belongProject=' + encodeURIComponent(projectId) + '&pageNumber=1&pageSize=-1',
+        { token: token, orgId: orgId, belongProject: projectId, timeout: 60000 }
+      );
+      const body = r.data && r.data.body;
+      recs = (body && (body.records || body.content)) || (Array.isArray(body) ? body : []);
+    } catch (e) {
+      return '工艺图片未上传（查询工艺记录失败：' + e.message + '）';
+    }
+    let ok = 0;
+    const failed = [];
+    for (const nm of names) {
+      const hit = recs.find(function (x) { return String((x && x.processName) || '').trim() === nm; });
+      if (!hit || hit.id === undefined || hit.id === null) { failed.push(nm + '（未匹配到工艺记录）'); continue; }
+      try {
+        const blob = await (await fetch(all[nm])).blob();
+        const fd = new FormData();
+        fd.append('imgs', new File([blob], nm + '.jpg', { type: 'image/jpeg' }));
+        const ur = await apiRequest('POST', '/api/productionProcess/upload?id=' + encodeURIComponent(hit.id), {
+          token: token, orgId: orgId, form: fd, timeout: 0
+        });
+        if (ur.status === 200 && ur.data && ur.data.code === '200') ok++;
+        else failed.push(nm + '（' + ((ur.data && (ur.data.message || ur.data.msg)) || ('HTTP ' + ur.status)) + '）');
+      } catch (e) {
+        failed.push(nm + '（' + e.message + '）');
+      }
+    }
+    if (!failed.length) return '工艺图片已上传 ' + ok + ' 张';
+    return '工艺图片：成功 ' + ok + ' 张，失败 ' + failed.length + ' 张（' + failed.slice(0, 5).join('；') + (failed.length > 5 ? ' 等' : '') + '）';
+  }
+
   // ---------------- 项目团队相关接口 ----------------
   async function fetchUsers(token, orgId) {
     const r = await apiRequest('GET', '/api/users?pageSize=-1&organizationId=' + orgId, { token: token });
@@ -1195,12 +1236,23 @@
               }, 300);
             }
           } catch (e) {}
+          // 调查表上传：导入成功后补传工艺图片（按「工艺名称」匹配平台的生产工艺记录）
+          let imgMsg = '';
+          if (isSurvey) {
+            try {
+              imgMsg = await uploadProcessImages(token, orgId, projectId);
+              if (imgMsg) log(imgMsg);
+            } catch (e) {
+              imgMsg = '工艺图片上传异常：' + e.message;
+              log(imgMsg);
+            }
+          }
           if (msgs.length > 0) {
             log('导入完成，但有以下提示：' + msgs.join('；'));
-            alert('导入完成，提示：\n' + msgs.join('\n'));
+            alert('导入完成，提示：\n' + msgs.join('\n') + (imgMsg ? '\n' + imgMsg : ''));
           } else {
-            log('导入成功！' + syncMsg);
-            alert('导入成功！' + syncMsg);
+            log('导入成功！' + syncMsg + (imgMsg ? '，' + imgMsg : ''));
+            alert('导入成功！' + syncMsg + (imgMsg ? '，' + imgMsg : ''));
           }
         } else {
           const msg = (d && (d.message || d.msg)) || ('HTTP ' + r.status);
@@ -1747,6 +1799,8 @@
       renderNoiseSummary: renderNoiseSummary,
       // 非噪声岗位同步（供测试/复用）
       syncNonNoise: syncNonNoiseJobs,
+      // 工艺图片补传（供测试/复用）
+      uploadProcessImages: uploadProcessImages,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null
       defaultSaveName: function () {
         if (!selectedProject) return null;
