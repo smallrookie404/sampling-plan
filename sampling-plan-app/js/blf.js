@@ -98,14 +98,6 @@
 
   // ---------------- 上游取数（223.93.144.122:27800） ----------------
 
-  function upstreamCtx() {
-    const u = root.SamplingUpload;
-    if (u && typeof u.getUpstreamContext === 'function') {
-      try { return u.getUpstreamContext(); } catch (e) { return null; }
-    }
-    return null;
-  }
-
   async function upRequest(c, method, path, body) {
     const headers = {};
     if (c.token) headers['Authorization'] = c.token;
@@ -298,25 +290,128 @@
     return sheets;
   }
 
+  // ---------------- 项目搜索（移植自「数据上传」搜索模块） ----------------
+
+  let blfProject = null;   // 本弹窗独立选中的项目
+  let blfSeq = 0;          // 搜索序号（丢弃过期响应）
+  let blfAbort = null;     // 进行中的搜索请求
+  let blfDebounce = null;  // 输入防抖
+
+  function uploadApi() { return root.SamplingUpload || null; }
+
+  function setBlfSearching(on) {
+    const el = $('blf-searching');
+    if (el) el.classList.toggle('hidden', !on);
+  }
+
+  function renderBlfSuggest(list) {
+    const box = $('blf-suggest');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!list || !list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'suggest-empty';
+      empty.textContent = '未找到匹配的项目';
+      box.appendChild(empty);
+      box.classList.remove('hidden');
+      return;
+    }
+    list.forEach((p) => {
+      const item = document.createElement('div');
+      item.className = 'suggest-item';
+      const codeSpan = document.createElement('span');
+      codeSpan.className = 'suggest-code';
+      codeSpan.textContent = p.code || '';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'suggest-name';
+      nameSpan.textContent = p.belongInspectName || '';
+      item.appendChild(codeSpan);
+      item.appendChild(nameSpan);
+      item.addEventListener('click', () => selectBlfProject(p));
+      box.appendChild(item);
+    });
+    box.classList.remove('hidden');
+  }
+
+  function selectBlfProject(p) {
+    blfProject = p;
+    const u = $('blf-unitName'); if (u) u.value = '';
+    const c = $('blf-projectCode'); if (c) c.value = '';
+    const box = $('blf-suggest'); if (box) box.classList.add('hidden');
+    const info = $('blf-projectInfo');
+    if (info) info.textContent = '已选择项目：' + (p.code || '') + '（' + (p.belongInspectName || '') + '）';
+    const btn = $('blf-do'); if (btn) btn.disabled = false;
+  }
+
+  function doBlfSearch() {
+    const u = $('blf-unitName'), c = $('blf-projectCode'), y = $('blf-yearSelect');
+    const box = $('blf-suggest'), info = $('blf-projectInfo');
+    if (!u || !c || !box) return;
+    const unitName = u.value.trim();
+    const code = c.value.trim();
+    const year = y ? y.value : '';
+    if (!unitName && !code && !year) { box.classList.add('hidden'); return; }
+    const api = uploadApi();
+    if (!api || typeof api.searchProjectsFor !== 'function') return;
+
+    blfProject = null;
+    if (info) info.textContent = '';
+    const doBtn = $('blf-do'); if (doBtn) doBtn.disabled = true;
+
+    const seq = ++blfSeq;
+    if (blfAbort) blfAbort.abort();
+    blfAbort = new AbortController();
+    setBlfSearching(true);
+    // 过滤与截断由 SamplingUpload.searchProjectsFor 完成（与「数据上传」共用 searchCache / yearCache）
+    api.searchProjectsFor({ code: code, unitName: unitName, year: year }, blfAbort.signal)
+      .then((list) => {
+        if (seq !== blfSeq) return;
+        renderBlfSuggest(list || []);
+      })
+      .catch((e) => {
+        if (seq !== blfSeq) return;
+        box.classList.add('hidden');
+        console.warn('[网站数据导入] 搜索失败：', e);
+      })
+      .finally(() => { if (seq === blfSeq) setBlfSearching(false); });
+  }
+
   // ---------------- 入口 ----------------
 
-  async function generate() {
-    const btn = $('btn-blf');
-    const old = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  // 打开「网站数据导入」弹窗（先搜索并选中项目，才能导入）
+  function openBlfModal() {
+    const api = uploadApi();
+    const sess = api && typeof api.getUpstreamContext === 'function' ? api.getUpstreamContext() : null;
+    if (!sess || !sess.loggedIn) {
+      alert('尚未登录平台。\n\n请先点击顶部工具栏的「数据上传」登录后，再进行网站数据导入。');
+      return;
+    }
+    blfProject = null;
+    const u = $('blf-unitName'); if (u) u.value = '';
+    const c = $('blf-projectCode'); if (c) c.value = '';
+    const box = $('blf-suggest'); if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
+    const info = $('blf-projectInfo'); if (info) info.textContent = '';
+    const doBtn = $('blf-do'); if (doBtn) doBtn.disabled = true;
+    const modal = $('blf-modal'); if (modal) modal.classList.remove('hidden');
+    if (u) u.focus();
+  }
 
-    const ctx = upstreamCtx();
-    let up = null;
+  function closeBlfModal() {
+    const modal = $('blf-modal'); if (modal) modal.classList.add('hidden');
+    if (blfAbort) { blfAbort.abort(); blfAbort = null; }
+    setBlfSearching(false);
+  }
+
+  async function runImport(project) {
+    const btn = $('blf-do');
+    const old = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '导入中…'; }
     try {
-      if (!ctx || !ctx.project) {
-        alert('尚未在「数据上传」中选择项目。\n\n请先点击顶部工具栏的「数据上传」，查询并选中项目后，再进行网站数据导入。');
-        return;
-      }
-      if (!ctx.loggedIn) {
-        alert('尚未登录平台，无法按项目取数。\n请先点「数据上传」登录并选择项目，再回来导入。');
-        return;
-      }
-      up = await fetchUpstream(ctx);
+      const api = uploadApi();
+      const ctx = api.getUpstreamContext(project);
+      if (!ctx || !ctx.loggedIn) { alert('登录状态已失效，请重新登录后再试。'); return; }
+
+      const up = await fetchUpstream(ctx);
       if (up.errors && up.errors.length) console.warn('[网站数据导入] 部分取数失败：', up.errors);
 
       const app = root.SamplingApp;
@@ -329,25 +424,38 @@
       const X = await ensureXlsx();
       const bytes = await X.writeWorkbook(buildTemplateSheets(up));
       await app.importWorkbook(bytes);
+      closeBlfModal();
     } catch (e) {
       console.error(e);
       alert('网站数据导入失败：' + (e && e.message ? e.message : e));
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = old || '网站数据导入'; }
+      if (btn) { btn.disabled = false; btn.textContent = old || '导入'; }
     }
   }
 
-  root.SamplingBlf = { generate, buildTemplateSheets, fetchUpstream, workerTo39 };
+  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39 };
 
-  // 绑定按钮（主工具栏 + 全屏工具栏）
+  // 绑定按钮（主工具栏 + 全屏工具栏）与弹窗内交互
   function bind() {
     ['btn-blf', 'fs-blf'].forEach((id) => {
       const b = $(id);
       if (b && !b.__blfBound) {
         b.__blfBound = true;
-        b.addEventListener('click', generate);
+        b.addEventListener('click', openBlfModal);
       }
     });
+    const closeBtn = $('blf-close'); if (closeBtn) closeBtn.addEventListener('click', closeBlfModal);
+    const cancelBtn = $('blf-cancel'); if (cancelBtn) cancelBtn.addEventListener('click', closeBlfModal);
+    const doBtn = $('blf-do');
+    if (doBtn) doBtn.addEventListener('click', () => { if (blfProject) runImport(blfProject); });
+    const modal = $('blf-modal');
+    if (modal) modal.addEventListener('click', (e) => { if (e.target.id === 'blf-modal') closeBlfModal(); });
+    const u = $('blf-unitName'), c = $('blf-projectCode');
+    const onInput = () => { clearTimeout(blfDebounce); blfDebounce = setTimeout(doBlfSearch, 350); };
+    if (u) u.addEventListener('input', onInput);
+    if (c) c.addEventListener('input', onInput);
+    const y = $('blf-yearSelect');
+    if (y) y.addEventListener('change', doBlfSearch);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();

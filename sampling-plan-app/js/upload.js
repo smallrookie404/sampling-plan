@@ -182,6 +182,10 @@
     if (keyword && keyword.unitName && String(keyword.unitName).trim()) {
       params.push('belongInspectName=' + encodeURIComponent(String(keyword.unitName).trim()));
     }
+    // year：服务端按年度归属过滤（与 code / belongInspectName 为 AND 关系）
+    if (keyword && keyword.year && String(keyword.year).trim()) {
+      params.push('year=' + encodeURIComponent(String(keyword.year).trim()));
+    }
     if (params.length === 0) return [];
     const cacheKey = params.join('&');
     const cached = searchCache.get(cacheKey);
@@ -997,12 +1001,34 @@
       suggestBox.classList.remove('hidden');
     }
 
+    // 项目搜索（「数据上传」搜索框与「网站数据导入」共用同一套逻辑与缓存）：
+    // 服务端 code 为「包含匹配」（如 0959 可命中 BTC26-SZJC0959），belongInspectName 为模糊匹配，
+    // 与 year 三者 AND；只在「仅选年份、未填编号与单位」时才走整年列表浏览。
+    function runProjectSearch(keyword, signal) {
+      const unitName = keyword && keyword.unitName ? String(keyword.unitName).trim() : '';
+      const code = keyword && keyword.code ? String(keyword.code).trim() : '';
+      const yearNum = keyword && keyword.year ? String(keyword.year).trim() : '';
+      if (!unitName && !code && !yearNum) return Promise.resolve([]);
+      if (code || unitName) {
+        const kw = {};
+        if (code) kw.code = code;
+        if (unitName) kw.unitName = unitName;
+        if (yearNum) kw.year = '20' + yearNum;
+        return searchProjects(token, orgId, kw, signal).then(function (list) {
+          return (list || []).slice(0, 15);
+        });
+      }
+      return fetchYearProjects(token, orgId, 'BTC' + yearNum, '', signal).then(function (list) {
+        return (list || []).slice(0, 15);
+      });
+    }
+
     function doSearch() {
       try {
         const unitName = unitInput.value.trim();
         const code = codeInput.value.trim();
-        const yearPrefix = yearSelect.value ? 'BTC' + yearSelect.value : '';
-        if (!unitName && !code && !yearPrefix) {
+        const year = yearSelect.value;
+        if (!unitName && !code && !year) {
           suggestBox.classList.add('hidden');
           log('请先输入受检单位或项目编号，再点击搜索');
           return;
@@ -1014,36 +1040,7 @@
         if (currentAbort) currentAbort.abort();
         currentAbort = new AbortController();
         setSearching(true);
-        const typedHasYearPrefix = /^BTC\d{2}/i.test(code);
-        let promise;
-        if (unitName) {
-          // 受检单位走服务端模糊匹配（小请求），避免每敲一个字都拉取整年项目
-          promise = searchProjects(token, orgId, { code: code || yearPrefix, unitName: unitName }, currentAbort.signal)
-            .then(function (list) {
-              let filtered = list;
-              // 未带年份前缀的编号片段：在服务端结果内再做本地包含匹配
-              if (code && !typedHasYearPrefix) {
-                filtered = list.filter(function (p) { return p.code && String(p.code).indexOf(code) >= 0; });
-              }
-              return filtered.slice(0, 15);
-            });
-        } else if (yearPrefix && !typedHasYearPrefix) {
-          // 仅按年份/编号片段浏览：拉取当年范围（30 分钟缓存 + sessionStorage），本地按编号过滤
-          promise = fetchYearProjects(token, orgId, yearPrefix, '', currentAbort.signal)
-            .then(function (list) {
-              let filtered = list;
-              if (code) {
-                filtered = list.filter(function (p) {
-                  return p.code && String(p.code).indexOf(code) >= 0;
-                });
-              }
-              return filtered.slice(0, 15);
-            });
-        } else if (code || unitName) {
-          promise = searchProjects(token, orgId, { code: code, unitName: unitName }, currentAbort.signal);
-        } else {
-          promise = Promise.resolve([]);
-        }
+        const promise = runProjectSearch({ code: code, unitName: unitName, year: year }, currentAbort.signal);
         promise
           .then(function (list) {
             if (seq !== searchSeq) return;
@@ -1738,18 +1735,22 @@
         const ym = /^BTC(\d{2})/.exec(selectedProject.code || '');
         return (ym ? ym[1] + '年' : '') + (selectedProject.belongInspectName || '');
       },
-      // 供「生成2个xlsx」按选中项目到上游取数：登录态 + 当前项目
-      getUpstreamContext: function () {
+      // 供「网站数据导入」到上游取数：登录态 + 项目（不传项目时用「数据上传」当前选中的项目）
+      getUpstreamContext: function (project) {
+        const p = project || selectedProject;
         return {
           apiBase: API_BASE,
           token: token,
           orgId: orgId,
           loggedIn: !!token,
-          project: selectedProject
-            ? { id: selectedProject.id, code: selectedProject.code, name: selectedProject.belongInspectName || '' }
+          project: p
+            ? { id: p.id, code: p.code, name: p.belongInspectName || '' }
             : null,
         };
-      }
+      },
+      // 供「网站数据导入」独立搜索项目：与「数据上传」搜索完全同一套逻辑与缓存
+      // （服务端 code 为包含匹配，见 runProjectSearch）
+      searchProjectsFor: runProjectSearch
     };
 
     // 启动：有会话直接进入（登录遮罩保持隐藏），否则显示登录

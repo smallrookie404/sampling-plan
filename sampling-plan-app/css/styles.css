@@ -666,3 +666,29 @@ body.fullscreen-mode .tab-panel.active {
   .topbar { flex-direction: column; align-items: flex-start; gap: 8px; }
   .items-list { column-count: 2; }
 }
+
+/* 「网站数据导入」弹窗：项目搜索（对齐「数据上传」搜索模块） */
+#blf-modal .blf-field { margin-bottom: 6px; }
+#blf-modal .blf-field label { display: block; font-size: 13px; color: #4b5563; margin-bottom: 4px; }
+#blf-modal .blf-search-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#blf-modal .blf-search-row input { flex: 1 1 150px; min-width: 120px; }
+#blf-modal .blf-select {
+  flex: 0 0 auto; padding: 6px 8px; border: 1px solid var(--line);
+  border-radius: 6px; font-size: 13px; background: #fff; color: #2c2c2a;
+}
+#blf-modal .blf-searching { display: inline-flex; align-items: center; gap: 4px; color: #64748b; font-size: 12px; }
+#blf-modal .blf-searching.hidden { display: none; }
+#blf-suggest {
+  border: 1px solid var(--line); border-radius: 6px; max-height: 220px; overflow-y: auto;
+  background: #fff; margin-top: 4px; box-shadow: 0 4px 14px rgba(22, 56, 92, 0.08);
+}
+#blf-suggest.hidden { display: none; }
+#blf-suggest .suggest-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 9px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid #eef2f6;
+}
+#blf-suggest .suggest-item:hover { background: #eef4fb; }
+#blf-suggest .suggest-code { color: var(--primary-dark); font-weight: bold; white-space: nowrap; }
+#blf-suggest .suggest-name { color: #4b5563; text-align: right; }
+#blf-suggest .suggest-empty { padding: 10px 12px; color: #94a3b8; font-size: 13px; }
+#blf-projectInfo { font-size: 13px; color: #15803d; margin-top: 8px; min-height: 18px; }
