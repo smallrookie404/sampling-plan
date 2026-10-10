@@ -3910,6 +3910,49 @@
         if (imported.length) {
           mainImported = imported.length;
           rows = imported;
+          // 录入区列清理：导入时按各列规则「只保留变化处 / 非默认内容」，与原表录入习惯一致。
+          // 计算引擎对这些列要么 fillDown、要么按「车间|岗位|点位」分组回填、要么有同值默认，
+          // 因此清空后自动计算区结果不变。
+          const cval = (row, c) => String(row.input[c] === null || row.input[c] === undefined ? "" : row.input[c]).trim();
+          // ① 车间(A) / 岗位·工种(B) / 点位(C)：与上一行相同则清空（只保留变化处）
+          ["A", "B", "C"].forEach((col) => {
+            let last = "";
+            for (const row of rows) {
+              const cur = cval(row, col);
+              if (cur === "") continue;
+              if (cur === last) row.input[col] = "";
+              else last = cur;
+            }
+          });
+          // ② 检测天数(I)：与上一行相同则清空（只保留变化处）
+          let lastDays = "";
+          for (const row of rows) {
+            const cur = cval(row, "I");
+            if (cur === "") continue;
+            if (cur === lastDays) row.input["I"] = "";
+            else lastDays = cur;
+          }
+          // ③ 其余列按各自规则清理
+          for (const row of rows) {
+            // 参照「点位」列：仅点位变化处保留 → 接触时间h/d(E)、工作内容(J)、危害因素其他来源(K)
+            if (cval(row, "C") === "") { row.input["E"] = ""; row.input["J"] = ""; row.input["K"] = ""; }
+            // 参照「岗位/工种」列：仅岗位变化处保留 → 上班时长h/d(F)、周天数d/w(G)、人数(H)
+            if (cval(row, "B") === "") { row.input["F"] = ""; row.input["G"] = ""; row.input["H"] = ""; }
+            // 作业方式(L)：只保留与「半手工作业」不同的内容
+            if (cval(row, "L") === "半手工作业") row.input["L"] = "";
+            // 是否采样(M)：只保留「否」
+            if (cval(row, "M") !== "否") row.input["M"] = "";
+            // 采样方式(N)：只保留「个体」
+            if (cval(row, "N") !== "个体") row.input["N"] = "";
+            // 岗位性质(O)：只保留非「固定」（该列默认值为「固定」）
+            if (cval(row, "O") === "固定") row.input["O"] = "";
+            // 是否合岗(P)：只保留「是」
+            if (cval(row, "P") !== "是") row.input["P"] = "";
+            // *排除性检测(Q)：只保留「是」
+            if (cval(row, "Q") !== "是") row.input["Q"] = "";
+            // *岗位工作班制(R)：只保留「轮班」
+            if (cval(row, "R") !== "轮班") row.input["R"] = "";
+          }
           rowHeights = rows.map(() => ROW_H);
           rowOffsets = null;
           L.computeRows(rows, { hazardFactors, detectionItems });
