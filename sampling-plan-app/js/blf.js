@@ -1,5 +1,5 @@
 /* =====================================================================
- * 「生成2个xlsx」—— 对齐内网 192.168.22.73:8000「资料下载 → 生成2个xlsx」
+ * 「网站数据导入」按钮 —— 对齐内网 192.168.22.73:8000「资料下载 → 生成2个xlsx」
  *
  *   测点布局草稿.xlsx（6 页）：危害因素 / 测点布局情况调查 / 劳动者工作日写实调查 /
  *                              噪声数据 / 下拉内容 / 检测项目
@@ -482,7 +482,7 @@
         up = await fetchUpstream(ctx);
         prefix = String(ctx.project.code || '').replace(/[\\/:*?"<>|]/g, '_');
         if (prefix) prefix += '-';
-        if (up.errors && up.errors.length) console.warn('[生成2个xlsx] 部分取数失败：', up.errors);
+        if (up.errors && up.errors.length) console.warn('[网站数据导入] 部分取数失败：', up.errors);
       } else {
         setStatus('未选择项目：将用当前网页数据生成');
         const nm = recordName().replace(/[\\/:*?"<>|]/g, '_').trim();
@@ -516,9 +516,9 @@
     } catch (e) {
       console.error(e);
       setStatus('生成失败：' + (e && e.message ? e.message : e), false);
-      alert('生成 2 个 xlsx 失败：' + (e && e.message ? e.message : e));
+      alert('网站数据导入失败：' + (e && e.message ? e.message : e));
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = old || '生成2个xlsx'; }
+      if (btn) { btn.disabled = false; btn.textContent = old || '网站数据导入'; }
     }
   }
 
