@@ -1,18 +1,18 @@
 /* =====================================================================
  * 「网站数据导入」按钮 —— 对齐内网 192.168.22.73:8000「资料下载 → 生成2个xlsx」
- *
- *   测点布局草稿.xlsx（6 页）：危害因素 / 测点布局情况调查 / 劳动者工作日写实调查 /
- *                              噪声数据 / 下拉内容 / 检测项目
- *   导入模板.xlsx（20 页）  ：劳动定员和职业病危害因素接触情况调查 + 6 张现场调查表 +
- *                              13 张字典页
+ *   取其「导入模板.xlsx」（20 页）的格式：
+ *     劳动定员和职业病危害因素接触情况调查 + 6 张现场调查表 + 13 张字典页
  *
  * 内容来源：按「数据上传」中**选中的项目编号**，到上游职卫系统
  *   （223.93.144.122:27800，前端 :27900）取真实数据填充：
  *   - 劳动定员（39 列） ← POST api/newEvaluationUnit/export331（返回 xlsx）
  *   - 现场调查 6 表     ← GET api/productionProcess / eqpLayoutInfo / rawMaterialsInfo /
  *                          mainProduct / occupationalProduct(occType=0|1)
- *   - 危害因素 / 检测项目 / 下拉内容 ← 参考库 + js/blf-data.js（内网模板提取的静态字典）
- * 未登录或未选项目时退化为「用当前网页数据生成」。
+ *   - 字典页 ← js/blf-data.js（内网模板提取的静态字典）
+ * 未登录或未选择项目时，提示先到「数据上传」查询并选中项目，不再用当前网页数据兜底。
+ *
+ * 生成后**不下载文件**，而是通过网页既有的「导入 Excel」逻辑
+ * （SamplingApp.importWorkbook）直接导入到页面：主表格 + 调查表页签。
  * ===================================================================== */
 (function (root) {
   'use strict';
@@ -42,66 +42,6 @@
     { key: 'ppe', name: '个体防护调查', headers: ['*防护用品分类', '*防护用品类别', '单元/工作场所', '配置岗位(工种)', '*型号或规格', '*生产厂家', '*佩戴情况', '*更换周期', '*防护性能参数', '备注'] },
   ];
 
-  // 测点布局草稿 - 测点布局情况调查：A..Y 录入块（Z 为提示列）+ AA..BM 映射区（39 列）
-  const DRAFT_LEFT = [
-    '*单元/工作场所', '*岗位/工种', '*点位/采样对象', '*检测项目', '日接触时长(h)', '周工作天数(d)',
-    '*岗位日工作时长(h)', '*岗位周工作天数(d)', '岗位总工作人数', '*岗位工作班制', '*岗位班制数', '岗位其他班制数',
-    '工作内容', '作业方式', '*岗位性质', '*是否采样/测量', '*检测方式', '*是否合岗', '*检测天数', '*排除性检测',
-    '*采样时机', '危害因素来源', '危害因素其他来源', '体力劳动强度', '备注',
-  ];
-  const DRAFT_HINT = '红字列可不填，蓝字列特殊情况选填。';
-  const DRAFT_RIGHT = WORKER_HEADERS.slice();
-  // A..Y 各列取值 → 39 列（A..AM）中的下标
-  const LEFT_IDX = [0, 1, 15, 17, 29, 28, 11, 10, 4, 7, 8, 9, 16, 6, 2, 18, 21, 32, 30, 20, 27, 33, 34, 26, 38];
-  // 主表数据路径：A..Y 取值来源（主表自动计算区列字母）+ AA..BM 取值来源
-  const LEFT_SRC = ['W', 'X', 'AL', 'AN', 'AZ', 'AY', 'AH', 'AG', 'AA', 'AD', 'AE', 'AF', 'AM', 'AC', 'Y', 'AO', 'AR', 'BC', 'BA', 'AQ', 'AX', 'BD', 'BE', 'AW', 'BI'];
-  const RIGHT_SRC = ['W', 'X', 'Y', 'Z', 'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AH', 'AI', 'AJ', 'AK', 'AL', 'AM', 'AN', 'AO', 'AP', 'AQ', 'AR', 'AS', 'AT', 'AU', 'AV', 'AW', 'AX', 'AY', 'AZ', 'BA', 'BB', 'BC', 'BD', 'BE', 'BF', 'BG', 'BH', 'BI'];
-
-  // 危害因素页
-  const HAZARD_HEADERS = ['识别', '职业卫生检测管理系统', '粉尘性质', '定性分析', '委外检测', '*计算TWA', '*计算STEL', '*计算CPE', '*计算MAC', '结果保留位数', '存在高毒物品', '不检测原因说明'];
-  const HAZARD_KEYS = ['rec', 'name', 'dust', 'qual', 'outsource', 'twa', 'stel', 'cpe', 'mac', 'digits', 'highTox', 'noTestReason'];
-
-  // 劳动者工作日写实调查
-  const DAILY_HEADERS = ['*职业病危害因素', '车间', '岗位', '工作地点', '*岗位作业总人数', '岗位接害总人数', '每班最大人数', '体力劳动强度', '工作班制', '班制数', '其他班制数', '作业类型', '作业方式', '工作时间', '接触时间', '来源', '危害因素其他来源', '工作内容'];
-
-  // 测点布局情况调查 AA..BM 数组公式（内网同款；置 true 则写入公式而非算好的值）
-  const DRAFT_USE_FORMULAS = false;
-  const DRAFT_FORMULAS = {
-    AA: '_xlfn.SCAN("",A2:INDEX(A:A,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AB: '_xlfn.SCAN("",B2:INDEX(B:B,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AC: '_xlfn.SCAN("",O2:INDEX(O:O,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"固定")))',
-    AD: '_xlfn.SCAN("",C2:INDEX(C:C,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,"浓度（或强度）相对稳定"))',
-    AE: '_xlfn.SCAN("",I2:INDEX(I:I,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AF: '_xlfn.LET(_xlpm.lastRow,MAX((D:D<>"")*ROW(D:D)),_xlpm.dataRange,AE2:INDEX(AE:AE,_xlpm.lastRow),_xlpm.acRange,AI2:INDEX(AI:AI,_xlpm.lastRow),_xlpm.divisor,_xlfn.SWITCH(_xlpm.acRange,"两班两运转",2,"三班两运转",3,"三班三运转",3,"四班三运转",4,"五班三运转",5,"五班四运转",5,1),_xlpm.divided,_xlpm.dataRange/_xlpm.divisor,IF(MOD(_xlpm.dataRange,_xlpm.divisor)=0,_xlpm.divided,INT(_xlpm.divided)+1))',
-    AG: '_xlfn.SCAN("",N2:INDEX(N:N,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AH: '_xlfn.SCAN("",J2:INDEX(J:J,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AI: '_xlfn.SCAN("",K2:INDEX(K:K,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AJ: '_xlfn.SCAN("",L2:INDEX(L:L,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"")))',
-    AK: '_xlfn.SCAN("",H2:INDEX(H:H,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AL: '_xlfn.SCAN("",G2:INDEX(G:G,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AO: '_xlfn.SCAN("",C2:INDEX(C:C,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(INDEX(AV:AV,ROW(_xlpm.curr))="定点","采样点","采样对象")))',
-    AP: '_xlfn.SCAN("",C2:INDEX(C:C,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AQ: '_xlfn.SCAN("",M2:INDEX(M:M,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    AR: 'VLOOKUP(D2:INDEX(D:D,MATCH("*",D:D,-1)),危害因素!A:B,2,FALSE)',
-    AS: '_xlfn.SCAN("",P2:INDEX(P:P,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"是")))',
-    AT: 'IFERROR(VLOOKUP(D2:INDEX(D:D,MATCH("*",D:D,-1)),危害因素!$A:$J,4,FALSE)&"","")',
-    AU: '_xlfn.SCAN("",T2:INDEX(T:T,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"否")))',
-    AV: '_xlfn.SCAN("",Q2:INDEX(Q:Q,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"定点")))',
-    AW: '_xlfn.LET(_xlpm.lastRow,MAX(2,MATCH("*",D:D,-1)),_xlpm.amRange,AV2:INDEX(AV:AV,_xlpm.lastRow),IF(_xlpm.amRange="定点","短时间",IF(_xlpm.amRange="个体","长时间","")))',
-    AX: 'IFERROR(VLOOKUP(D2:INDEX(D:D,MATCH("*",D:D,-1)),危害因素!$A:$J,5,FALSE)&"","")',
-    AY: 'IFERROR(VLOOKUP(D2:INDEX(D:D,MATCH("*",D:D,-1)),危害因素!$A:$J,3,FALSE)&"","")',
-    AZ: '_xlfn.LET(_xlpm.lastRow,MATCH("*",D:D,-1),_xlpm.dataRange,_xlfn.SEQUENCE(_xlpm.lastRow-1,1,2),_xlpm.pCol,INDEX(AA:AA,_xlpm.dataRange),_xlpm.qCol,INDEX(AB:AB,_xlpm.dataRange),_xlpm.aeCol,INDEX(AR:AR,_xlpm.dataRange),_xlpm.aiCol,INDEX(AV:AV,_xlpm.dataRange),_xlpm.result,_xlfn.MAP(_xlpm.aeCol,_xlpm.aiCol,_xlpm.pCol,_xlpm.qCol,_xlpm.dataRange,_xlfn.LAMBDA(_xlpm.ae,_xlpm.ai,_xlpm.p,_xlpm.q,_xlpm.r,IF(AND(_xlpm.ae="噪声",_xlpm.ai="定点"),_xlfn.LET(_xlpm.matchingRows,_xlfn._xlws.FILTER(_xlpm.dataRange,(_xlpm.pCol=_xlpm.p)*(_xlpm.qCol=_xlpm.q)*(_xlpm.aeCol="噪声")),IF(COUNT(_xlfn._xlws.FILTER(_xlpm.matchingRows,INDEX(AV:AV,_xlpm.matchingRows)="个体"))>0,"是","否")),"否"))),_xlpm.result)',
-    BA: '_xlfn.SCAN("",X2:INDEX(X:X,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"")))',
-    BB: '_xlfn.SCAN("",U2:INDEX(U:U,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    BC: '_xlfn.SCAN("",F2:INDEX(F:F,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    BD: '_xlfn.SCAN("",E2:INDEX(E:E,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    BE: '_xlfn.LET(_xlpm.lastRow,MATCH("*",D:D,-1),_xlpm.anRange,AR2:INDEX(AR:AR,_xlpm.lastRow),_xlpm.iRange,S2:INDEX(S:S,_xlpm.lastRow),_xlpm.scanResult,_xlfn.SCAN("",_xlpm.iRange,_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev))),_xlfn.MAP(_xlpm.anRange,_xlpm.scanResult,_xlfn.LAMBDA(_xlpm.a,_xlpm.s,IF(OR(_xlpm.a="游离二氧化硅",_xlpm.a="噪声",_xlpm.a="高温",_xlpm.a="工频电场",_xlpm.a="手传振动",_xlpm.a="高频电磁场",_xlpm.a="紫外辐射",ISNUMBER(SEARCH("有机组分定性",_xlpm.a))),1,_xlpm.s))))',
-    BF: '_xlfn.LET(_xlpm.lookupRange,D2:INDEX(D:D,MATCH("*",D:D,-1)),_xlpm.resultRows,ROWS(VLOOKUP(_xlpm.lookupRange,危害因素!A:B,2,FALSE)),_xlpm.rowSeq,_xlfn.SEQUENCE(_xlpm.resultRows),IF(_xlpm.rowSeq,_xlfn.MAP(_xlpm.rowSeq,_xlfn.LAMBDA(_xlpm.r,IF(OR(ISNUMBER(SEARCH("有机组分定性",INDEX(AR:AR,_xlpm.r+1))),INDEX(AV:AV,_xlpm.r+1)="个体",INDEX(AR:AR,_xlpm.r+1)="游离二氧化硅",INDEX(AR:AR,_xlpm.r+1)="工频电场",INDEX(AR:AR,_xlpm.r+1)="高频电磁场",INDEX(AR:AR,_xlpm.r+1)="激光辐射"),1,IF(OR(INDEX(AR:AR,_xlpm.r+1)="噪声",INDEX(AR:AR,_xlpm.r+1)="高温",INDEX(AR:AR,_xlpm.r+1)="手传振动"),3,IF(INDEX(AR:AR,_xlpm.r+1)="紫外辐射",1,IF(INDEX(BD:BD,_xlpm.r+1)=0.5,2,IF(INDEX(BD:BD,_xlpm.r+1)=0.25,1,3)))))))))',
-    BG: '_xlfn.SCAN("",R2:INDEX(R:R,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"否")))',
-    BH: '_xlfn.SCAN("",V2:INDEX(V:V,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,_xlpm.prev)))',
-    BI: '_xlfn.SCAN("",W2:INDEX(W:W,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"")))',
-    BM: '_xlfn.SCAN("",Y2:INDEX(Y:Y,MATCH("*",D:D,-1)),_xlfn.LAMBDA(_xlpm.prev,_xlpm.curr,IF(_xlpm.curr<>"",_xlpm.curr,"")))',
-  };
   const COL_LETTERS = (function () {
     const out = [];
     for (let i = 0; i < 60; i++) {
@@ -149,22 +89,6 @@
 
   // ---------------- 本地数据采集 ----------------
 
-  function appRows() {
-    const app = root.SamplingApp;
-    if (!app || typeof app.rowsSnapshot !== 'function') return [];
-    return app.rowsSnapshot() || [];
-  }
-
-  function library() {
-    const app = root.SamplingApp;
-    if (app && typeof app.librarySnapshot === 'function') {
-      const lib = app.librarySnapshot();
-      if (lib && (lib.hazardFactors || lib.detectionItems)) return lib;
-    }
-    const fallback = root.SamplingLibrary || {};
-    return { hazardFactors: fallback.hazardFactors || [], detectionItems: fallback.detectionItems || [] };
-  }
-
   function surveyData() {
     try {
       if (root.SurveySheets && typeof root.SurveySheets.getData === 'function') return root.SurveySheets.getData() || {};
@@ -208,14 +132,38 @@
     return [];
   }
 
-  // 现场调查 6 表：上游字段 → 导入模板列（字段名取自上游职卫系统）
+  // 上游字段在新旧版本中会改名（如 belongUnitName ↔ belongUnit、facilityOperations ↔ useNum）：
+  // 按候选顺序取第一个非空值，做到新旧版兼容
+  function pick(r, keys) {
+    for (const k of keys) {
+      const v = r[k];
+      if (v !== undefined && v !== null && v !== '') return v;
+    }
+    return '';
+  }
+
+  // 产品类型字典（上游「主要产品」的 type 存的是字典 id；取值来自平台前端固定字典）
+  const PRODUCT_TYPE = { '0': '产品', '1': '中间产品', '2': '副产品', '3': '联产品' };
+
+  // 「佩戴情况」：新版是文本字段 wearingSituation；旧版是编码字段 adorn（1/2/3）
+  const ADORN_TEXT = { '1': '有效', '2': '部分有', '3': '无' };
+  function wearingSituation(r) {
+    if (txt(r.wearingSituation) !== '') return r.wearingSituation;
+    const code = String(txt(r.adorn));
+    return ADORN_TEXT[code] || txt(r.adorn);
+  }
+
+  // 现场调查 6 表：上游字段 → 导入模板列（字段名取自上游职卫系统，含新旧版候选）
   const SURVEY_MAP = {
-    process: (r) => [r.processName, r.belongUnitName, r.processDescribe],
-    equipment: (r) => [r.eqpName, r.eqpType, r.eqpNum, r.eqpUse, r.belongUnitName, r.belongJobName, r.belongSiteName, r.layout, r.remark],
-    material: (r) => [r.materialName, r.belongUnitName, r.belongJobName, r.belongSiteName, r.materialForm, r.storageCapacity, r.wastage, r.specifications, r.mainBasis, r.storageMethod, r.feedingMethod, r.transportMethod, r.loadMethod, r.loadCycle, r.reamark],
-    product: (r) => [r.type, r.name, r.belongUnitName, r.belongJobName, r.number, r.physicalForm, r.mainBasis, r.packMethod, r.xz, r.storageMode],
-    protect: (r) => [r.eqpType, r.name, r.belongUnitName, r.belongJobName, r.installationPosition, r.totalNum, r.useNum, r.eqpDescribe, r.repairSituation, r.facilityParameters, r.notes],
-    ppe: (r) => [r.classification || r.category, (r.name || '') + (r.protectModel ? ',' + r.protectModel : ''), r.belongUnitName, r.belongJobName, r.gtSpecifications, r.manufacturer, r.eqpDescribe, r.replacementCycle, r.protectionParameters, r.notes],
+    process: (r) => [r.processName, pick(r, ['belongUnitName', 'belongUnit']), r.processDescribe],
+    equipment: (r) => [r.eqpName, r.eqpType, r.eqpNum, r.eqpUse, pick(r, ['belongUnitName', 'belongUnit']), pick(r, ['belongJobName', 'belongJob']), r.belongSiteName, r.layout, pick(r, ['remark', 'reamark', 'notes'])],
+    material: (r) => [r.materialName, pick(r, ['belongUnitName', 'belongUnit']), pick(r, ['belongJobName', 'belongJob']), r.belongSiteName, r.materialForm, r.storageCapacity, r.wastage, r.specifications, r.mainBasis, r.storageMethod, r.feedingMethod, r.transportMethod, r.loadMethod, r.loadCycle, pick(r, ['reamark', 'remark', 'notes'])],
+    // 类型：type 是字典 id，需转成名称（否则会显示成 0/1/2/3）
+    product: (r) => [PRODUCT_TYPE[String(txt(r.type))] || txt(r.type), r.name, pick(r, ['belongUnitName', 'belongUnit']), pick(r, ['belongJobName', 'belongJob']), r.number, r.physicalForm, r.mainBasis, r.packMethod, r.xz, r.storageMode],
+    // 职业防护：设施运行数 = facilityOperations（新版）/ useNum（旧版）
+    protect: (r) => [r.eqpType, r.name, pick(r, ['belongUnitName', 'belongUnit']), pick(r, ['belongJobName', 'belongJob']), r.installationPosition, r.totalNum, pick(r, ['facilityOperations', 'useNum']), r.eqpDescribe, r.repairSituation, r.facilityParameters, pick(r, ['notes', 'reamark', 'remark'])],
+    // 个体防护：佩戴情况 = wearingSituation / adorn，型号或规格 = protectModel
+    ppe: (r) => [pick(r, ['classification', 'category']), r.name, pick(r, ['belongUnitName', 'belongUnit']), pick(r, ['belongJobName', 'belongJob']), r.protectModel, r.manufacturer, wearingSituation(r), r.replacementCycle, r.protectionParameters, pick(r, ['notes', 'reamark', 'remark'])],
   };
 
   // 上游为空时内网会补的占位值（列下标从 0 起；对齐内网样例输出）
@@ -297,100 +245,7 @@
     return out;
   }
 
-  // ---------------- 组装：测点布局草稿 ----------------
-
-  function buildDraftSheets(up) {
-    const lib = library();
-    const D = data();
-
-    // 1) 危害因素
-    const hazards = (lib.hazardFactors || []).filter((h) => h && typeof h === 'object');
-    const hazardRows = [HAZARD_HEADERS].concat(hazards.map((h) => HAZARD_KEYS.map((k) => txt(h[k]))));
-
-    // 2) 测点布局情况调查
-    const draftHeader = DRAFT_LEFT.concat([DRAFT_HINT], DRAFT_RIGHT);
-    const draftBody = [];
-    const useUp = !!(up && up.worker39 && up.worker39.length);
-    if (useUp) {
-      for (const r39 of up.worker39) {
-        draftBody.push(LEFT_IDX.map((i) => txt(r39[i])).concat([''], r39.map(txt)));
-      }
-    } else {
-      for (const r of appRows()) {
-        const input = r.input || {};
-        const vals = r.values || {};
-        const left = LEFT_SRC.map((c) => txt(vals[c] !== undefined && vals[c] !== '' ? vals[c] : input[c]));
-        draftBody.push(left.concat([''], RIGHT_SRC.map((c) => txt(vals[c]))));
-      }
-    }
-    // 可选取回内网同款数组公式（DRAFT_USE_FORMULAS）
-    if (DRAFT_USE_FORMULAS && draftBody.length) {
-      const lastRow = draftBody.length + 1;
-      DRAFT_RIGHT.forEach((_, ci) => {
-        const col = COL_LETTERS[26 + ci];
-        const f = DRAFT_FORMULAS[col];
-        if (f) draftBody[0][26 + ci] = { f: f, ref: col + '2:' + col + lastRow };
-      });
-    }
-
-    // 3) 劳动者工作日写实调查（表头 + 主表同源写实行；上游模式下留空）
-    const dailyRows = [DAILY_HEADERS];
-    if (!useUp) {
-      for (const r of appRows()) {
-        const vals = r.values || {};
-        dailyRows.push([
-          txt(vals['AN']), txt(vals['W']), txt(vals['X']), txt(vals['AL']),
-          txt(vals['AA']), '', txt(vals['AB']), txt(vals['AW']),
-          txt(vals['AD']), txt(vals['AE']), txt(vals['AF']),
-          '', txt(vals['AC']), '', txt(vals['AZ']), txt(vals['BD']),
-          txt(vals['BE']), txt(vals['AM']),
-        ]);
-      }
-    }
-
-    // 4) 噪声数据（内网为空页）
-    const noiseRows = [['']];
-
-    // 5) 下拉内容
-    const dd = (D.dropdown || []).map((row) => row.map((v) => txt(v)));
-
-    // 6) 检测项目
-    const items = (lib.detectionItems || []).map((v) => txt(v));
-    const itemRows = [['系统内检测项目名参照表']].concat(items.map((v) => [v]));
-
-    const widthsDraft = D.widthsDraft || {};
-    const hazardCount = hazardRows.length - 1;
-
-    return [
-      { name: '危害因素', rows: hazardRows, widths: widthArray(widthsDraft['危害因素'], 12) },
-      {
-        name: '测点布局情况调查',
-        rows: [draftHeader].concat(draftBody),
-        widths: widthArray(widthsDraft['测点布局情况调查'], DRAFT_LEFT.length + 1 + DRAFT_RIGHT.length),
-        freeze: 1,
-        dataValidations: [
-          { sqref: 'D2:D1048576', formula1: '危害因素!$A$2:$A$' + (hazardCount + 1) },
-          { sqref: 'J2:J1048576', formula1: '下拉内容!$D$2:$D$3' },
-          { sqref: 'K2:K1048576', formula1: '下拉内容!$E$2:$E$13' },
-          { sqref: 'N2:N1048576', formula1: '下拉内容!$C$2:$C$4' },
-          { sqref: 'O2:O1048576', formula1: '下拉内容!$A$2:$A$4' },
-          { sqref: 'P2:P1048576', formula1: '下拉内容!$G$2:$G$3' },
-          { sqref: 'Q2:Q1048576', formula1: '下拉内容!$J$2:$J$3' },
-          { sqref: 'R2:R1048576', formula1: '下拉内容!$Q$2:$Q$3' },
-          { sqref: 'S2:S1048576', formula1: '下拉内容!$P$2:$P$3' },
-          { sqref: 'T2:T1048576', formula1: '下拉内容!$I$2:$I$3' },
-          { sqref: 'V2:V1048576', formula1: '下拉内容!$R$2:$R$7' },
-          { sqref: 'X2:X1048576', formula1: '下拉内容!$N$2:$N$5' },
-        ],
-      },
-      { name: '劳动者工作日写实调查', rows: dailyRows, widths: widthArray(widthsDraft['劳动者工作日写实调查'], 18) },
-      { name: '噪声数据', rows: noiseRows },
-      { name: '下拉内容', rows: dd.length ? dd : [['']] },
-      { name: '检测项目', rows: itemRows, widths: widthArray(widthsDraft['检测项目'], 1) },
-    ];
-  }
-
-  // ---------------- 组装：导入模板 ----------------
+  // ---------------- 组装：导入模板（20 页） ----------------
 
   function buildTemplateSheets(up) {
     const D = data();
@@ -399,11 +254,11 @@
     const useUp = !!(up && (up.worker39 || up.survey));
 
     const sheets = [];
-    // 1) 劳动定员和职业病危害因素接触情况调查
-    const workerBody = useUp && up.worker39 ? up.worker39 : [];
+    // 1) 劳动定员和职业病危害因素接触情况调查（39 列，取自上游）
+    const workerBody = (up && up.worker39) ? up.worker39.map((r) => WORKER_HEADERS.map((_, i) => txt(r[i]))) : [];
     sheets.push({
       name: '劳动定员和职业病危害因素接触情况调查',
-      rows: [WORKER_HEADERS].concat(workerBody.map((r) => WORKER_HEADERS.map((_, i) => txt(r[i])))),
+      rows: [WORKER_HEADERS].concat(workerBody),
       widths: widthArray(widthsTpl['劳动定员和职业病危害因素接触情况调查'], WORKER_HEADERS.length),
       freeze: 1,
       dataValidations: [
@@ -445,24 +300,6 @@
 
   // ---------------- 入口 ----------------
 
-  function setStatus(msg, ok) {
-    const el = $('blf-status');
-    if (!el) return;
-    el.textContent = msg || '';
-    el.style.color = ok === false ? '#cf1322' : ok === true ? '#15803d' : '#64748b';
-  }
-
-  function recordName() {
-    try {
-      const el = document.querySelector('#db-list .db-item.active');
-      if (el) {
-        const t = (el.getAttribute('data-name') || el.textContent || '').trim();
-        if (t) return t.split('\n')[0].trim();
-      }
-    } catch (e) { /* ignore */ }
-    return '';
-  }
-
   async function generate() {
     const btn = $('btn-blf');
     const old = btn ? btn.textContent : '';
@@ -470,59 +307,37 @@
 
     const ctx = upstreamCtx();
     let up = null;
-    let prefix = '';
     try {
-      if (ctx && ctx.project) {
-        if (!ctx.loggedIn) {
-          setStatus('未登录，无法取上游数据', false);
-          alert('尚未登录平台，无法按项目取数。\n请先点「数据上传」登录并选择项目，再回来生成。');
-          return;
-        }
-        setStatus('正在按项目 ' + (ctx.project.code || ctx.project.id) + ' 取上游数据…');
-        up = await fetchUpstream(ctx);
-        prefix = String(ctx.project.code || '').replace(/[\\/:*?"<>|]/g, '_');
-        if (prefix) prefix += '-';
-        if (up.errors && up.errors.length) console.warn('[网站数据导入] 部分取数失败：', up.errors);
-      } else {
-        setStatus('未选择项目：将用当前网页数据生成');
-        const nm = recordName().replace(/[\\/:*?"<>|]/g, '_').trim();
-        prefix = nm ? nm + '-' : '';
+      if (!ctx || !ctx.project) {
+        alert('尚未在「数据上传」中选择项目。\n\n请先点击顶部工具栏的「数据上传」，查询并选中项目后，再进行网站数据导入。');
+        return;
+      }
+      if (!ctx.loggedIn) {
+        alert('尚未登录平台，无法按项目取数。\n请先点「数据上传」登录并选择项目，再回来导入。');
+        return;
+      }
+      up = await fetchUpstream(ctx);
+      if (up.errors && up.errors.length) console.warn('[网站数据导入] 部分取数失败：', up.errors);
+
+      const app = root.SamplingApp;
+      if (!app || typeof app.importWorkbook !== 'function') {
+        alert('无法导入：缺少导入能力（SamplingApp.importWorkbook）。');
+        return;
       }
 
+      // 生成导入模板 → 直接走网页的「导入 Excel」逻辑（不下载文件）
       const X = await ensureXlsx();
-
-      // 测点布局草稿
-      const draftBytes = await X.writeWorkbook(buildDraftSheets(up));
-      X.downloadBlob(
-        new Blob([draftBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
-        prefix + '测点布局草稿.xlsx'
-      );
-
-      // 导入模板
-      const tplBytes = await X.writeWorkbook(buildTemplateSheets(up));
-      X.downloadBlob(
-        new Blob([tplBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
-        prefix + '导入模板.xlsx'
-      );
-
-      if (up) {
-        const n39 = up.worker39 ? up.worker39.length : 0;
-        const nSv = Object.keys(up.survey || {}).reduce((a, k) => a + ((up.survey[k] || []).length), 0);
-        const bad = !!(up.errors && up.errors.length);
-        setStatus('已生成：定员 ' + n39 + ' 行 / 调查表 ' + nSv + ' 行' + (bad ? '（部分接口失败，见控制台）' : ''), !bad);
-      } else {
-        setStatus('已生成：测点布局草稿 + 导入模板（网页数据）', true);
-      }
+      const bytes = await X.writeWorkbook(buildTemplateSheets(up));
+      await app.importWorkbook(bytes);
     } catch (e) {
       console.error(e);
-      setStatus('生成失败：' + (e && e.message ? e.message : e), false);
       alert('网站数据导入失败：' + (e && e.message ? e.message : e));
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = old || '网站数据导入'; }
     }
   }
 
-  root.SamplingBlf = { generate, buildDraftSheets, buildTemplateSheets, fetchUpstream, workerTo39 };
+  root.SamplingBlf = { generate, buildTemplateSheets, fetchUpstream, workerTo39 };
 
   // 绑定按钮（主工具栏 + 全屏工具栏）
   function bind() {

@@ -3733,6 +3733,8 @@
     askRowCount,
     // 脚本懒加载（供 upload.js 解析 docx 时加载 jszip 等）
     loadScript,
+    // 导入 xlsx 工作簿（供「网站数据导入」生成导入模板后直接导入网页）
+    importWorkbook: importWorkbookBuffer,
     // 非噪声岗位同步（供「噪声数据结果」页签调用）
     syncNonNoiseJobs,
     // 主表格已填车间名称（去重、保序），供调查表「单元/工作场所」下拉引用
@@ -3818,13 +3820,12 @@
 
   // ---------- 导入（仅主表测点布局，不导入危害因素库/检测项目） ----------
 
-  $("btn-import").addEventListener("click", () => $("file-input").click());
-  $("file-input").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  // 解析并导入一个 xlsx 工作簿；供「导入 Excel」按钮与「网站数据导入」共用。
+  // 成功时弹提示并返回 { mainImported, surveyMatched, totalRows, message }；失败时抛错。
+  async function importWorkbookBuffer(buf) {
     try {
       await ensureXlsx();
-      const sheets = await X.readWorkbook(await file.arrayBuffer());
+      const sheets = await X.readWorkbook(buf);
       const byName = {};
       for (const s of sheets) byName[s.name] = X.sheetToArray(s);
 
@@ -3939,36 +3940,43 @@
       rebuildDatalist(); // 参考库不随导入变化，仅重建录入区的联想列表
       renderItems();
       renderWindow();
+      let message;
       if (surveyMatched > 0 && mainImported === 0) {
         // 仅调查表文件：切到调查表页签，主表格保持现状
         activeTab = "survey";
         document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "survey"));
         document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-survey"));
-        alert(`导入成功：调查表 ${surveyMatched} 个子表（主表格保持现状）。`);
+        message = `导入成功：调查表 ${surveyMatched} 个子表（主表格保持现状）。`;
       } else if (surveyMatched > 0) {
         activeTab = "main";
         document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
         document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
-        alert(`导入成功：测点 ${mainImported} 行 + 调查表 ${surveyMatched} 个子表（危害因素库与检测项目保持现有）。`);
+        message = `导入成功：测点 ${mainImported} 行 + 调查表 ${surveyMatched} 个子表（危害因素库与检测项目保持现有）。`;
       } else {
         activeTab = "main";
         document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
         document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
-        alert(`导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库与检测项目保持现有）。`);
+        message = `导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库与检测项目保持现有）。`;
       }
+      alert(message);
+      return { mainImported, surveyMatched, totalRows: rows.length, message };
     } catch (err) {
       console.error(err);
+      throw err;
+    }
+  }
+
+  $("btn-import").addEventListener("click", () => $("file-input").click());
+  $("file-input").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      await importWorkbookBuffer(await file.arrayBuffer());
+    } catch (err) {
       alert("导入失败：" + err.message);
     } finally {
       e.target.value = "";
     }
-  });
-
-  // ---------- 帮助 ----------
-  $("btn-help").addEventListener("click", () => $("help-modal").classList.remove("hidden"));
-  $("help-close").addEventListener("click", () => $("help-modal").classList.add("hidden"));
-  $("help-modal").addEventListener("click", (e) => {
-    if (e.target.id === "help-modal") $("help-modal").classList.add("hidden");
   });
 
   // ---------- 启动 ----------

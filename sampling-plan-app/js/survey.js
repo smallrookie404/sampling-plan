@@ -1293,6 +1293,11 @@
     // 导入：从已解析的工作表数组（{ 表名: aoa，首行表头 }）识别 6 个子表并写入；返回匹配到的子表数
     importFromArray: (byName) => {
       surveyRows(); // 确保 surveyData 已初始化
+      // 「单元/工作场所」与各「岗位(工种)」列：上游常用半/全角逗号连接多个值，导入时统一成顿号「、」
+      const isUnitOrJob = (h) => {
+        const k = String(h ?? "").replace(/^\*/, "").trim();
+        return k === "单元/工作场所" || k.indexOf("(工种)") >= 0;
+      };
       let matched = 0;
       for (const sh of SURVEY_SHEETS) {
         const arr = byName[sh.name];
@@ -1303,7 +1308,11 @@
         const rows = [];
         for (const r of arr.slice(1)) {
           if (!r || !r.some((v) => v !== "" && v !== null && v !== undefined)) continue;
-          rows.push(sh.headers.map((h) => (idx[h] !== undefined ? String(r[idx[h]] ?? "") : "")));
+          rows.push(sh.headers.map((h) => {
+            let v = idx[h] !== undefined ? String(r[idx[h]] ?? "") : "";
+            if (isUnitOrJob(h)) v = v.replace(/[,，]/g, "、");
+            return v;
+          }));
         }
         while (rows.length < 10) rows.push(sh.headers.map(() => ""));
         surveyData[sh.key] = rows;
