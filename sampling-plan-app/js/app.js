@@ -3828,7 +3828,7 @@
 
   // 解析并导入一个 xlsx 工作簿；供「导入 Excel」按钮与「网站数据导入」共用。
   // 成功时弹提示并返回 { mainImported, surveyMatched, totalRows, message }；失败时抛错。
-  async function importWorkbookBuffer(buf) {
+  async function importWorkbookBuffer(buf, extraNote) {
     try {
       await ensureXlsx();
       const sheets = await X.readWorkbook(buf);
@@ -4007,6 +4007,7 @@
         document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
         message = `导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库与检测项目保持现有）。`;
       }
+      if (extraNote) message += "\n" + extraNote;
       alert(message);
       return { mainImported, surveyMatched, totalRows: rows.length, message };
     } catch (err) {

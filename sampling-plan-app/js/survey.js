@@ -1512,6 +1512,22 @@
       for (const k of Object.keys(all)) if (live[k] && all[k]) out[k] = all[k];
       return out;
     },
+    // 供「网站数据导入」：把平台上的工艺图批量写入对应「工艺名称」的槽位。
+    // list: [{ name: 工艺名称, blob: 图片二进制 }]；overwrite=true 时覆盖已有图片（默认不覆盖）。
+    // 图片统一走 canvas 压缩为 JPEG（长边 ≤1280、质量 0.75）后存本地，避免 localStorage 超限。
+    importProcessImages: async (list, overwrite) => {
+      const dict = procImgLoad();
+      let ok = 0, skip = 0, fail = 0;
+      for (const it of (list || [])) {
+        const nm = String((it && it.name) || "").trim();
+        if (!nm || !it.blob) continue;
+        if (dict[nm] && !overwrite) { skip++; continue; }
+        try { dict[nm] = await procImgCompress(it.blob); ok++; }
+        catch (e) { fail++; }
+      }
+      if (ok) { procImgSave(); renderSurvey(); }
+      return { ok: ok, skip: skip, fail: fail };
+    },
   };
 
   // 加载完成立即渲染一次（面板隐藏不影响 DOM 渲染），确保进入页签即见全部子表按钮
