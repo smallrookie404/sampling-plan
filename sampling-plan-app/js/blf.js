@@ -465,6 +465,7 @@
     const info = $('blf-projectInfo');
     if (info) info.textContent = '已选择项目：' + (p.code || '') + '（' + (p.belongInspectName || '') + '）';
     const btn = $('blf-do'); if (btn) btn.disabled = false;
+    const exp = $('blf-export'); if (exp) exp.disabled = false;
   }
 
   function doBlfSearch() {
@@ -481,6 +482,7 @@
     blfProject = null;
     if (info) info.textContent = '';
     const doBtn = $('blf-do'); if (doBtn) doBtn.disabled = true;
+    const expBtn = $('blf-export'); if (expBtn) expBtn.disabled = true;
 
     const seq = ++blfSeq;
     if (blfAbort) blfAbort.abort();
@@ -516,6 +518,7 @@
     const box = $('blf-suggest'); if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
     const info = $('blf-projectInfo'); if (info) info.textContent = '';
     const doBtn = $('blf-do'); if (doBtn) doBtn.disabled = true;
+    const expBtn = $('blf-export'); if (expBtn) expBtn.disabled = true;
     const modal = $('blf-modal'); if (modal) modal.classList.remove('hidden');
     if (u) u.focus();
   }

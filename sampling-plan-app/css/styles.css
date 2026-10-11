@@ -62,7 +62,8 @@ body {
 /* 弹窗（白底）里的 ghost 按钮：.btn.ghost 是给深色工具栏用的「白字透明底」，直接放进白底弹窗会看不见 */
 .modal-actions .btn.ghost { background: #fff; color: #374151; border-color: var(--line); }
 .modal-actions .btn.ghost:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
-/* 禁用态（如「网站数据导入」弹窗未选中项目时） */
+/* 禁用态（如「网站数据导入」弹窗未选中项目时）：与 .btn 的禁用态一致——无边框 + 淡出 */
+.modal-actions .btn.ghost:disabled { border-color: transparent; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 /* 工具栏「筛选」按钮：筛选开启时加深颜色，关闭后恢复默认白底 */
 .btn.small.active { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
