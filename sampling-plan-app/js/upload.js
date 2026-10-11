@@ -24,6 +24,8 @@
   const REM_KEY = 'xcdc_upload_remember';
   const USR_KEY = 'xcdc_upload_username';
   const PWD_KEY = 'xcdc_upload_password';
+  // 登录失效（401）时的统一处理：由 initApp 注入（提示 + 引导重新登录）
+  let authExpiredHandler = null;
   // ----------------------------------------------
 
   // ---------------- RSA (PKCS#1 v1.5) ----------------
@@ -114,6 +116,8 @@
       const text = await resp.text();
       let data = null;
       try { data = JSON.parse(text); } catch (e) { data = text; }
+      // 登录失效：平台对过期会话返回 401（"找不到当前登录的信息"）→ 提示并引导重新登录
+      if (resp.status === 401 && opts.token && typeof authExpiredHandler === 'function') authExpiredHandler();
       return { status: resp.status, data: data, text: text };
     } finally {
       clearTimeout(timer);
@@ -552,6 +556,7 @@
     // 进入软件（关闭登录遮罩）
     function enterApp() {
       if (loginOverlay) loginOverlay.classList.add('hidden');
+      authExpiredHandled = false; // 重新登录成功，允许再次提示
     }
 
     // ---------- 右上角用户菜单：按钮显示登录者姓名，点击展开菜单可选退出登录 ----------
@@ -646,6 +651,27 @@
       teamDirty = false;
       showLogin();
     }
+
+    // ---------- 登录失效（401）：提示并引导重新登录 ----------
+    // 会话过期后，平台接口会返回 401（"找不到当前登录的信息"），表现为「搜索不出内容」。
+    // 这里统一处理：清理失效会话 → 弹登录遮罩 → 提示用户重新登录（同一轮只提示一次）。
+    let authExpiredHandled = false;
+    function notifyAuthExpired() {
+      if (authExpiredHandled) return;
+      authExpiredHandled = true;
+      const who = userInfo && (userInfo.userName || userInfo.userCode)
+        ? ('（' + (userInfo.userName || userInfo.userCode) + '）')
+        : '';
+      try { logout(); } catch (e) { /* 清理失败也要弹登录 */ }
+      // 让登录遮罩先渲染出来，再弹提示（避免提示被遮罩挡住的观感）
+      setTimeout(function () {
+        alert('登录已失效' + who + '，请重新登录。\n\n' +
+          '· 长时间未操作，或账号在其它地方登录，平台会失效当前会话；\n' +
+          '· 重新登录后再执行刚才的操作即可（刚才的搜索结果为空是因为登录失效）。');
+      }, 50);
+    }
+    // 注入给顶层的 apiRequest：任何接口返回 401 都会走到这里
+    authExpiredHandler = notifyAuthExpired;
 
     async function refreshCaptcha() {
       try {
@@ -1788,6 +1814,8 @@
       show: showUpload,
       hide: hideUpload,
       logout: logout,
+      // 登录失效（401）时统一提示并引导重新登录（供其它模块复用）
+      notifyAuthExpired: notifyAuthExpired,
       // 加载「噪声数据结果」页签（供其它模块触发）
       loadNoise: loadNoiseResult,
       // 解析报告 docx 中的「工作场所噪声评判结果」表（供测试/复用）
@@ -1844,7 +1872,9 @@
         } catch (e) {}
         syncGhButton();
         syncUserMenu();
-        enterApp();
+        // 会话恢复期间若因登录失效被登出（token 已被清空），保持登录遮罩，不要再进入软件
+        if (token) enterApp();
+        else showLogin();
       } else {
         showLogin();
       }

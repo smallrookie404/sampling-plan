@@ -108,6 +108,11 @@
       init.body = JSON.stringify(body);
     }
     const r = await fetch(c.apiBase + path, init);
+    // 登录失效（401）：交给统一处理（提示 + 引导重新登录）
+    if (r.status === 401) {
+      const u = root.SamplingUpload;
+      if (u && typeof u.notifyAuthExpired === 'function') u.notifyAuthExpired();
+    }
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r;
   }
