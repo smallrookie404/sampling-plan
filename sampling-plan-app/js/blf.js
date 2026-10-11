@@ -264,10 +264,12 @@
     return res;
   }
 
-  // ---------------- 工艺、点位图导出（生成检评报告 Word → 提取内嵌图片） ----------------
-  // 两个导出目标：
-  //   ① 工艺流程图：报告「3.2.1 生产工艺」小节内的图片（用图注「图3-x …」命名）
-  //   ② 采样/测量布点图：报告「附录2 采样/测量布点图」小节内的图片
+  // ---------------- 工艺、点位图保存（直连平台接口，秒级） ----------------
+  // 两组图片来源（都直接取，**不生成报告**）：
+  //   ① 工艺流程图      ← api/productionProcess        → processPicturePath
+  //   ② 采样/测量布点图  ← api/samplingPlan/projectLayout → layoutPicturePath
+  // 实测：报告「3.2.1 生产工艺」与「附录2 采样/测量布点图」里嵌的就是这两组图（字节完全一致），
+  //       而生成一份检评报告要 ~21s，直连取图只要 ~1s。
 
   let jszipPromise = null;
   function ensureJSZip() {
@@ -294,139 +296,17 @@
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 5000);
   }
 
-  // 解析「编号标题」（3.2.1生产工艺 / 3.2 生产工艺 / 9建议 / 10附件）
-  // 或「附录标题」（附录1 xxx / 附录2采样/测量布点图）。
-  // 注意：Word 里编号常被拆成多个 run（document.xml 里搜不到「3.2.1」），
-  // 必须用段落 textContent 拼回整段后再匹配。
-  function parseHeading(raw) {
-    const s = String(raw || '').trim();
-    if (!s || s.length > 50) return null;
-    // 附录标题
-    let m = s.match(/^附\s*录\s*([0-9０-９一二三四五六七八九十]+)\s*([\s\S]*)$/);
-    if (m) {
-      const rest0 = m[2].trim();
-      if (rest0.length <= 30) return { kind: 'appendix', num: m[1], rest: rest0, depth: 1, text: s };
-    }
-    // 编号标题
-    m = s.match(/^(\d+(?:[.．]\d+)*)([、.．\s]*)([\s\S]*)$/);
-    if (!m) return null;
-    const num = m[1].replace(/．/g, '.');
-    const sep = m[2] || '';
-    const rest = m[3].trim();
-    if (!rest || rest.length > 24) return null;
-    const hierarchical = num.indexOf('.') >= 0;                 // 3.2 / 3.2.1
-    // 无分隔符时只接受「1~2 位数字 + 非数字开头」的短标题（9建议 / 10附件），
-    // 避免把「2018年12月…」这类正文误判为标题
-    const shortNoSep = !hierarchical && !sep.length && num.length <= 2 && !/^\d/.test(rest);
-    if (!hierarchical && !sep.length && !shortNoSep) return null;
-    return { kind: 'num', num: num, rest: rest, depth: num.split('.').length, text: s };
-  }
-
-  // 解析 docx 段落 → [{ text, images:[media 路径,…] }]
-  async function readDocxParagraphs(zip) {
-    const docFile = zip.file('word/document.xml');
-    const relFile = zip.file('word/_rels/document.xml.rels');
-    if (!docFile || !relFile) return null;
-    const docXml = await docFile.async('string');
-    const relXml = await relFile.async('string');
-    const P = new DOMParser();
-    const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-    const A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
-    const R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-    const relMap = {};
-    const relDom = P.parseFromString(relXml, 'application/xml');
-    const rels = relDom.getElementsByTagName('Relationship');
-    for (let i = 0; i < rels.length; i++) {
-      const id = rels[i].getAttribute('Id');
-      const tgt = rels[i].getAttribute('Target');
-      if (id && tgt) relMap[id] = 'word/' + tgt.replace(/^\.\//, '').replace(/^\//, '');
-    }
-    const dom = P.parseFromString(docXml, 'application/xml');
-    const body = dom.getElementsByTagNameNS(W_NS, 'body')[0];
-    if (!body) return null;
-    const ps = body.getElementsByTagNameNS(W_NS, 'p');
-    const out = [];
-    for (let i = 0; i < ps.length; i++) {
-      const p = ps[i];
-      const images = [];
-      const blips = p.getElementsByTagNameNS(A_NS, 'blip');
-      for (let k = 0; k < blips.length; k++) {
-        const id = blips[k].getAttributeNS(R_NS, 'embed') || blips[k].getAttribute('r:embed');
-        if (id && relMap[id]) images.push(relMap[id]);
-      }
-      out.push({ text: String(p.textContent || '').trim(), images: images });
-    }
-    return out;
-  }
-
-  // 按标题挑选一个小节（匹配多个时取「rest 更短 / 层级更深」者），返回该小节内的图片与标题文本
-  function pickSection(paras, match) {
-    let target = null;
-    for (let i = 0; i < paras.length; i++) {
-      const h = parseHeading(paras[i].text);
-      if (!h || !match(h)) continue;
-      if (!target) { target = { i: i, h: h }; continue; }
-      const t = target.h;
-      if (h.rest.length < t.rest.length || (h.rest.length === t.rest.length && h.depth > t.depth)) target = { i: i, h: h };
-    }
-    if (!target) return { items: [], headText: '' };
-    // 终点：下一个同级或更浅的标题
-    let end = paras.length;
-    for (let j = target.i + 1; j < paras.length; j++) {
-      const h = parseHeading(paras[j].text);
-      if (h && h.depth <= target.h.depth) { end = j; break; }
-    }
-    const items = [];
-    for (let j = target.i + 1; j < end; j++) {
-      const imgs = paras[j].images;
-      if (!imgs || !imgs.length) continue;
-      let caption = '';
-      for (let k = j + 1; k < Math.min(j + 4, end); k++) {   // 图注：紧随其后、以「图」开头的短段
-        const ct = paras[k].text;
-        if (!ct) continue;
-        if (/^图/.test(ct) && ct.length <= 60) caption = ct;
-        break;
-      }
-      for (const p of imgs) items.push({ path: p, caption: caption });
-    }
-    return { items: items, headText: target.h.text };
-  }
-
-  async function readZipImages(zip, items) {
-    const out = [];
-    for (const it of items) {
-      const f = zip.file(it.path);
-      if (!f) continue;
-      out.push({
-        name: it.path.split('/').pop(),
-        caption: it.caption,
-        mime: /\.png$/i.test(it.path) ? 'image/png' : (/\.jpe?g$/i.test(it.path) ? 'image/jpeg' : 'application/octet-stream'),
-        data: await f.async('uint8array'),
-      });
-    }
-    return out;
-  }
-
-  // 生成检评报告 Word：模板列表 api/pjbgModule → /api/jpbgReportData/jpbgYL → 同路径 .docx
-  async function genPjbgDocx(c) {
-    const tr = await upRequest(c, 'GET', '/api/pjbgModule?pageNumber=1&pageSize=-1&organizationId=' + encodeURIComponent(c.orgId || ''));
-    const recs = pickRows(await tr.json());
-    if (!recs.length) throw new Error('未获取到检评报告模板，请先在平台创建模板');
-    let mod = null;
-    for (const x of recs) { if (/检评/.test(String(x.name || ''))) { mod = x; break; } }
-    if (!mod) mod = recs[0];
-    const rr = await upRequest(
-      c, 'GET',
-      '/api/jpbgReportData/jpbgYL?projectId=' + encodeURIComponent(c.project.id) +
-        '&moduleId=' + encodeURIComponent(mod.id) + '&organizationId=' + encodeURIComponent(c.orgId || '')
-    );
-    const j = await rr.json();
-    const body = j && j.body;
-    if (!body) throw new Error('生成检评报告失败：' + ((j && j.message) || '无返回'));
-    const enc = String(body).replace(/\.pdf$/i, '.docx').split('/').map(encodeURIComponent).join('/');
-    const resp = await fetch(c.apiBase + enc, { headers: c.token ? { Authorization: c.token } : {} });
-    if (!resp.ok) throw new Error('下载报告失败(HTTP ' + resp.status + ')');
-    return { buf: await resp.arrayBuffer(), modName: mod.name || '' };
+  // 并行下载清单里的图片；失败的单张跳过
+  async function fetchImageItems(c, list) {
+    const out = await Promise.all(list.map(async (it) => {
+      try {
+        const enc = String(it.path).split('/').map(encodeURIComponent).join('/');
+        const r = await fetch(c.apiBase + enc, { headers: c.token ? { Authorization: c.token } : {} });
+        if (!r.ok) return null;
+        return { name: it.name, mime: r.headers.get('content-type') || '', data: new Uint8Array(await r.arrayBuffer()) };
+      } catch (e) { return null; }
+    }));
+    return out.filter(Boolean);
   }
 
   async function exportFlowAndLayout(project) {
@@ -435,51 +315,52 @@
     if (!ctx || !ctx.loggedIn) { alert('登录状态已失效，请重新登录后再试。'); return; }
     const btn = $('blf-export');
     const old = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '生成报告中…'; }
+    if (btn) { btn.disabled = true; btn.textContent = '获取图片清单…'; }
     try {
-      const g = await genPjbgDocx(ctx);
-      if (btn) btn.textContent = '提取图片中…';
-      const JSZip = await ensureJSZip();
-      const zip = await JSZip.loadAsync(g.buf);
-      const paras = await readDocxParagraphs(zip);
-      if (!paras) throw new Error('报告结构无法解析');
-
-      const flow = pickSection(paras, (h) => h.kind === 'num' && /^生产工艺/.test(h.rest));
-      const layout = pickSection(paras, (h) => h.kind === 'appendix' && (/布点/.test(h.rest) || /^(2|二)$/.test(String(h.num).trim())));
-      const flowImgs = await readZipImages(zip, flow.items);
-      const layoutImgs = await readZipImages(zip, layout.items);
-      if (!flowImgs.length && !layoutImgs.length) {
-        alert('未在报告里找到工艺流程图或布点图。\n\n请确认报告包含「3.2.1 生产工艺」与「附录2 采样/测量布点图」。');
+      const q = '?belongProject=' + encodeURIComponent(ctx.project.id) + '&pageNumber=1&pageSize=-1';
+      // 并行取两组清单
+      const [ppJ, plJ] = await Promise.all([
+        upRequest(ctx, 'GET', '/api/productionProcess' + q).then((r) => r.json()).catch(() => null),
+        upRequest(ctx, 'GET', '/api/samplingPlan/projectLayout' + q).then((r) => r.json()).catch(() => null),
+      ]);
+      const flowList = pickRows(ppJ)
+        .map((r) => ({ name: String(txt(r.processName)).trim(), path: String(txt(r.processPicturePath)).trim() }))
+        .filter((x) => x.name && x.path);
+      const layoutList = pickRows(plJ)
+        .slice()
+        .sort((a, b) => (a.id || 0) - (b.id || 0))   // 按 id 升序还原「图片1/2/3」的自然顺序
+        .map((r) => ({ name: String(txt(r.layoutPictureName)).trim(), path: String(txt(r.layoutPicturePath)).trim() }))
+        .filter((x) => x.path);
+      if (!flowList.length && !layoutList.length) {
+        alert('未找到工艺流程图或采样/测量布点图。\n\n请确认该项目已在平台上传：\n· 「生产工艺调查」的工艺图；\n· 「检测布点图」的布点图。');
         return;
       }
-      const base = String((ctx.project && ctx.project.code) || 'report').replace(/[\\/:*?"<>|]/g, '_');
+      if (btn) btn.textContent = '下载图片中…';
+      const [flowImgs, layoutImgs] = await Promise.all([
+        fetchImageItems(ctx, flowList),
+        fetchImageItems(ctx, layoutList),
+      ]);
+      const extOf = (im) => (/jpe?g/i.test(im.mime) || /\.jpe?g$/i.test(im.name) ? 'jpg' : 'png');
       const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
-      const files = [];
-      flowImgs.forEach((im, i) => {
-        const ext = /jpe?g$/i.test(im.name) ? 'jpg' : 'png';
-        const nm = im.caption ? safe(im.caption) : (base + '-工艺流程图' + (flowImgs.length > 1 ? ('-' + (i + 1)) : ''));
-        files.push({ im: im, nm: nm + '.' + ext });
-      });
-      layoutImgs.forEach((im, i) => {
-        const ext = /jpe?g$/i.test(im.name) ? 'jpg' : 'png';
-        files.push({ im: im, nm: base + '-采样测量布点图' + (layoutImgs.length > 1 ? ('-' + (i + 1)) : '') + '.' + ext });
-      });
-      for (const f of files) {
-        saveBlobAs(new Blob([f.im.data], { type: f.im.mime }), f.nm);
-        await new Promise((r) => setTimeout(r, 400));
-      }
-      alert('已从「' + g.modName + '」报告导出 ' + files.length + ' 张图片：\n' +
-        '· 工艺流程图 ' + flowImgs.length + ' 张' + (flow.headText ? '（' + flow.headText + '）' : '') + '\n' +
-        '· 采样/测量布点图 ' + layoutImgs.length + ' 张' + (layout.headText ? '（' + layout.headText + '）' : '') +
-        '\n\n文件已保存到浏览器下载目录。');
+      if (btn) btn.textContent = '打包中…';
+      const JSZip = await ensureJSZip();
+      const pack = new JSZip();
+      flowImgs.forEach((im, i) => pack.file('工艺流程图/' + (safe(im.name) || ('工艺流程图-' + (i + 1))) + '.' + extOf(im), im.data));
+      layoutImgs.forEach((im, i) => pack.file('采样测量布点图/采样测量布点图-' + (i + 1) + '.' + extOf(im), im.data));
+      const blob = await pack.generateAsync({ type: 'blob', compression: 'STORE' });  // 图片已压缩，STORE 更快
+      const zipName = String((ctx.project && ctx.project.code) || 'report').replace(/[\\/:*?"<>|]/g, '_') + '-工艺点位图.zip';
+      saveBlobAs(blob, zipName);
+      alert('已保存压缩包：' + zipName + '\n' +
+        '· 工艺流程图 ' + flowImgs.length + ' 张\n' +
+        '· 采样/测量布点图 ' + layoutImgs.length + ' 张\n\n' +
+        '共 ' + (flowImgs.length + layoutImgs.length) + ' 张图片，解压后为「工艺流程图」「采样测量布点图」两个文件夹。');
     } catch (e) {
       console.error(e);
-      alert('导出图片失败：' + (e && e.message ? e.message : e));
+      alert('保存图片失败：' + (e && e.message ? e.message : e));
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = old || '工艺、点位图导出'; }
+      if (btn) { btn.disabled = false; btn.textContent = old || '工艺、点位图保存'; }
     }
   }
-
   // ---------------- 组装：导入模板（20 页） ----------------
 
   function buildTemplateSheets(up) {
@@ -691,8 +572,6 @@
   }
 
   root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout };
-  // 供测试/复用：docx 解析与「按标题取小节图片」
-  root.__samplingBlfDocx = { parseHeading: parseHeading, pickSection: pickSection, readDocxParagraphs: readDocxParagraphs, readZipImages: readZipImages };
 
   // 绑定按钮（主工具栏 + 全屏工具栏）与弹窗内交互
   function bind() {
