@@ -2253,15 +2253,6 @@
     return !!(cfg && cfg.repo && cfg.token);
   }
 
-  // 将远端索引合并到本地镜像（保留已缓存的完整记录，作为离线兜底）
-  function mirrorToLocal(index) {
-    try {
-      const cached = new Map(readLocalFull().map((r) => [r.id, r]));
-      const merged = index.map((r) => cached.get(r.id) || r);
-      localStorage.setItem(RECORDS_KEY, JSON.stringify(merged));
-    } catch {}
-  }
-
   function noticeHtml() {
     if (storageMode === "server") return "";
     if (storageMode === "github") {
@@ -2293,8 +2284,7 @@
     if (storageMode === "detecting") await detectStorageMode();
   }
 
-  // 新存储结构：远端只存「索引」（不含 rows），单条记录按 id 拉取/保存；
-  // localStorage 镜像保存完整记录，作为离线兜底与内容预览缓存
+  // localStorage 读写（仅在 static/temp 模式下使用）
   function readLocalFull() {
     try {
       const s = localStorage.getItem(RECORDS_KEY);
@@ -2309,15 +2299,6 @@
     try { localStorage.setItem(RECORDS_KEY, JSON.stringify(list)); } catch {}
   }
 
-  // 索引 + 本地缓存合并：有缓存的记录带 rows 与 survey（供预览与直接调用），没有的仅元信息
-  function attachCachedRows(index) {
-    const map = new Map(readLocalFull().filter((r) => r && r.rows).map((r) => [r.id, r]));
-    return index.map((r) => {
-      const c = map.get(r.id);
-      return c ? { ...r, rows: c.rows, ...(c.survey !== undefined ? { survey: c.survey } : {}) } : r;
-    });
-  }
-
   function upsertLocalFull(rec) {
     const list = readLocalFull().filter((r) => r.id !== rec.id);
     list.unshift(rec);
@@ -2330,34 +2311,25 @@
 
   async function loadRecords() {
     await ensureMode();
-    // 配置了 GitHub：优先从 GitHub 读取索引，实现“打开即同步”
-    if (hasGithubConfig()) {
-      setSyncStatus("syncing");
-      try {
-        const index = await githubLoadIndex();
-        mirrorToLocal(index);
-        setSyncStatus("ok");
-        return attachCachedRows(index);
-      } catch (e) {
-        setSyncStatus("err", e.message);
-      }
-    }
+    // 各存储端独立运作，不再跨端同步（不再 mirror 到 localStorage / 不再从多端读取后合并）
     if (storageMode === "server") {
       try {
         const res = await fetch("/api/records", { cache: "no-store" });
         if (!res.ok) throw new Error("HTTP " + res.status);
-        const index = await res.json();
-        return attachCachedRows(Array.isArray(index) ? index : []);
+        return await res.json();
       } catch {
         setStorageNotice(true);
-        return localLoad();
+        return [];
       }
     }
     if (storageMode === "github") {
+      setSyncStatus("syncing");
       try {
         const index = await githubLoadIndex();
-        return attachCachedRows(index);
+        setSyncStatus("ok");
+        return index;
       } catch (e) {
+        setSyncStatus("err", e.message);
         alert("读取 GitHub 数据失败：" + e.message);
         return [];
       }
@@ -2366,24 +2338,20 @@
     return localLoad();
   }
 
-  // 按 id 拉取单条完整记录（索引里没有 rows 缓存时调用）
+  // 按 id 拉取单条完整记录
   async function loadRecordById(id) {
     await ensureMode();
-    if (hasGithubConfig() && storageMode !== "server") {
-      try {
-        const rec = await githubLoadRecord(id);
-        if (rec) upsertLocalFull(rec);
-        return rec;
-      } catch (e) {
-        throw new Error("读取记录失败：" + e.message);
-      }
-    }
     if (storageMode === "server") {
       const res = await fetch("/api/records?id=" + encodeURIComponent(id), { cache: "no-store" });
       if (!res.ok) throw new Error("HTTP " + res.status);
-      const rec = await res.json();
-      if (rec && rec.rows) upsertLocalFull(rec);
-      return rec;
+      return await res.json();
+    }
+    if (storageMode === "github") {
+      try {
+        return await githubLoadRecord(id);
+      } catch (e) {
+        throw new Error("读取记录失败：" + e.message);
+      }
     }
     return readLocalFull().find((r) => r.id === id) || null;
   }
@@ -2403,76 +2371,63 @@
     return index.map((r) => fetched.get(r.id) || r).filter((r) => Array.isArray(r.rows));
   }
 
-  // 保存单条记录（写单条存储 + 更新索引 + 本地镜像）
+  // 保存单条记录（只写当前存储端，不再跨端同步）
   async function persistRecord(rec) {
     await ensureMode();
     rec.updatedAt = rec.updatedAt || new Date().toISOString();
-    // 配置了 GitHub：优先写回 GitHub，随后镜像到本地
-    if (hasGithubConfig() && storageMode !== "server") {
-      setSyncStatus("syncing");
-      try {
-        const ok = await githubPersistRecord(rec);
-        upsertLocalFull(rec);
-        setSyncStatus("ok");
-        return ok;
-      } catch (e) {
-        setSyncStatus("err", e.message);
-        alert("保存到 GitHub 失败：" + e.message + "，已改存本地。");
-        upsertLocalFull(rec);
-        return true;
-      }
-    }
     if (storageMode === "server") {
       try {
-        // 直发 JSON：Cloudflare Workers 的 request.json() 与本地 server.mjs 均按原样解析。
-        // 此前手工 gzip（Content-Encoding: gzip）两端都不会自动解压，保存一律失败
         const res = await fetch("/api/records?id=" + encodeURIComponent(rec.id), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(rec),
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
-        upsertLocalFull(rec);
         return true;
       } catch (e) {
-        setStorageNotice(true, "数据保存失败：未能同步到项目文件夹（本地服务未响应：" + e.message + "）。数据已暂存浏览器，请通过「启动采样计划软件.bat」打开软件后重试。");
-        upsertLocalFull(rec);
-        return false; // 主目标（项目文件夹）写入失败：按保存失败处理，由调用方弹窗提示
+        setStorageNotice(true, "数据保存失败：未能同步到项目文件夹（本地服务未响应：" + e.message + "）。请通过「启动采样计划软件.bat」打开软件后重试。");
+        return false;
       }
     }
     if (storageMode === "github") {
+      setSyncStatus("syncing");
       try {
-        return await githubPersistRecord(rec);
+        const ok = await githubPersistRecord(rec);
+        setSyncStatus("ok");
+        return ok;
       } catch (e) {
+        setSyncStatus("err", e.message);
         alert("保存到 GitHub 失败：" + e.message);
         return false;
       }
     }
     setStorageNotice(true, noticeHtml());
-    // 静态模式未配置 GitHub：静默存浏览器，不再弹提示
     upsertLocalFull(rec);
     return true;
   }
 
-  // 删除单条记录（远端 + 索引 + 本地镜像）
+  // 删除单条记录（只删当前存储端，不再跨端同步）
   async function deleteRecordById(id) {
     await ensureMode();
-    if (hasGithubConfig() && storageMode !== "server") {
+    if (storageMode === "server") {
+      try {
+        const res = await fetch("/api/records?id=" + encodeURIComponent(id), { method: "DELETE" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return true;
+      } catch (e) {
+        alert("删除失败：" + e.message);
+        return false;
+      }
+    }
+    if (storageMode === "github") {
       setSyncStatus("syncing");
       try {
         await githubDeleteRecord(id);
         setSyncStatus("ok");
+        return true;
       } catch (e) {
         setSyncStatus("err", e.message);
         alert("从 GitHub 删除失败：" + e.message);
-        return false;
-      }
-    } else if (storageMode === "server") {
-      try {
-        const res = await fetch("/api/records?id=" + encodeURIComponent(id), { method: "DELETE" });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-      } catch (e) {
-        alert("删除失败：" + e.message);
         return false;
       }
     }
@@ -2705,20 +2660,6 @@
     }
   }
 
-  function mirrorLibraryToLocal(lib) {
-    try {
-      if (storageMode === "server") {
-        fetch("/api/library", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(lib),
-        }).catch(() => {});
-      } else {
-        localStorage.setItem(LIBRARY_KEY, JSON.stringify(lib));
-      }
-    } catch {}
-  }
-
   function githubLibConfig() {
     const cfg = loadGithubConfig();
     if (!cfg) return null;
@@ -2770,57 +2711,49 @@
 
   async function loadLibrary() {
     await ensureMode();
-    const cands = [];
-    if (hasGithubConfig()) {
-      setLibStatus("github-loading");
-      try {
-        const lib = await githubLibLoad();
-        if (lib) cands.push({ src: "github", lib });
-      } catch (e) {
-        setLibStatus("err", e.message);
-      }
-    }
+    // 各端独立：按 storageMode 只从一个主端读取，不再跨端比较/合并
     if (storageMode === "server") {
       try {
         const lib = await cloudLibLoad();
-        if (lib) cands.push({ src: "cloud", lib });
-      } catch {
-        // Cloudflare KV 不可用时忽略，继续其它来源
-      }
-    }
-    if (cands.length) {
-      cands.sort((a, b) => libTimestamp(b.lib) - libTimestamp(a.lib));
-      const winner = cands[0];
-      const lib = normalizeLibrary(winner.lib);
-      if (lib) {
-        const loser = cands[1];
-        // GitHub 与 Cloudflare 双端都可用时：取较新一端，并把它同步到较旧一端（失败不阻塞）
-        if (loser && libTimestamp(loser.lib) < libTimestamp(winner.lib)) {
-          const syncTo =
-            winner.src === "cloud"
-              ? () => githubLibPersist(winner.lib)
-              : () => cloudLibPersist(winner.lib);
-          syncTo().catch(() => {});
+        if (lib) {
+          setLibStatus("local-ok");
+          return normalizeLibrary(lib);
         }
-        mirrorLibraryToLocal(winner.lib);
-        setLibStatus("ok");
-        return lib;
+      } catch {
+        // Cloudflare KV 不可用时回退到静态文件
       }
+      const staticLib = await fetchStaticLibrary();
+      if (staticLib) {
+        setLibStatus("static-ok");
+        return staticLib;
+      }
+      return localLibraryLoad();
     }
-    // 没有可用的远端参考库时，回退到站点自带的静态文件
+    if (storageMode === "github") {
+      setLibStatus("github-loading");
+      try {
+        const lib = await githubLibLoad();
+        if (lib) {
+          setLibStatus("ok");
+          return normalizeLibrary(lib);
+        }
+      } catch (e) {
+        setLibStatus("err", e.message);
+      }
+      const staticLib = await fetchStaticLibrary();
+      if (staticLib) {
+        setLibStatus("static-ok");
+        return staticLib;
+      }
+      return localLibraryLoad();
+    }
+    // static-unconfigured / temp：回退到静态文件或 localStorage
     const staticLib = await fetchStaticLibrary();
     if (staticLib) {
       setLibStatus("static-ok");
       return staticLib;
     }
     return localLibraryLoad();
-  }
-
-  // 参考库版本时间戳：用于 GitHub 与 Cloudflare 双端“取最新”
-  function libTimestamp(lib) {
-    const t = lib && lib.updatedAt;
-    const ts = t ? new Date(t).getTime() : NaN;
-    return isNaN(ts) ? 0 : ts;
   }
 
   function withLibTimestamp(lib) {
@@ -2855,34 +2788,33 @@
     }
   }
 
+  // 参考库保存：按 storageMode 只写一个端，不再跨端回写/fallback
   async function persistLibrary() {
     await ensureMode();
     const stamped = withLibTimestamp(libraryObject());
-    const targets = [];
-    if (hasGithubConfig()) targets.push({ name: "GitHub", fn: () => githubLibPersist(stamped) });
-    if (storageMode === "server") targets.push({ name: "Cloudflare", fn: () => cloudLibPersist(stamped) });
-    if (!targets.length) {
-      const ok = localLibraryPersist(stamped);
-      setLibStatus(ok ? "local-ok" : "err", ok ? "" : "本地保存失败");
-      return ok;
-    }
-    const errors = [];
-    let anyOk = false;
-    for (const t of targets) {
+    if (storageMode === "server") {
       try {
-        await t.fn();
-        anyOk = true;
+        await cloudLibPersist(stamped);
+        setLibStatus("local-ok");
+        return true;
       } catch (e) {
-        errors.push(t.name + "：" + e.message);
+        setLibStatus("err", "服务端：" + e.message);
+        return false;
       }
     }
-    if (errors.length) {
-      setLibStatus("err", errors.join("；"));
-      const localOk = localLibraryPersist(stamped);
-      return anyOk || localOk;
+    if (storageMode === "github") {
+      try {
+        await githubLibPersist(stamped);
+        setLibStatus("ok");
+        return true;
+      } catch (e) {
+        setLibStatus("err", "GitHub：" + e.message);
+        return false;
+      }
     }
-    setLibStatus("ok");
-    return true;
+    const ok = localLibraryPersist(stamped);
+    setLibStatus(ok ? "local-ok" : "err", ok ? "" : "本地保存失败");
+    return ok;
   }
 
   // 参考库变更后防抖自动同步（新增/删除/修改后约 1.2 秒写回）
@@ -2999,7 +2931,7 @@
     const q = $("db-search").value.trim().toLowerCase();
     const list = (await loadRecords()).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
     const shown = q ? list.filter((r) => recordSearchText(r).includes(q)) : list;
-    $("db-refresh").style.display = hasGithubConfig() ? "" : "none";
+    $("db-refresh").style.display = (storageMode === "github" || storageMode === "server") ? "" : "none";
     $("db-count").textContent = `共 ${list.length} 条${q ? ` · 匹配 ${shown.length} 条` : ""}`;
     const box = $("db-list");
     if (!shown.length) {
