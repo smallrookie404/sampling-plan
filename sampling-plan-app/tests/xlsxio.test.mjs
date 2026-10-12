@@ -162,10 +162,9 @@ for (const r of rows) {
 const fullBytes = await xlsxio.writeWorkbook({
   hazardRows: [["识别"], ["测试"]],
   mainRows: fullRows,
-  itemRows: [["系统内检测项目名参照表"], ["测试项"]],
 });
 const fullSheets = await xlsxio.readWorkbook(fullBytes);
-if (fullSheets.map((s) => s.name).join() !== "危害因素,测点布局情况调查,检测项目") {
+if (fullSheets.map((s) => s.name).join() !== "危害因素,测点布局情况调查") {
   throw new Error("完整结构导出失败");
 }
-console.log("完整三表结构兼容导出通过 ✔");
+console.log("完整结构兼容导出通过 ✔");

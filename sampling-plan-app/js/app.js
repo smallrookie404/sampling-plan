@@ -2,7 +2,7 @@
   "use strict";
 
   const L = window.SamplingLogic;
-  // 轻量列结构（同步）；内置危害因素库/检测项目较大（~125KB），首次用库时按需加载
+  // 轻量列结构（同步）；内置危害因素库较大（~125KB），首次用库时按需加载
   const DEFAULT_DATA = window.SamplingData;
   const DEFAULT_LIBRARY_KEY = "samplingPlanLibraryDefaults_v1";
 
@@ -19,7 +19,7 @@
     });
   }
 
-  // 内置库懒加载：返回 {hazardFactors, detectionItems}；localStorage 缓存 + 脚本兜底
+  // 内置危害因素库懒加载；localStorage 缓存 + 脚本兜底
   let libDefaultsPromise = null;
   function ensureLibraryDefaults() {
     if (libDefaultsPromise) return libDefaultsPromise;
@@ -28,7 +28,7 @@
         const cached = localStorage.getItem(DEFAULT_LIBRARY_KEY);
         if (cached) {
           const obj = JSON.parse(cached);
-          if (obj && Array.isArray(obj.hazardFactors) && obj.hazardFactors.length && Array.isArray(obj.detectionItems)) {
+          if (obj && Array.isArray(obj.hazardFactors) && obj.hazardFactors.length) {
             return obj;
           }
         }
@@ -36,12 +36,12 @@
       try {
         await loadScript("js/data-library.js");
         if (window.SamplingLibrary && Array.isArray(window.SamplingLibrary.hazardFactors)) {
-          const obj = { hazardFactors: window.SamplingLibrary.hazardFactors, detectionItems: window.SamplingLibrary.detectionItems };
+          const obj = { hazardFactors: window.SamplingLibrary.hazardFactors };
           try { localStorage.setItem(DEFAULT_LIBRARY_KEY, JSON.stringify(obj)); } catch {}
           return obj;
         }
       } catch {}
-      return { hazardFactors: [], detectionItems: [] }; // 加载失败：空库兜底（云端/本地参考库仍可用）
+      return { hazardFactors: [] }; // 加载失败：空库兜底
     })();
     return libDefaultsPromise;
   }
@@ -201,7 +201,6 @@
   let rowHeights = []; // 每行高度（px），与 rows 一一对应；默认 ROW_H，可手动拖动或“自适应行距”调整
   let colWidths = null; // 列宽（px），与 ALL_COLS 一一对应；手动拖动或“自动调整”时更新
   let hazardFactors = [];
-  let detectionItems = [];
   let selectedRow = -1;
   let selectedHazard = -1;
   let activeTab = "main";
@@ -769,7 +768,7 @@
 
   function recomputeAndRefresh() {
     if (recomputeTimer) { clearTimeout(recomputeTimer); recomputeTimer = null; }
-    L.computeRows(rows, { hazardFactors, detectionItems });
+    L.computeRows(rows, { hazardFactors });
     updateVisibleCells();
     refreshStatus();
   }
@@ -1057,7 +1056,7 @@
     renderWindow();
   });
   $("btn-reset").addEventListener("click", () => {
-    if (!confirm("清空主表格与调查表的所有内容（保留危害因素库与检测项目）？")) return;
+    if (!confirm("清空主表格与调查表的所有内容（保留危害因素库）？")) return;
     pushUndo(); // 清空前存快照，Ctrl+Z 可复原
     emptyGrid();
     selectedRow = -1;
@@ -2594,7 +2593,7 @@
     return true;
   }
 
-  // ---------- 危害因素库 / 检测项目参考库：加载、保存与自动同步 ----------
+  // ---------- 危害因素库：加载、保存与自动同步 ----------
   function setLibStatus(state, msg) {
     for (const el of document.querySelectorAll(".lib-status")) {
       const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -2626,18 +2625,13 @@
   function normalizeLibrary(obj) {
     if (!obj || typeof obj !== "object") return null;
     const hf = Array.isArray(obj.hazardFactors) ? obj.hazardFactors.filter((h) => h && typeof h === "object") : null;
-    const di = Array.isArray(obj.detectionItems) ? obj.detectionItems.map(String) : null;
-    if (!hf && !di) return null;
-    const lib = {};
-    if (hf) lib.hazardFactors = hf;
-    if (di) lib.detectionItems = di;
-    return lib;
+    if (!hf) return null;
+    return { hazardFactors: hf };
   }
 
   function libraryObject() {
     return {
       hazardFactors: hazardFactors.map((h) => ({ ...h })),
-      detectionItems: detectionItems.slice(),
     };
   }
 
@@ -2689,7 +2683,7 @@
         else throw new Error("HTTP " + res.status);
       }
       const payload = {
-        message: "更新参考库（危害因素/检测项目）",
+        message: "更新参考库（危害因素库）",
         content,
         ...(libSha ? { sha: libSha } : {}),
         ...(cfg.branch ? { branch: cfg.branch } : {}),
@@ -3500,54 +3494,6 @@
     scheduleLibrarySync();
   }
 
-  // ---------- 检测项目 ----------
-  let selectedItem = -1;
-
-  function renderItems() {
-    const q = $("items-search").value.trim();
-    const dups = new Set(L.findDuplicates(detectionItems));
-    const list = detectionItems
-      .map((it, idx) => ({ it, idx }))
-      .filter((x) => !q || x.it.includes(q));
-    $("items-list").innerHTML = list
-      .map((x) => `<div class="item${x.idx === selectedItem ? " selected" : ""}${dups.has(x.it) ? " dup" : ""}" data-idx="${x.idx}">${escHtml(x.it)}${dups.has(x.it) ? "（重复）" : ""}</div>`)
-      .join("");
-    $("items-status").textContent = `共 ${detectionItems.length} 项 · 显示 ${list.length} 项${dups.size ? " · 重复 " + dups.size + " 项" : ""}`;
-  }
-  // 检测项目搜索防抖：列表逐键全量重建开销大
-  let itemsSearchTimer = null;
-  $("items-search").addEventListener("input", () => {
-    if (itemsSearchTimer) clearTimeout(itemsSearchTimer);
-    itemsSearchTimer = setTimeout(() => { itemsSearchTimer = null; renderItems(); }, 200);
-  });
-  $("items-list").addEventListener("click", (e) => {
-    const div = e.target.closest(".item");
-    if (!div) return;
-    selectedItem = Number(div.dataset.idx);
-    renderItems();
-  });
-  $("items-add").addEventListener("click", async () => {
-    const v = await askInput({ title: "新增检测项目", hint: "输入标准化检测项目名称" });
-    if (v === null) return;
-    const name = v.trim();
-    if (!name) { alert("名称不能为空。"); return; }
-    detectionItems.push(name);
-    selectedItem = detectionItems.length - 1;
-    renderItems();
-    $("items-count").textContent = detectionItems.length;
-    scheduleLibrarySync();
-  });
-  $("items-del").addEventListener("click", () => {
-    if (selectedItem < 0) { alert("请先点击选择要删除的项目。"); return; }
-    const name = detectionItems[selectedItem];
-    if (!confirm(`确定删除检测项目「${name}」？`)) return;
-    detectionItems.splice(selectedItem, 1);
-    selectedItem = -1;
-    renderItems();
-    $("items-count").textContent = detectionItems.length;
-    scheduleLibrarySync();
-  });
-
   // ---------- 联想提示 ----------
   function rebuildDatalist() {
     const seen = new Set();
@@ -3755,7 +3701,7 @@
   // 退出登录改由右上角用户菜单处理（点击姓名展开菜单 → 选「退出登录」），
   // 此处不再直接绑定 btn-logout 的退出逻辑，避免与菜单开合冲突
 
-  // ---------- 导入（仅主表测点布局，不导入危害因素库/检测项目） ----------
+  // ---------- 导入（仅主表测点布局，不导入危害因素库） ----------
 
   // 解析并导入一个 xlsx 工作簿；供「导入 Excel」按钮与「网站数据导入」共用。
   // 成功时弹提示并返回 { mainImported, surveyMatched, totalRows, message }；失败时抛错。
@@ -3897,7 +3843,7 @@
           }
           rowHeights = rows.map(() => ROW_H);
           rowOffsets = null;
-          L.computeRows(rows, { hazardFactors, detectionItems });
+          L.computeRows(rows, { hazardFactors });
           if (hasInput) {
             // 完整结构文件：保留文件里的覆盖值
             rows.forEach((row, i) => {
@@ -3911,7 +3857,7 @@
                 }
               }
             });
-            L.computeRows(rows, { hazardFactors, detectionItems });
+            L.computeRows(rows, { hazardFactors });
           } else {
             // 仅自动计算区文件：备注列（BI）允许手动编辑，导入时保留手动值
             rows.forEach((row, i) => {
@@ -3923,7 +3869,7 @@
                 }
               }
             });
-            L.computeRows(rows, { hazardFactors, detectionItems });
+            L.computeRows(rows, { hazardFactors });
           }
           selectedRow = -1;
         }
@@ -3942,12 +3888,12 @@
         activeTab = "main";
         document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
         document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
-        message = `导入成功：测点 ${mainImported} 行 + 调查表 ${surveyMatched} 个子表（危害因素库与检测项目保持现有）。`;
+        message = `导入成功：测点 ${mainImported} 行 + 调查表 ${surveyMatched} 个子表（危害因素库保持现有）。`;
       } else {
         activeTab = "main";
         document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === "main"));
         document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-main"));
-        message = `导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库与检测项目保持现有）。`;
+        message = `导入成功：测点 ${rows.length} 行，已同步到录入区（危害因素库保持现有）。`;
       }
       if (extraNote) message += "\n" + extraNote;
       alert(message);
@@ -3975,7 +3921,6 @@
   async function init() {
     // 先用空库快速启动（列结构 data-core 已同步就绪），内置库懒加载后再填充
     hazardFactors = [];
-    detectionItems = [];
     emptyGrid();
     buildHead();
     renderHazardHead();
@@ -3985,25 +3930,19 @@
     setStorageNotice(storageMode !== "server" && storageMode !== "github", noticeHtml());
     try {
       const lib = await loadLibrary();
-      if (lib) {
-        if (lib.hazardFactors) hazardFactors = lib.hazardFactors.map((h) => ({ ...h }));
-        if (lib.detectionItems) detectionItems = lib.detectionItems.map(String);
-      }
+      if (lib && lib.hazardFactors) hazardFactors = lib.hazardFactors.map((h) => ({ ...h }));
     } catch {}
-    if (!hazardFactors.length && !detectionItems.length) {
+    if (!hazardFactors.length) {
       // 无云端/本地参考库时回退内置库（懒加载）
       try {
         const defaults = await ensureLibraryDefaults();
         if (!hazardFactors.length && defaults.hazardFactors.length) hazardFactors = defaults.hazardFactors.map((h) => ({ ...h }));
-        if (!detectionItems.length && defaults.detectionItems.length) detectionItems = defaults.detectionItems.map(String);
       } catch {}
     }
     rebuildDatalist();
-    L.computeRows(rows, { hazardFactors, detectionItems });
+    L.computeRows(rows, { hazardFactors });
     $("hazard-count").textContent = hazardFactors.length;
-    $("items-count").textContent = detectionItems.length;
     renderHazard();
-    renderItems();
     applyGridWidths();
     applyHazardWidths();
     renderWindow();

@@ -442,7 +442,6 @@
     });
   }
 
-  // 统计参考库中检测项目重复项
   function findDuplicates(items) {
     const seen = new Map();
     for (const it of items) {

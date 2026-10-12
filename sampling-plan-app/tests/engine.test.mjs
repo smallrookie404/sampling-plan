@@ -155,9 +155,6 @@ if (!errs.AN || errs.AN !== "接害因素在危害因素库中未找到，请检
   if (errs.AN) throw new Error("AN 误报错误");
 }
 
-const dup = logic.findDuplicates(data.detectionItems);
-if (dup.length) throw new Error("检测项目不应有重复: " + dup.join(","));
-
 // 备注列（BI）：默认自动生成，手动编辑后保留手动值
 if (!Array.isArray(logic.TEXT_OVERRIDE_COLS) || !logic.TEXT_OVERRIDE_COLS.includes("BI")) {
   throw new Error("TEXT_OVERRIDE_COLS 应包含 BI");

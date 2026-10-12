@@ -60,7 +60,7 @@ if (res.status !== 500) throw new Error("未绑定 KV 应返回 500");
 res = await onRequestPut({ env: {}, request: { json: async () => [] } });
 if (res.status !== 500) throw new Error("未绑定 KV PUT 应返回 500");
 
-// ---- 参考库（危害因素库 + 检测项目参考）----
+// ---- 参考库（危害因素库）----
 
 // 初始为空
 res = await libraryGet({ env });
@@ -73,7 +73,6 @@ if (res.status !== 200 || typeof lib !== "object" || Object.keys(lib).length !==
 const sampleLib = {
   updatedAt: "2026-08-10T04:00:00.000Z",
   hazardFactors: [{ rec: "苯", name: "苯", dust: "", qual: "否", outsource: "否" }],
-  detectionItems: ["苯", "甲苯"],
 };
 res = await libraryPut({ env, request: { json: async () => sampleLib } });
 if (res.status !== 200) throw new Error("参考库 PUT 失败: " + res.status);
@@ -81,7 +80,7 @@ if (res.status !== 200) throw new Error("参考库 PUT 失败: " + res.status);
 // 读回（KV 往返，保留 updatedAt）
 res = await libraryGet({ env });
 lib = await res.json();
-if (lib.updatedAt !== sampleLib.updatedAt || lib.hazardFactors.length !== 1 || lib.detectionItems.length !== 2) {
+if (lib.updatedAt !== sampleLib.updatedAt || lib.hazardFactors.length !== 1) {
   throw new Error("参考库 KV 往返失败");
 }
 

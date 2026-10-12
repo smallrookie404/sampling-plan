@@ -298,7 +298,7 @@
   /**
    * 生成 xlsx。
    *  mainRows / mainWidths：必填，主表（自动计算区）。
-   *  hazardRows / itemRows：可选；提供则追加“危害因素”“检测项目”工作表（保持原表结构）。
+   *  hazardRows：可选；提供则追加"危害因素"工作表（保持原表结构）。
    */
   async function writeWorkbook(arg) {
     let sheets;
@@ -312,11 +312,10 @@
         dataValidations: s.dataValidations,
       }));
     } else {
-      const { hazardRows, mainRows, itemRows, mainWidths } = arg;
+      const { hazardRows, mainRows, mainWidths } = arg;
       sheets = [];
       if (hazardRows && hazardRows.length) sheets.push({ name: "危害因素", rows: hazardRows });
       sheets.push({ name: "测点布局情况调查", rows: mainRows, widths: mainWidths });
-      if (itemRows && itemRows.length) sheets.push({ name: "检测项目", rows: itemRows, hidden: true });
     }
 
     const zip = new JSZip();

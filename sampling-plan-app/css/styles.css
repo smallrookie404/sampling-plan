@@ -520,31 +520,6 @@ table.grid {
 table.grid.hazard thead th { top: 0; }
 table.grid.hazard td { height: 26px; }
 
-/* 检测项目列表 */
-.items-list {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  background: #fff;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 10px 14px;
-  column-count: 4;
-  column-gap: 18px;
-}
-.items-list .item {
-  break-inside: avoid;
-  padding: 2px 4px;
-  border-bottom: 1px dashed #e5e7eb;
-  font-size: 12px;
-  cursor: pointer;
-  border-radius: 3px;
-}
-.items-list .item.selected {
-  background: #dbeafe;
-  box-shadow: inset 0 0 0 1.5px var(--primary);
-}
-.items-list .item.dup { color: #b3261e; font-weight: 600; }
 .lib-ok { color: #067647 !important; }
 
 /* 弹窗 */
@@ -710,7 +685,6 @@ body.fullscreen-mode .tab-panel.active {
 
 @media (max-width: 900px) {
   .topbar { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .items-list { column-count: 2; }
 }
 
 /* 「网站数据导入」弹窗：项目搜索（对齐「数据上传」搜索模块） */

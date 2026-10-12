@@ -1,4 +1,4 @@
-// Cloudflare Pages Function：参考库（危害因素库 + 检测项目参考）读写（存于 Cloudflare KV）
+// Cloudflare Pages Function：危害因素库读写（存于 Cloudflare KV）
 // 需要绑定 KV 命名空间，binding 名称：SAMPLING_RECORDS
 
 const KEY = "library";

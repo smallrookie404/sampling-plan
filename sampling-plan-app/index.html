@@ -198,7 +198,6 @@
     <button class="tab active" data-tab="main">测点布局调查</button>
     <button class="tab" data-tab="survey">调查表</button>
     <button class="tab" data-tab="hazard">危害因素库 <span id="hazard-count" class="badge"></span></button>
-    <button class="tab" data-tab="items">检测项目参考 <span id="items-count" class="badge"></span></button>
     <button class="tab tabs-right" data-tab="noise">噪声数据结果</button>
   </nav>
   <div id="storage-notice" class="notice hidden">
@@ -282,21 +281,6 @@
         <tbody id="survey-body"></tbody>
       </table>
     </div>
-  </section>
-
-  <section id="tab-items" class="tab-panel">
-    <div class="grid-toolbar">
-      <div class="left">
-        <button id="items-add" class="btn small">+ 新增项目</button>
-        <button id="items-del" class="btn small danger">删除选中项目</button>
-      </div>
-      <div class="right">
-        <input id="items-search" class="search" type="text" placeholder="搜索检测项目…" />
-        <span id="items-status" class="status"></span>
-        <span class="status lib-status"></span>
-      </div>
-    </div>
-    <div id="items-list" class="items-list"></div>
   </section>
 
   <section id="tab-noise" class="tab-panel">
@@ -400,7 +384,7 @@
         <button id="gh-close" class="btn small ghost">×</button>
       </div>
       <div class="modal-body">
-<p class="prompt-hint">部署在 GitHub Pages 等静态网页时，数据（records.json）与参考库（危害因素库/检测项目，library.json）都通过 GitHub API 读写仓库，请填写以下信息（Token 仅保存在本机浏览器，不会写入仓库）。</p>
+<p class="prompt-hint">部署在 GitHub Pages 等静态网页时，数据（records.json）与危害因素库（library.json）都通过 GitHub API 读写仓库，请填写以下信息（Token 仅保存在本机浏览器，不会写入仓库）。</p>
         <label class="field-label">仓库（用户名/仓库名）</label>
         <input id="gh-repo" class="search prompt-input" type="text" placeholder="例如：yourname/sampling-plan" />
         <label class="field-label">分支</label>

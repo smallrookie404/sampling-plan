@@ -141,15 +141,6 @@ for (let r = 1; r < 612; r++) {
   });
 }
 
-// --- 检测项目 ---
-const itemXml = await sheetByName("检测项目");
-const itemGrid = parseSheet(itemXml, sharedStrings);
-const detectionItems = [];
-for (let r = 1; r < 445; r++) {
-  const v = cell(itemGrid, r, 0);
-  if (v !== "") detectionItems.push(v);
-}
-
 // --- 主表表头（导出对齐用） ---
 const mainXml = await sheetByName("测点布局情况调查");
 const mainGrid = parseSheet(mainXml, sharedStrings);
@@ -164,7 +155,7 @@ for (let c = 0; c < 61; c++) {
 // 自动计算区第 29 列（AC 列）表头规范化为“*作业方式”，与自动区其他列风格一致
 if (mainHeaders[28] === "作业方式") mainHeaders[28] = "*作业方式";
 
-const data = { hazardFactors, detectionItems, mainHeaders };
+const data = { hazardFactors, mainHeaders };
 const wrap = (varName, obj, comment) =>
   "/* 由 scripts/extract-data.mjs 从原 Excel 自动生成，请勿手工编辑 */\n" +
   comment +
@@ -184,10 +175,10 @@ fs.writeFileSync(
 );
 fs.writeFileSync(
   path.resolve("js/data-library.js"),
-  wrap("SamplingLibrary", { hazardFactors, detectionItems }, "// 内置危害因素库 + 检测项目（较大，首次用库时按需加载）\n"),
+  wrap("SamplingLibrary", { hazardFactors }, "// 内置危害因素库（较大，首次用库时按需加载）\n"),
   "utf8"
 );
 console.log(
-  `OK hazard=${hazardFactors.length} items=${detectionItems.length} headers=${mainHeaders.length}`
+  `OK hazard=${hazardFactors.length} headers=${mainHeaders.length}`
 );
 console.log("mainHeaders:", JSON.stringify(mainHeaders.slice(0, 24)));

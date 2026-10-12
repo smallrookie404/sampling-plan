@@ -79,7 +79,12 @@ sampling-plan/
 | Cloudflare KV | key `records-index` | key `record:<id>` | `functions/api/records.js` |
 
 - 环境探测：app.js `detectStorageMode()` 用 `/api/health` 判定 `server`，否则看 GitHub 配置 → `github` / `static-unconfigured`；`file://` 打开为 `temp`（仅浏览器暂存）。
-- **「取较新一端并互相同步」只实现在参考库（library）**（app.js `loadLibrary`，按 `updatedAt` 比较后回写较旧端）。**记录（records）侧不做时间比较**，读取优先级固定为 GitHub > 本地服务 > localStorage 镜像。
+- **⚠ 三端各自独立存储，互不同步（2026-10-13 起）**：每类数据**只写一个「主端」**，读取时按 `updatedAt` 取最新，**不再把较新一端回写到较旧一端**。
+  - 主端判定（记录与参考库同一套规则）：静态部署 + 已配 GitHub → **GitHub**；否则当前服务端（本地版 = 项目文件夹；Cloudflare Pages = **KV**）；再否则只写浏览器 localStorage。
+  - 参考库：`persistLibrary` 只写主端（原来会**同时写 GitHub + KV**）；`loadLibrary` 只读不写（原来会回写较旧端）。
+  - `mirrorLibraryToLocal` 已改为**纯 localStorage 镜像**——原来在 server 模式下会 `PUT /api/library`，导致**每次打开页面都写一次 KV**。
+  - 记录侧读取优先级仍为 GitHub > 本地服务 > localStorage 镜像；写入与读取保持同一端。
+  - 目的：Cloudflare KV 免费额度**写只有 1000/天**，杜绝无谓写。剩余 KV 写只来自：Pages 版保存/删除记录、Pages 版改动参考库、`/api/team` 团队配置（低频）。
 - 兼容迁移：`server.mjs` 与 `functions/api/records.js` 都带 `migrateLegacy()`，会把旧版「整表记录数组」自动拆成「索引 + 单条」（本地会建出 `data/records/`）；仓库中的 `records.json` 仍是旧格式属于正常现象。
 
 **浏览器存储键**：
@@ -124,7 +129,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 ## 关键机制与维护要点
 
-1. **数据同步**：记录与参考库按上表三端存储契约写入。**只有参考库**做「取较新一端并互相同步」；记录侧读取优先级固定为 GitHub > 本地服务 > localStorage 镜像。
+1. **数据同步**：记录与参考库按上表三端存储契约写入，但**三端各自独立、互不同步**（每类数据只写「主端」，读取按 `updatedAt` 取最新，不回写另一端）；记录侧读取优先级为 GitHub > 本地服务 > localStorage 镜像。**改同步逻辑前先看「三端存储契约」一节**——重点别引入「开页即写」或「双写」（会烧 Cloudflare KV 的 1000 写/天额度）。
 2. **统一登录**（upload.js）：平台登录（账号/密码 RSA 加密/验证码）成功后调 `auth/info` 获取权威用户信息并解析机构（顶层 `organizationId` 优先，其次 `organization.organizationId`），机构仅用于接口数据范围、**不在界面显示**。会话存 sessionStorage；登录遮罩默认显示、有会话时内联脚本立即隐藏，避免主界面闪现。
 3. **团队配置云端保存**：成员/调查人/复核人/日期确认后，本地 localStorage 兜底 + Cloudflare KV（`/api/team`，按账号 `team:<userCode>`）同步，换电脑登录同一账号可读取；确认后切换项目不清空，手动修改才更新。
 4. **平台代理**：`functions/api/platform/[[path]].js` 用 `cloudflare:sockets` 原始 TCP 连接平台 `http://223.93.144.122:27800`，透传请求头/响应头/Cookie 并解压 gzip，绕过 Cloudflare 直连 IP 限制；`upload.js` 在 pages.dev 上自动走 `/api/platform`，本地 http/file 直连平台。代理只透传固定头白名单（authorization / organizationId / belongProject / content-type / user-agent / accept / cookie），新增自定义头必须同步白名单。
@@ -139,7 +144,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 - 平台接口为真实生产系统，上传/成员同步等写操作会影响真实数据，改动接口契约前先核对（请求体数组/对象格式易踩坑：成员新增传对象、成员删除传裸数字数组、上传用 FormData 且 query/body/请求头三处联动）。
 - `data/library.json`、`data/records.json` 由应用自动写回，仓库中保持提交以利备份；`.gitignore` 已排除原版 Excel 模板（含调查数据）。
 - `data/records.json` 目前仍是旧版「整表记录」格式（元素含 `rows`），首次访问 `/api/records` 时会自动迁移为索引 + `data/records/<id>.json`；迁移是幂等的，不要手工去改。
-- 打开页面、修改参考库都会触发 `scheduleLibrarySync` 防抖写回 `data/library.json`（可能同时写 GitHub / KV），调试或跑测试前后注意备份与恢复。
+- **只有修改参考库**才会触发 `scheduleLibrarySync` 防抖写回（约 1.2s，只写一个主端）；**打开页面不再写参考库**（`mirrorLibraryToLocal` 已改为纯 localStorage）。调试或跑测试前后仍建议备份与恢复 `data/library.json`。
 - 测试契约：`tests/ui.smoke.mjs` 依赖 `td[data-r]/td[data-c]`、`td.rowno`、`div.computed-text`、`#grid-status` 文案与 GitHub 配置键名；`tests/xlsxio.test.mjs` 依赖「只导出 W~BI 自动计算区」的行为。改 DOM 结构或导出范围前先看这些断言。
 - 纯函数引擎（logic.js）是唯一可被 Node 直接测试的部分，新增计算请优先放这里，不要在 app.js 里再写一份公式。
 - 源文件统一 UTF-8；页面迭代频繁，部署后浏览器需 Ctrl+F5 强刷。

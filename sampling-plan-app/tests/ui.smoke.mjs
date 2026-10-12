@@ -246,16 +246,7 @@ if (hazardCount < 100) throw new Error("危害因素数量异常: " + hazardStat
 console.log("危害因素页:", hazardStatus, "✔");
 await page.screenshot({ path: SHOT_DIR + "/2-hazard.png" });
 
-// 5) 检测项目页
-await page.click('.tab[data-tab="items"]');
-await page.waitForSelector("#items-list .item");
-const itemCount = await page.$$eval("#items-list .item", (els) => els.length);
-const itemStatus = await page.textContent("#items-status");
-if (itemCount < 400) throw new Error("检测项目显示过少: " + itemCount);
-console.log("检测项目页:", itemStatus, "✔");
-await page.screenshot({ path: SHOT_DIR + "/3-items.png" });
-
-// 6) 浏览器内导出 Excel
+// 5) 浏览器内导出 Excel
 await page.click('.tab[data-tab="main"]');
 await page.waitForSelector("#main-grid");
 const [download] = await Promise.all([
