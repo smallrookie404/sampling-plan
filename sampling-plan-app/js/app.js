@@ -68,7 +68,7 @@
   const TEXT_OVERRIDE_COLS = L.TEXT_OVERRIDE_COLS || ["BI"];
   const SELECT_COLS = new Set(["Y", "Z", "AO", "AR", "U", "BH"]); // 下拉单元格列（AI/AJ 已改为普通文本格）
   // 录入区下拉联想选项：作业方式 / 采样方式（datalist，可手动录入）
-  const ZUOYE_FS = ["手工作业", "半手工作业", "全自动作业"];
+  const ZUOYE_FS = ["手工作业", "半手工作业", "自动化作业"];
   const CAIYANG_FS = ["定点", "个体"];
   const NUM_COLS = new Set(["E", "F", "G", "H", "I", "AA", "AB", "AG", "AH", "AY", "AZ", "BA", "BB"]);
   // 显示顺序：A..M → V（备注，位于“是否采样”后面）→ N..U → W..BI
