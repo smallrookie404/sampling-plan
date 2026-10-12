@@ -311,6 +311,143 @@
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 5000);
   }
 
+  // ---------------- 生成检评报告（Word） ----------------
+  // 链路（与平台「检评报告」页一致）：
+  //   ① 模板列表  GET /api/pjbgModule?pageNumber=1&pageSize=-1&organizationId=<orgId>
+  //   ② 生成报告  GET /api/jpbgReportData/jpbgYL?projectId=&moduleId=&organizationId=  → body = PDF 路径
+  //   ③ 同路径把 .pdf 换成 .docx 下载（平台 Word 与 PDF 同目录同名）
+  // ⚠ 平台生成一次约 20s 且**无缓存**，调用期间要把按钮禁用并给出进度提示。
+  async function genPjbgDocx(c) {
+    const tr = await upRequest(c, 'GET', '/api/pjbgModule?pageNumber=1&pageSize=-1&organizationId=' + encodeURIComponent(c.orgId || ''));
+    const recs = pickRows(await tr.json());
+    if (!recs.length) throw new Error('未获取到检评报告模板，请先在平台创建模板');
+    let mod = null;
+    for (const x of recs) { if (/检评/.test(String(x.name || ''))) { mod = x; break; } }
+    if (!mod) mod = recs[0];
+    const rr = await upRequest(
+      c, 'GET',
+      '/api/jpbgReportData/jpbgYL?projectId=' + encodeURIComponent(c.project.id) +
+        '&moduleId=' + encodeURIComponent(mod.id) + '&organizationId=' + encodeURIComponent(c.orgId || '')
+    );
+    const j = await rr.json();
+    const body = j && j.body;
+    if (!body) throw new Error('生成检评报告失败：' + ((j && j.message) || '无返回'));
+    const enc = String(body).replace(/\.pdf$/i, '.docx').split('/').map(encodeURIComponent).join('/');
+    const resp = await fetch(c.apiBase + enc, { headers: c.token ? { Authorization: c.token } : {} });
+    if (!resp.ok) throw new Error('下载报告失败(HTTP ' + resp.status + ')');
+    // 文件名与平台「直接导出」完全一致：平台用的是 wordUrl.substring(lastIndexOf('/')+1)，
+    // 即 body 路径的最后一段（把 .pdf 换成 .docx），例如
+    // BTC26-SZJC0959-浙江永贵电器股份有限公司_评价报告_49.docx
+    const fileName = String(body).split('/').pop().replace(/\.pdf$/i, '.docx');
+    const raw = await resp.arrayBuffer();
+    // 报告里「存在高毒物品」列平台有时输出 0/1 → 按字典换成 否/是
+    const buf = await patchHighToxColumn(raw);
+    return { buf: buf, modName: mod.name || '', fileName: fileName };
+  }
+
+  // ---------------- 报告后处理：「存在高毒物品」列 0/1 → 否/是 ----------------
+  // 平台模板会把该列的原始标记直接印出来（0=否、1=是），需按字典换成中文再交付。
+  const HIGHTOX_HEAD = '存在高毒物品';
+
+  // 取一个 <w:tc>…</w:tc> 里的可见文本（拼接所有 <w:t>，含软换行 <w:br/> 视为换行）
+  function cellText(tcXml) {
+    let s = '';
+    const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    let m;
+    while ((m = re.exec(tcXml))) s += m[1];
+    return s
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+      .trim();
+  }
+
+  // 把单元格文本改成 text：第一个 <w:t> 承载内容，其余清空（保留段落结构）
+  function setCellText(tcXml, text) {
+    let first = true;
+    return tcXml.replace(/<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g, function () {
+      if (first) { first = false; return '<w:t xml:space="preserve">' + text + '</w:t>'; }
+      return '<w:t xml:space="preserve"></w:t>';
+    });
+  }
+
+  // 在 document.xml 里找表头含「高毒物品」的表，把该列值为 0/1 的单元格换成 否/是。
+  // 表头可能被拆成多个 run / 带软换行（如「存在高\n毒物品」），故用**包含**匹配而非全等。
+  // 返回 { xml, changed }。
+  function fixHighToxColumn(xml) {
+    if (xml.indexOf(HIGHTOX_HEAD) < 0) return { xml: xml, changed: 0 };
+    let changed = 0;
+    const out = xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return tbl;
+      const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+      let col = -1;
+      for (let i = 0; i < headCells.length; i++) {
+        if (cellText(headCells[i]).indexOf(HIGHTOX_HEAD) >= 0) { col = i; break; }
+      }
+      if (col < 0) return tbl;   // 不是这张表
+      let newTbl = tbl;
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+        if (col >= cells.length) continue;
+        const t = cellText(cells[col]);
+        if (t !== '0' && t !== '1') continue;
+        const newRow = rows[ri].replace(cells[col], setCellText(cells[col], t === '1' ? '是' : '否'));
+        newTbl = newTbl.replace(rows[ri], newRow);
+        changed++;
+      }
+      return newTbl;
+    });
+    return { xml: out, changed: changed };
+  }
+
+  // 对下载到的报告 docx 做后处理；失败时原样返回（不影响出报告）
+  async function patchHighToxColumn(buf) {
+    try {
+      const JSZip = await ensureJSZip();
+      const zip = await JSZip.loadAsync(buf);
+      const f = zip.file('word/document.xml');
+      if (!f) return buf;
+      const xml = await f.async('string');
+      const r = fixHighToxColumn(xml);
+      if (!r.changed) return buf;
+      console.info('[检评报告] 「存在高毒物品」列 0/1 → 否/是，共修正 ' + r.changed + ' 处');
+      zip.file('word/document.xml', r.xml);
+      return await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+    } catch (e) {
+      console.warn('[检评报告] 高毒物品列后处理失败，改用原始文件：', e);
+      return buf;
+    }
+  }
+
+  // 页签栏「生成检评报告」按钮：按「数据上传」里选中的项目生成并下载 Word
+  async function generatePjbgReport() {
+    const api = uploadApi();
+    const ctx = api && typeof api.getUpstreamContext === 'function' ? api.getUpstreamContext() : null;
+    if (!ctx || !ctx.loggedIn || !ctx.project) {
+      alert('尚未选择项目。\n\n请先点击顶部工具栏的「数据上传」，查询并选中项目后，再生成检评报告。');
+      return;
+    }
+    const btn = $('btn-pjbg');
+    const old = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+    try {
+      const g = await genPjbgDocx(ctx);
+      // 文件名沿用平台生成的原始文件名（与「直接在网站上导出」一致）
+      const base = String(ctx.project.code || 'report').replace(/[\\/:*?"<>|]/g, '_');
+      const name = g.fileName || (base + '-检评报告.docx');
+      saveBlobAs(new Blob([g.buf], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }), name);
+      alert('已生成检评报告（模板「' + g.modName + '」）：\n' + name +
+        '\n\n文件已保存到浏览器下载目录。');
+    } catch (e) {
+      console.error(e);
+      alert('生成检评报告失败：' + (e && e.message ? e.message : e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = old || '生成检评报告'; }
+    }
+  }
+
   // 并行下载清单里的图片；失败的单张跳过
   async function fetchImageItems(c, list) {
     const out = await Promise.all(list.map(async (it) => {
@@ -616,7 +753,7 @@
     }
   }
 
-  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout };
+  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout, generatePjbgReport, genPjbgDocx, fixHighToxColumn, patchHighToxColumn };
 
   // 绑定按钮（主工具栏 + 全屏工具栏）与弹窗内交互
   function bind() {
@@ -629,6 +766,12 @@
     });
     const closeBtn = $('blf-close'); if (closeBtn) closeBtn.addEventListener('click', closeBlfModal);
     const cancelBtn = $('blf-cancel'); if (cancelBtn) cancelBtn.addEventListener('click', closeBlfModal);
+    // 页签栏「生成检评报告」（有 class=tab 但无 data-tab，不参与页签切换）
+    const pjbgBtn = $('btn-pjbg');
+    if (pjbgBtn && !pjbgBtn.__pjbgBound) {
+      pjbgBtn.__pjbgBound = true;
+      pjbgBtn.addEventListener('click', generatePjbgReport);
+    }
     const doBtn = $('blf-do');
     if (doBtn) doBtn.addEventListener('click', () => {
       if (!blfProject) { alert('请先在上方搜索并选中项目，再导入采样方案。'); return; }

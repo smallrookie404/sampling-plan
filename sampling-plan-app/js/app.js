@@ -3251,6 +3251,8 @@
   // ---------- 页签 ----------
   document.querySelectorAll(".tab").forEach((t) => {
     t.addEventListener("click", () => {
+      // 「生成检评报告」等只有动作、没有面板的页签样按钮：不参与页签切换
+      if (!t.dataset.tab) return;
       activeTab = t.dataset.tab;
       document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + activeTab));

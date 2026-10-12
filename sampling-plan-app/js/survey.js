@@ -1444,10 +1444,12 @@
     // 导入：从已解析的工作表数组（{ 表名: aoa，首行表头 }）识别 6 个子表并写入；返回匹配到的子表数
     importFromArray: (byName) => {
       surveyRows(); // 确保 surveyData 已初始化
-      // 「单元/工作场所」与各「岗位(工种)」列：上游常用半/全角逗号连接多个值，导入时统一成顿号「、」
-      const isUnitOrJob = (h) => {
+      // 「单元/工作场所」、各「岗位(工种)」列，以及「工作地点 / 使用地点 / 设置地点」列：
+      // 上游常用半/全角逗号连接多个值，导入时统一成顿号「、」
+      const COMMA_COLS = ["工作地点", "使用地点", "设置地点"];
+      const isCommaCol = (h) => {
         const k = String(h ?? "").replace(/^\*/, "").trim();
-        return k === "单元/工作场所" || k.indexOf("(工种)") >= 0;
+        return k === "单元/工作场所" || k.indexOf("(工种)") >= 0 || COMMA_COLS.indexOf(k) >= 0;
       };
       let matched = 0;
       for (const sh of SURVEY_SHEETS) {
@@ -1461,7 +1463,7 @@
           if (!r || !r.some((v) => v !== "" && v !== null && v !== undefined)) continue;
           rows.push(sh.headers.map((h) => {
             let v = idx[h] !== undefined ? String(r[idx[h]] ?? "") : "";
-            if (isUnitOrJob(h)) v = v.replace(/[,，]/g, "、");
+            if (isCommaCol(h)) v = v.replace(/[,，]/g, "、");
             return v;
           }));
         }

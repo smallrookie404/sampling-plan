@@ -88,6 +88,9 @@ body {
   color: #4b5563;
 }
 .tab:hover { background: #e8edf4; }
+/* 页签样式的动作按钮（如「生成检评报告」）：生成期间禁用 */
+.tab:disabled { opacity: .5; cursor: not-allowed; }
+.tab:disabled:hover { background: transparent; }
 .tab.active {
   background: #fff;
   border-color: var(--line);
