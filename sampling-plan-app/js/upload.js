@@ -1337,23 +1337,38 @@
       return String(s === null || s === undefined ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
-    // 取文本：报告里一个单元格内的多行值写在同一个 <w:t> 里、用 <w:br/> 分隔
-    // （WPS/Aspose 生成的非标准写法），须把 <w:br/> 还原成换行；单元格内多个段落用空格连接
+    // 取文本：把 <w:br/> 还原成换行。两种写法都要支持：
+    //   ① 非标准——<w:br/> 写在 <w:t> **内部**（WPS/Aspose 的部分模板，如检测报告）
+    //   ② 标准  ——<w:br/> 与 <w:t> **并列**在 <w:r> 里（如检评报告）
+    // 故改为按文档顺序遍历，遇到 t 取文本、遇到 br 换行、遇到 tab 制表；
+    // 单元格内多个段落由 xmlText 用空格连接。
     function runText(scope) {
-      const ts = scope.getElementsByTagNameNS(W_NS, 't');
-      const parts = [];
-      for (let i = 0; i < ts.length; i++) {
-        let s = '';
-        const kids = ts[i].childNodes;
+      let out = '';
+      (function walk(node) {
+        const kids = node.childNodes;
         for (let n = 0; n < kids.length; n++) {
           const c = kids[n];
-          if (c.nodeType === 3) s += c.nodeValue || '';
-          else if (c.nodeType === 1 && c.localName === 'br') s += '\n';
-          else if (c.nodeType === 1 && c.localName === 'tab') s += '\t';
+          if (c.nodeType === 3) { out += c.nodeValue || ''; continue; }
+          if (c.nodeType !== 1) continue;
+          const ln = c.localName;
+          if (ln === 't') {
+            const tk = c.childNodes;
+            for (let k = 0; k < tk.length; k++) {
+              const d = tk[k];
+              if (d.nodeType === 3) out += d.nodeValue || '';
+              else if (d.nodeType === 1 && d.localName === 'br') out += '\n';
+              else if (d.nodeType === 1 && d.localName === 'tab') out += '\t';
+            }
+          } else if (ln === 'br') {
+            out += '\n';
+          } else if (ln === 'tab') {
+            out += '\t';
+          } else {
+            walk(c);
+          }
         }
-        parts.push(s);
-      }
-      return parts.join('').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').replace(/^\s+|\s+$/g, '');
+      })(scope);
+      return out.replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').replace(/^\s+|\s+$/g, '');
     }
     function xmlText(el) {
       const ps = el.getElementsByTagNameNS(W_NS, 'p');
@@ -1368,8 +1383,20 @@
       return runText(el);
     }
 
-    // 从 docx 二进制提取「工作场所噪声评判结果」表，返回 { rows: string[][] }
-    async function parseNoiseTableFromDocx(buf) {
+    // 兼容平台列表接口的多种返回结构（records / rows / list / data，或直接是数组）
+    function pickListRows(j) {
+      const cands = [j, j && j.body, j && j.data];
+      for (const c of cands) {
+        if (Array.isArray(c)) return c;
+        if (c && typeof c === 'object') {
+          for (const k of ['records', 'rows', 'list', 'data']) if (Array.isArray(c[k])) return c[k];
+        }
+      }
+      return [];
+    }
+
+    // 通用：从 docx 里取「某个标题段落下面的第一张表」，返回 { rows: string[][] }
+    async function parseTableAfterHeadingFromDocx(buf, keyword, label) {
       const JSZip = await ensureJSZip();
       const zip = await JSZip.loadAsync(buf);
       const f = zip.file('word/document.xml');
@@ -1386,12 +1413,12 @@
         if (node.localName === 'p') {
           const t = xmlText(node);
           if (t) prev = t;
-        } else if (node.localName === 'tbl' && prev.indexOf('工作场所噪声评判结果') >= 0) {
+        } else if (node.localName === 'tbl' && prev.indexOf(keyword) >= 0) {
           tbl = node;
           break;
         }
       }
-      if (!tbl) throw new Error('未在报告中找到「工作场所噪声评判结果」表');
+      if (!tbl) throw new Error('未在报告中找到「' + (label || keyword) + '」表');
       const rows = [];
       const trs = tbl.getElementsByTagNameNS(W_NS, 'tr');
       for (let i = 0; i < trs.length; i++) {
@@ -1401,6 +1428,13 @@
         rows.push(cells);
       }
       return { rows: rows };
+    }
+
+    // 从**检评报告**里取「表7-3 噪声检测结果分析与评价」表，返回 { rows: string[][] }
+    // （该表列：测量编号 / 单元·工作场所 / 岗位·工种·测量点·对象 / 接触时间 / 噪声性质 /
+    //   测量范围 / 测量结果 / LEX,8h / LEX,W / 接触限值 / 单项结论）
+    async function parsePjbgNoiseTableFromDocx(buf) {
+      return parseTableAfterHeadingFromDocx(buf, '噪声检测结果分析与评价', '噪声检测结果分析与评价');
     }
 
     // 展示用表格：① 删除「测量起止时间」列；② 在「岗位/工种/测量点/对象」右侧新增一列，
@@ -1471,6 +1505,9 @@
     }
 
     let noiseCache = null; // { projectId, data }
+    // 噪声页签加载时下载到的检评报告原始 docx：供「生成检评报告」直接复用，
+    // 省掉平台再生成一次（约 20s）。{ projectId, buf, fileName, modName }
+    let pjbgBufCache = null;
     let noiseLoading = false;
 
     // ---------- 噪声筛选汇总（非噪声车间岗位 / 噪声超标车间岗位） ----------
@@ -1484,6 +1521,7 @@
     const NOISE_OVER_LIMIT = 85;
     const NOISE_SUMMARY_DEFS = [
       { key: 'nonNoise', title: '非噪声车间岗位', rule: 'LEX 最大值 < 80 dB', cls: 'ok' },
+      { key: 'noiseWorkshop', title: '噪声车间岗位', rule: 'LEX 最大值 ≥ 80 dB', cls: 'noise' },
       { key: 'overWorkshop', title: '噪声超标车间岗位', rule: 'LEX 最大值 ≥ 85 dB', cls: 'over' },
     ];
     let noiseSummaryData = null;
@@ -1495,10 +1533,10 @@
     }
     function noiseNorm(s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); }
 
-    // 由「展示用噪声行」计算筛选结果，返回 { nonNoise, overWorkshop, groupCount }
-    // nonNoise / overWorkshop 为「按车间合并」后的数组：[{ unit, jobs:[岗位, ...] }]（顺序=首次出现）
+    // 由「展示用噪声行」计算筛选结果，返回 { nonNoise, noiseWorkshop, overWorkshop, groupCount }
+    // 三个列表均为「按车间合并」后的数组：[{ unit, jobs:[岗位, ...] }]（顺序=首次出现）
     function buildNoiseSummary(display) {
-      const out = { nonNoise: [], overWorkshop: [], groupCount: 0 };
+      const out = { nonNoise: [], noiseWorkshop: [], overWorkshop: [], groupCount: 0 };
       if (!display || display.length < 2) return out;
       const head = display[0];
       const findCol = function (name) {
@@ -1549,17 +1587,32 @@
         if (g.job && ws.jobs.indexOf(g.job) < 0) ws.jobs.push(g.job);
       };
       const nonIdx = new Map();
+      const noiseIdx = new Map();
       const overIdx = new Map();
       groups.forEach(function (g) {
         if (g.max < NOISE_NON_LIMIT) addGroup(out.nonNoise, nonIdx, g);
+        else addGroup(out.noiseWorkshop, noiseIdx, g);   // 噪声车间岗位：LEX 最大值 ≥ 80 dB
         if (g.max >= NOISE_OVER_LIMIT) addGroup(out.overWorkshop, overIdx, g);
       });
       return out;
     }
 
+    // 从**检评报告** docx 直接算出「非噪声车间岗位」清单（供「生成检评报告」删除噪声危害用，
+    // 不依赖是否打开过噪声页签）。返回 [{ unit, job }]；解析失败返回 null。
+    async function noiseNonNoiseFromBuf(buf) {
+      try {
+        const data = await parsePjbgNoiseTableFromDocx(buf);
+        const s = buildNoiseSummary(buildNoiseDisplay(data.rows));
+        const out = [];
+        for (const g of s.nonNoise) for (const j of g.jobs) out.push({ unit: g.unit, job: j });
+        return out;
+      } catch (e) {
+        return null;
+      }
+    }
+
     // 把「按车间合并」的结果拼成文本：车间岗位、岗位；车间岗位、岗位
-    function noiseSummaryText(list) {
-      return (list || []).map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
+    function noiseSummaryText(list) {      return (list || []).map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
     }
     // 岗位总数（用于计数徽标）
     function noiseSummaryJobCount(list) {
@@ -1596,7 +1649,7 @@
       if (!box) return;
       const s = buildNoiseSummary(display);
       noiseSummaryData = s;
-      const hasAny = s.nonNoise.length || s.overWorkshop.length;
+      const hasAny = s.nonNoise.length || s.noiseWorkshop.length || s.overWorkshop.length;
       if (!hasAny) { box.innerHTML = ''; box.classList.add('hidden'); return; }
       let html = '<div class="noise-summary-head"><strong>筛选结果</strong>'
         + '<span class="noise-summary-hint">同一「车间+岗位」合并全部测量点，取所有 LEX 列的最大值（非数字按 0）；结果按车间合并</span>'
@@ -1669,18 +1722,32 @@
         if (empty) empty.classList.add('hidden');
         renderNoiseTable(box, noiseCache.data);
         if (status) status.textContent = '项目 ' + (selectedProject.code || '') + ' · 共 ' + Math.max(0, noiseCache.data.rows.length - 1) + ' 行';
+        enterNoisePanel();   // 数据已就绪 → 允许进入
         return;
       }
       noiseLoading = true;
       setNoiseTabLoading(true);
       if (empty) empty.classList.add('hidden');
       box.innerHTML = '';
-      if (status) status.textContent = '加载中…（正在生成并解析检测报告）';
+      if (status) status.textContent = '加载中…（正在生成并解析检评报告）';
       try {
+        // 数据源：**检评报告**（不是检测报告）——模板列表 → jpbgYL 生成 → 同路径 .docx 下载
+        // → 取「噪声检测结果分析与评价」标题下的表，与报告里的表保持同一格式
+        const tr = await apiRequest(
+          'GET',
+          '/api/pjbgModule?pageNumber=1&pageSize=-1&organizationId=' + encodeURIComponent(orgId || ''),
+          { token: token, orgId: orgId, timeout: 60000 }
+        );
+        const recs = pickListRows(tr.data);
+        if (!recs.length) throw new Error('未获取到检评报告模板，请先在平台创建模板');
+        let mod = null;
+        for (const x of recs) { if (/检评/.test(String(x.name || ''))) { mod = x; break; } }
+        if (!mod) mod = recs[0];
         const rr = await apiRequest(
           'GET',
-          '/api/jcbgReport/jcbgYl?projectId=' + encodeURIComponent(pid) + '&organizationId=' + encodeURIComponent(orgId || ''),
-          { token: token, orgId: orgId, timeout: 120000 }
+          '/api/jpbgReportData/jpbgYL?projectId=' + encodeURIComponent(pid) +
+            '&moduleId=' + encodeURIComponent(mod.id) + '&organizationId=' + encodeURIComponent(orgId || ''),
+          { token: token, orgId: orgId, timeout: 300000 }
         );
         const body = rr.data && rr.data.body;
         if (rr.status !== 200 || typeof body !== 'string' || !body) {
@@ -1688,11 +1755,20 @@
         }
         const enc = body.replace(/\.pdf$/i, '.docx').split('/').map(encodeURIComponent).join('/');
         const resp = await fetch(API_BASE + enc, { headers: token ? { Authorization: token } : {} });
-        if (!resp.ok) throw new Error('下载检测报告失败(HTTP ' + resp.status + ')');
-        const data = await parseNoiseTableFromDocx(await resp.arrayBuffer());
+        if (!resp.ok) throw new Error('下载检评报告失败(HTTP ' + resp.status + ')');
+        const raw = await resp.arrayBuffer();
+        const data = await parsePjbgNoiseTableFromDocx(raw);
+        // 缓存原始 docx（未做后处理），供「生成检评报告」复用，避免平台再生成一次（~20s）
+        pjbgBufCache = {
+          projectId: pid,
+          buf: raw,
+          fileName: String(body).split('/').pop().replace(/\.pdf$/i, '.docx'),
+          modName: mod.name || '',
+        };
         noiseCache = { projectId: pid, data: data };
         renderNoiseTable(box, data);
         if (status) status.textContent = '项目 ' + (selectedProject.code || '') + ' · 共 ' + Math.max(0, data.rows.length - 1) + ' 行';
+        enterNoisePanel();   // 数据就绪 → 首次进入该页签
       } catch (e) {
         box.innerHTML = '';
         renderNoiseSummary(null);
@@ -1701,6 +1777,8 @@
           empty.classList.remove('hidden');
         }
         if (status) status.textContent = '';
+        // 失败时**不进入**该页签，直接弹提示（否则用户停在当前页看不到面板里的错误）
+        alert('噪声数据加载失败：' + (e && e.message ? e.message : e));
       } finally {
         noiseLoading = false;
         setNoiseTabLoading(false);
@@ -1708,7 +1786,25 @@
     }
 
     const noiseTabBtn = document.querySelector('.tab[data-tab="noise"]');
-    if (noiseTabBtn) noiseTabBtn.addEventListener('click', function () { loadNoiseResult(false); });
+    // 进入「噪声数据结果」页签的策略：
+    //   · 未选中项目 → 不允许进入（只提示）
+    //   · 已选项目但数据未就绪 → 先在当前页签加载，**加载成功后**才切进去（首次进入）
+    //   · 数据已就绪（或本次刷新已完成）→ 正常切换
+    // 做法：捕获阶段拦截 app.js 的页签切换；就绪后程序化 click 一次放行。
+    let noiseEnterAllowed = false;
+    function enterNoisePanel() {
+      if (!noiseTabBtn) return;
+      noiseEnterAllowed = true;
+      try { noiseTabBtn.click(); } finally { noiseEnterAllowed = false; }
+    }
+    if (noiseTabBtn) {
+      noiseTabBtn.addEventListener('click', function (e) {
+        if (noiseEnterAllowed) return;                 // 已放行，交给 app.js 正常切换
+        e.preventDefault();
+        e.stopImmediatePropagation();                  // 拦下 app.js 的页签切换
+        loadNoiseResult(false);                        // 未就绪：先加载，成功后再进入
+      }, true);
+    }
     const noiseRefreshBtn = document.getElementById('noise-refresh');
     if (noiseRefreshBtn) noiseRefreshBtn.addEventListener('click', function () { loadNoiseResult(true); });
 
@@ -1818,8 +1914,8 @@
       notifyAuthExpired: notifyAuthExpired,
       // 加载「噪声数据结果」页签（供其它模块触发）
       loadNoise: loadNoiseResult,
-      // 解析报告 docx 中的「工作场所噪声评判结果」表（供测试/复用）
-      parseNoiseTable: parseNoiseTableFromDocx,
+      // 解析**检评报告** docx 中「噪声检测结果分析与评价」标题下的表（供测试/复用）
+      parseNoiseTable: parsePjbgNoiseTableFromDocx,
       // 渲染噪声表（供测试/复用）
       renderNoiseTable: renderNoiseTable,
       // 噪声筛选汇总：由展示用行计算四类结果（供测试/复用）
@@ -1827,6 +1923,16 @@
       renderNoiseSummary: renderNoiseSummary,
       // 非噪声岗位同步（供测试/复用）
       syncNonNoise: syncNonNoiseJobs,
+      // 从检评报告 docx 算出「非噪声车间岗位」清单 [{unit, job}]（供「生成检评报告」删除噪声危害）
+      noiseNonNoiseFromBuf: noiseNonNoiseFromBuf,
+      // 复用噪声页签已生成并下载的检评报告（供「生成检评报告」缩短时间）：
+      // 命中同一项目时返回 { buf, fileName, modName }，否则 null
+      getPjbgCache: function (projectId) {
+        if (!pjbgBufCache) return null;
+        if (projectId !== undefined && projectId !== null
+          && String(pjbgBufCache.projectId) !== String(projectId)) return null;
+        return pjbgBufCache;
+      },
       // 工艺图片补传（供测试/复用）
       uploadProcessImages: uploadProcessImages,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null

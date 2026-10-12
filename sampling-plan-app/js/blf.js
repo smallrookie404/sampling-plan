@@ -341,7 +341,7 @@
     const fileName = String(body).split('/').pop().replace(/\.pdf$/i, '.docx');
     const raw = await resp.arrayBuffer();
     // 报告里「存在高毒物品」列平台有时输出 0/1 → 按字典换成 否/是
-    const buf = await patchHighToxColumn(raw);
+    const buf = await patchPjbgDocx(raw);
     return { buf: buf, modName: mod.name || '', fileName: fileName };
   }
 
@@ -349,13 +349,16 @@
   // 平台模板会把该列的原始标记直接印出来（0=否、1=是），需按字典换成中文再交付。
   const HIGHTOX_HEAD = '存在高毒物品';
 
-  // 取一个 <w:tc>…</w:tc> 里的可见文本（拼接所有 <w:t>，含软换行 <w:br/> 视为换行）
+  // 取一个 <w:tc>…</w:tc> 里的可见文本。
+  // <w:br/> 的两种写法（与 <w:t> 并列 / 写在 <w:t> 内部）都还原成换行。
   function cellText(tcXml) {
-    let s = '';
-    const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
-    let m;
-    while ((m = re.exec(tcXml))) s += m[1];
+    let s = String(tcXml === null || tcXml === undefined ? '' : tcXml);
+    s = s.replace(/<w:br(?:\s[^>]*)?\/?>/g, '\u0001').replace(/<w:tab\s*\/?>/g, '\t');
+    // 只保留 <w:t> 边界，其余标签（含属性）丢弃
+    s = s.replace(/<(?!\/?w:t(?:\s|>))[^>]*>/g, '');
+    s = s.replace(/<\/?w:t(?:\s[^>]*)?>/g, '');
     return s
+      .replace(/\u0001/g, '\n')
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
       .replace(/&apos;/g, "'").replace(/&amp;/g, '&')
       .trim();
@@ -400,26 +403,276 @@
     return { xml: out, changed: changed };
   }
 
-  // 对下载到的报告 docx 做后处理；失败时原样返回（不影响出报告）
-  async function patchHighToxColumn(buf) {
+  // ---------------- 报告后处理②：非噪声岗位删掉「噪声」危害 ----------------
+  // 针对「表4-1 岗位（工种）设置、劳动者作业情况及职业病危害因素识别情况」的
+  // 「职业病危害因素」列：若该行的「单元/工作场所 + 岗位（工种）」属于**非噪声岗位**
+  // （即噪声筛选结果里 LEX 最大值 < 80 dB 的那批），就把单元格里的「噪声」项删掉；
+  // 同一岗位的多个点位行都会处理。
+  const HAZARD_COL_HEAD = '职业病危害因素';
+  const NOISE_HAZARD = '噪声';
+
+  function normKey(s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); }
+
+  // 从「其他粉尘,噪声,紫外辐射」里删掉「噪声」项；没删到返回 null。
+  // 删空（该岗位只剩噪声）时填「-」，与报告其它空列写法一致。
+  function dropNoiseItem(text) {
+    const raw = String(text === null || text === undefined ? '' : text);
+    const items = raw.split(/[,，]/);
+    const kept = items
+      .map(function (x) { return x.trim(); })
+      .filter(function (x) { return x !== '' && x !== NOISE_HAZARD; });
+    if (kept.length === items.filter(function (x) { return x.trim() !== ''; }).length) return null;
+    return kept.length ? kept.join(',') : '-';
+  }
+
+  // nonNoise: [{ unit, job }]
+  function fixNonNoiseHazards(xml, nonNoise) {
+    if (!nonNoise || !nonNoise.length) return { xml: xml, changed: 0 };
+    if (xml.indexOf(HAZARD_COL_HEAD) < 0) return { xml: xml, changed: 0 };
+    const set = {};
+    nonNoise.forEach(function (p) { set[normKey(p.unit) + '\u0001' + normKey(p.job)] = 1; });
+    let changed = 0;
+    const out = xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return tbl;
+      const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+      let hIdx = -1;
+      for (let i = 0; i < headCells.length; i++) {
+        if (cellText(headCells[i]).indexOf(HAZARD_COL_HEAD) >= 0) { hIdx = i; break; }
+      }
+      if (hIdx < 0) return tbl;   // 不是这张表
+      let newTbl = tbl;
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+        if (cells.length < 3) continue;
+        const unit = cellText(cells[0]);
+        const job = cellText(cells[1]);
+        if (!unit && !job) continue;   // 表头续行（只有「总数 / 数/班」那行）
+        if (!set[normKey(unit) + '\u0001' + normKey(job)]) continue;
+        // 表头可能因合并单元格比数据行少若干格（本项目「人数」表头 1 格 / 数据行 2 格），按差值平移
+        const ci = hIdx + (cells.length - headCells.length);
+        if (ci < 0 || ci >= cells.length) continue;
+        const text = cellText(cells[ci]);
+        if (text.indexOf(NOISE_HAZARD) < 0) continue;   // 兜底：列对不上就不动
+        const next = dropNoiseItem(text);
+        if (next === null) continue;
+        const newRow = rows[ri].replace(cells[ci], setCellText(cells[ci], next));
+        newTbl = newTbl.replace(rows[ri], newRow);
+        changed++;
+      }
+      return newTbl;
+    });
+    return { xml: out, changed: changed };
+  }
+
+  // ---------------- 报告后处理③：正文措辞替换 ----------------
+  // 平台模板里的几处说法要改成规范表述（用户要求，2026-10-12）。
+  // ⚠ 目标文字常被拆到多个 run（如「7.2物理有害因素检测结果分析与评价」= ['7.2','物理','有害因素…']），
+  //   因此按「段落内跨 run」替换，并尽量保留原有格式（替换文字落在起始 run 上）。
+  const TEXT_FIXES = [
+    { from: '工作场所粉尘和化学有害因素职业接触限值', to: '工作场所空气中化学有害因素职业接触限值' },
+    { from: '工作场所空气中粉尘及化学有害因素职业接触限值', to: '工作场所空气中化学有害因素职业接触限值' },
+    { from: '物理有害因素检测结果分析与评价', to: '物理因素检测结果分析与评价' },
+  ];
+
+  // 在**单个段落** XML 内做跨 run 的文本替换；命中返回新 XML，未命中返回 null
+  function replaceAcrossRuns(pXml, from, to) {
+    const re = /<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g;
+    const nodes = [];
+    let m;
+    while ((m = re.exec(pXml))) {
+      const inner = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/.exec(m[0]);
+      nodes.push(inner ? inner[1] : '');
+    }
+    if (!nodes.length) return null;
+    let full = '';
+    const offs = nodes.map(function (t) { const s = full.length; full += t; return s; });
+    const idx = full.indexOf(from);
+    if (idx < 0) return null;
+    const end = idx + from.length;
+    let hit = false;
+    const news = nodes.map(function (t, i) {
+      const s = offs[i], e = s + t.length;
+      if (e <= idx || s >= end) return null;   // 不涉及
+      hit = true;
+      if (s <= idx && e >= end) return t.slice(0, idx - s) + to + t.slice(end - s);  // 整段落在该 run 内
+      if (s <= idx && idx < e) return t.slice(0, idx - s) + to;                      // 起始 run
+      if (s < end && end <= e) return t.slice(end - s);                              // 结束 run
+      return '';                                                                     // 完全被覆盖
+    });
+    if (!hit) return null;
+    let k = 0;
+    return pXml.replace(re, function (raw) {
+      const nv = news[k++];
+      if (nv === null) return raw;
+      return raw.replace(/(<w:t(?:\s[^>]*)?>)[\s\S]*?(<\/w:t>)/, function (_, a, b) { return a + nv + b; });
+    });
+  }
+
+  // 对 document.xml 逐段落做全部文字替换，返回 { xml, changed }
+  function fixReportText(xml) {
+    let changed = 0;
+    const out = xml.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, function (pXml) {
+      let cur = pXml;
+      for (const f of TEXT_FIXES) {
+        const np = replaceAcrossRuns(cur, f.from, f.to);
+        if (np !== null) { cur = np; changed++; }
+      }
+      return cur;
+    });
+    return { xml: out, changed: changed };
+  }
+
+  // ---------------- 报告后处理④：表1-1 的「注3」按备注列实际标记裁剪 ----------------
+  // 表1-1（化学有害因素接触限值表）的「备注」列里没出现某个标记时，把注3 里对应的说明删掉，
+  // 并把该说明**前面**的「，」/「；」改成「。」（因为后面那句已经被删了）。
+  const NOTE3_MARKS = [
+    { mark: 'G1', text: '“G1”表示确认人类致癌物。' },
+    { mark: 'G2A', text: '“G2A”表示可能人类致癌物，' },
+    { mark: 'G2B', text: '“G2B”表示可疑人类致癌物；' },
+    { mark: '皮', text: '“皮”表示可因皮肤、黏膜和眼睛直接接触蒸气、液体和固体，通过完整皮肤吸收引起全身效应；' },
+    { mark: '敏', text: '“敏”是指已被人或动物资料证实该物质可能有致敏作用。' },
+  ];
+
+  // 收集表1-1「备注」列里出现过的标记；找不到该表返回 null
+  function collectHazardMarks(xml) {
+    let found = null;
+    xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
+      if (found) return tbl;
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return tbl;
+      const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+      const heads = headCells.map(cellText);
+      const has = function (kw) { return heads.some(function (h) { return h.indexOf(kw) >= 0; }); };
+      const hIdx = heads.findIndex(function (h) { return h.indexOf('备注') >= 0; });
+      // 化学有害因素接触限值表：表头同时含「中文名」「临界不良健康效应」「备注」
+      if (hIdx < 0 || !has('中文名') || !has('临界不良健康效应')) return tbl;
+      found = {};
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+        // 表头可能因合并单元格比数据行少若干格，按差值平移
+        const ci = hIdx + (cells.length - headCells.length);
+        if (ci < 0 || ci >= cells.length) continue;
+        const v = cellText(cells[ci]);
+        NOTE3_MARKS.forEach(function (it) { if (v.indexOf(it.mark) >= 0) found[it.mark] = 1; });
+      }
+      return tbl;
+    });
+    return found;
+  }
+
+  // 按实际标记裁剪注3 文本；无改动返回 null
+  function trimNote3(noteText, marks) {
+    const spans = [];
+    NOTE3_MARKS.forEach(function (it) {
+      if (marks[it.mark]) return;              // 有该标记 → 保留
+      const i = noteText.indexOf(it.text);
+      if (i < 0) return;                       // 报告里本来就没有这句
+      spans.push({ s: i, e: i + it.text.length });
+    });
+    if (!spans.length) return null;
+    const del = {};
+    const starts = {};
+    spans.forEach(function (sp) {
+      starts[sp.s] = 1;
+      for (let k = sp.s; k < sp.e; k++) del[k] = 1;
+    });
+    let out = '';
+    for (let i = 0; i < noteText.length; i++) {
+      if (del[i]) continue;
+      let ch = noteText[i];
+      // 紧邻被删片段之前的「，」「；」→ 改成「。」（「：」等前缀标点不动）
+      if (starts[i + 1] && (ch === '，' || ch === '；')) ch = '。';
+      out += ch;
+    }
+    return out;
+  }
+
+  // 注文是否还剩内容（去掉「注N：」前缀后是否为空）
+  function noteHasContent(t) {
+    const i = Math.max(t.indexOf('：'), t.indexOf(':'));
+    const body = i >= 0 ? t.slice(i + 1) : t;
+    return body.replace(/\s+/g, '') !== '';
+  }
+
+  // 对 document.xml 处理注3，返回 { xml, changed }
+  // 若注3 被整段删除，则把它**后面**的注号依次前移（注4 → 注3 …），前面的不动。
+  function fixHazardNote(xml) {
+    const marks = collectHazardMarks(xml);
+    if (!marks) return { xml: xml, changed: 0 };
+    let changed = 0;
+    let deleted = false;   // 是否已整段删除注3
+    let removedNo = 0;     // 被删的注号
+    const out = xml.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, function (pXml) {
+      const full = cellText(pXml);
+      if (deleted) {
+        if (!removedNo) return pXml;
+        const m = /^(注\d+)(\s*[：:])/.exec(full);
+        if (!m) return pXml;
+        const n = parseInt(m[1].slice(1), 10);
+        if (!(n > removedNo)) return pXml;                  // 前面的注号不动
+        const np = replaceAcrossRuns(pXml, m[0], '注' + (n - 1) + m[2]);
+        if (np === null) return pXml;
+        changed++;
+        return np;
+      }
+      if (full.indexOf('人类致癌物') < 0) return pXml;       // 只处理注3 那句
+      const next = trimNote3(full, marks);
+      if (next === null || next === full) return pXml;
+      changed++;
+      // 说明全被删掉、只剩「注3：」时，整段删除（避免报告里留下空注）
+      if (!noteHasContent(next)) {
+        const m = /^注(\d+)\s*[：:]/.exec(full);
+        removedNo = m ? parseInt(m[1], 10) : 0;
+        deleted = true;
+        return '';
+      }
+      return setCellText(pXml, next);          // 文本写回首个 <w:t>，其余清空（保留段落格式）
+    });
+    return { xml: out, changed: changed };
+  }
+
+  // 对下载到的检评报告 docx 做全部后处理（读一次 document.xml，改完统一重打包）；
+  // 任何一步失败都不影响出报告（回退到上一步结果 / 原始文件）。
+  async function patchPjbgDocx(buf) {
     try {
       const JSZip = await ensureJSZip();
       const zip = await JSZip.loadAsync(buf);
       const f = zip.file('word/document.xml');
       if (!f) return buf;
-      const xml = await f.async('string');
-      const r = fixHighToxColumn(xml);
-      if (!r.changed) return buf;
-      console.info('[检评报告] 「存在高毒物品」列 0/1 → 否/是，共修正 ' + r.changed + ' 处');
-      zip.file('word/document.xml', r.xml);
+      let xml = await f.async('string');
+      let changed = 0;
+      // ① 「存在高毒物品」列 0/1 → 否/是
+      const r1 = fixHighToxColumn(xml);
+      xml = r1.xml; changed += r1.changed;
+      if (r1.changed) console.info('[检评报告] 「存在高毒物品」列 0/1 → 否/是，共修正 ' + r1.changed + ' 处');
+      // ② 非噪声岗位（LEX 最大值 < 80 dB）删掉「噪声」危害
+      const u = root.SamplingUpload;
+      if (u && typeof u.noiseNonNoiseFromBuf === 'function') {
+        const pairs = await u.noiseNonNoiseFromBuf(buf);
+        const r2 = fixNonNoiseHazards(xml, pairs);
+        xml = r2.xml; changed += r2.changed;
+        if (r2.changed) console.info('[检评报告] 非噪声岗位删除「噪声」危害，共修正 ' + r2.changed + ' 处');
+      }
+      // ③ 正文措辞替换（1.4 章节的接触限值说法、7.2 标题）
+      const r3 = fixReportText(xml);
+      xml = r3.xml; changed += r3.changed;
+      if (r3.changed) console.info('[检评报告] 正文措辞替换，共修正 ' + r3.changed + ' 处');
+      // ④ 表1-1 注3：按「备注」列实际标记裁剪说明
+      const r4 = fixHazardNote(xml);
+      xml = r4.xml; changed += r4.changed;
+      if (r4.changed) console.info('[检评报告] 表1-1 注3 按备注列标记裁剪，共修正 ' + r4.changed + ' 处');
+      if (!changed) return buf;
+      zip.file('word/document.xml', xml);
       return await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
     } catch (e) {
-      console.warn('[检评报告] 高毒物品列后处理失败，改用原始文件：', e);
+      console.warn('[检评报告] 后处理失败，改用原始文件：', e);
       return buf;
     }
   }
 
-  // 页签栏「生成检评报告」按钮：按「数据上传」里选中的项目生成并下载 Word
+  // 噪声页签下方「生成检评报告」按钮：按「数据上传」里选中的项目生成并下载 Word。
+  // 若「噪声数据结果」页签已经生成并下载过该项目的报告，直接复用缓存（省掉平台 ~20s 生成）。
   async function generatePjbgReport() {
     const api = uploadApi();
     const ctx = api && typeof api.getUpstreamContext === 'function' ? api.getUpstreamContext() : null;
@@ -428,20 +681,42 @@
       return;
     }
     const btn = $('btn-pjbg');
+    const status = $('pjbg-status');
     const old = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+    const t0 = Date.now();
+    let reused = false;
     try {
-      const g = await genPjbgDocx(ctx);
+      const cached = typeof api.getPjbgCache === 'function' ? api.getPjbgCache(ctx.project.id) : null;
+      let g;
+      if (cached && cached.buf) {
+        // 复用「噪声数据结果」已下载的报告：只需做后处理（高毒物品 / 非噪声岗位），秒级完成
+        reused = true;
+        if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+        if (status) status.textContent = '正在复用「噪声数据结果」已生成的报告…';
+        g = {
+          buf: await patchPjbgDocx(cached.buf),
+          fileName: cached.fileName || '',
+          modName: cached.modName || '',
+        };
+      } else {
+        if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+        if (status) status.textContent = '正在生成报告（平台约需 20 秒）…';
+        g = await genPjbgDocx(ctx);
+      }
       // 文件名沿用平台生成的原始文件名（与「直接在网站上导出」一致）
       const base = String(ctx.project.code || 'report').replace(/[\\/:*?"<>|]/g, '_');
       const name = g.fileName || (base + '-检评报告.docx');
       saveBlobAs(new Blob([g.buf], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       }), name);
-      alert('已生成检评报告（模板「' + g.modName + '」）：\n' + name +
-        '\n\n文件已保存到浏览器下载目录。');
+      const sec = ((Date.now() - t0) / 1000).toFixed(1);
+      if (status) status.textContent = (reused ? '已复用报告缓存，' : '已生成，') + '耗时 ' + sec + 's';
+      alert('已生成检评报告' + (g.modName ? '（模板「' + g.modName + '」）' : '') + '：\n' + name +
+        '\n\n来源：' + (reused ? '复用「噪声数据结果」已生成的报告' : '平台现场生成') +
+        '\n耗时：' + sec + ' 秒\n文件已保存到浏览器下载目录。');
     } catch (e) {
       console.error(e);
+      if (status) status.textContent = '';
       alert('生成检评报告失败：' + (e && e.message ? e.message : e));
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = old || '生成检评报告'; }
@@ -753,7 +1028,7 @@
     }
   }
 
-  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout, generatePjbgReport, genPjbgDocx, fixHighToxColumn, patchHighToxColumn };
+  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout, generatePjbgReport, genPjbgDocx, fixHighToxColumn, fixNonNoiseHazards, fixReportText, fixHazardNote, collectHazardMarks, trimNote3, patchPjbgDocx };
 
   // 绑定按钮（主工具栏 + 全屏工具栏）与弹窗内交互
   function bind() {
