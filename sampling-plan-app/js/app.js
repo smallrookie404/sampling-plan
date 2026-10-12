@@ -3898,6 +3898,17 @@
             const h = HEADERS[colIdx(c)];
             if (h in idx) row.manual[c] = fmt(r[idx[h]]);
           }
+          // 备注：上游「备注」列（平台上 isSample=0 时显示为「不采样说明」、
+          // isExclusionaryTesting=1 时为「排除性检测说明」，其余为「备注」）
+          // → 主表「备注」列（录入区 V；计算引擎会把它同步填充到自动计算区备注 BI）
+          if (!row.input.V) {
+            const h = HEADERS[colIdx("BI")];
+            if (h in idx) {
+              const remark = fmt(r[idx[h]]);
+              // 跳过 Excel 错误值（如 #VALUE! / #N/A），这类不是真实备注
+              if (remark !== "" && String(remark).charAt(0) !== "#") row.input.V = remark;
+            }
+          }
           if (hasInput) {
             for (const c of COMPUTED_COLS) {
               const h = HEADERS[colIdx(c)];
