@@ -197,52 +197,62 @@
     return rows;
   }
 
-  async function fetchUpstream(c) {
+  // 取上游数据。opts.worker / opts.survey 可只取其中一部分：
+  //   · 采样方案导入 → { worker: true,  survey: false }
+  //   · 调查表导入 → { worker: false, survey: true }
+  //   不传 opts 时两部分都取（保持旧行为）。
+  async function fetchUpstream(c, opts) {
+    const wantWorker = !opts || opts.worker !== false;
+    const wantSurvey = !opts || opts.survey !== false;
     const pid = c.project.id;
     const out = { worker: null, worker39: null, survey: {}, processPictures: [], errors: [] };
-    // 1) 劳动定员：上游 export331 直接返回 xlsx
-    try {
-      const r = await upRequest(c, 'POST', '/api/newEvaluationUnit/export331', { belongProject: pid });
-      const blob = await r.blob();
-      const X = await ensureXlsx();
-      const sheets = await X.readWorkbook(blob);
-      if (sheets && sheets.length) {
-        out.worker = X.sheetToArray(sheets[0]);
-        out.worker39 = workerTo39(out.worker);
-      }
-    } catch (e) {
-      out.errors.push('劳动定员导出失败：' + e.message);
-    }
-    // 2) 现场调查 6 表
-    for (const [key, res, occ] of SURVEY_RES) {
+    // 1) 劳动定员：上游 export331 直接返回 xlsx（主表格数据来源）
+    if (wantWorker) {
       try {
-        let rows;
-        if (res === 'occupationalProduct') {
-          // 职业防护(0) / 个体防护(1) 上游是同一张表，靠 occupationalType 区分：
-          // 带上参数请求，再按行内字段兜底过滤（参数被忽略时也能拆开）
-          const r = await upRequest(
-            c, 'GET',
-            '/api/' + res + '?belongProject=' + encodeURIComponent(pid) +
-            '&occupationalType=' + occ + '&pageNumber=1&pageSize=-1'
-          );
-          const all = pickRows(await r.json());
-          const hasType = all.some((x) => txt(x.occupationalType) !== '');
-          rows = hasType ? all.filter((x) => String(txt(x.occupationalType)) === String(occ)) : all;
-        } else {
-          const q = '?belongProject=' + encodeURIComponent(pid) + '&pageNumber=1&pageSize=-1';
-          const r = await upRequest(c, 'GET', '/api/' + res + q);
-          rows = pickRows(await r.json());
-        }
-        out.survey[key] = rows;
-        // 生产工艺：顺带记下每条记录的工艺图路径（processPicturePath），导入时写入「生产工艺调查」的工艺图槽位
-        if (key === 'process') {
-          out.processPictures = rows
-            .map((r) => ({ name: String(txt(r.processName)).trim(), path: String(txt(r.processPicturePath)).trim() }))
-            .filter((x) => x.name && x.path);
+        const r = await upRequest(c, 'POST', '/api/newEvaluationUnit/export331', { belongProject: pid });
+        const blob = await r.blob();
+        const X = await ensureXlsx();
+        const sheets = await X.readWorkbook(blob);
+        if (sheets && sheets.length) {
+          out.worker = X.sheetToArray(sheets[0]);
+          out.worker39 = workerTo39(out.worker);
         }
       } catch (e) {
-        out.survey[key] = null;
-        out.errors.push(res + ' 取数失败：' + e.message);
+        out.errors.push('劳动定员导出失败：' + e.message);
+      }
+    }
+    // 2) 现场调查 6 表（调查表数据来源）
+    if (wantSurvey) {
+      for (const [key, res, occ] of SURVEY_RES) {
+        try {
+          let rows;
+          if (res === 'occupationalProduct') {
+            // 职业防护(0) / 个体防护(1) 上游是同一张表，靠 occupationalType 区分：
+            // 带上参数请求，再按行内字段兜底过滤（参数被忽略时也能拆开）
+            const r = await upRequest(
+              c, 'GET',
+              '/api/' + res + '?belongProject=' + encodeURIComponent(pid) +
+              '&occupationalType=' + occ + '&pageNumber=1&pageSize=-1'
+            );
+            const all = pickRows(await r.json());
+            const hasType = all.some((x) => txt(x.occupationalType) !== '');
+            rows = hasType ? all.filter((x) => String(txt(x.occupationalType)) === String(occ)) : all;
+          } else {
+            const q = '?belongProject=' + encodeURIComponent(pid) + '&pageNumber=1&pageSize=-1';
+            const r = await upRequest(c, 'GET', '/api/' + res + q);
+            rows = pickRows(await r.json());
+          }
+          out.survey[key] = rows;
+          // 生产工艺：顺带记下每条记录的工艺图路径（processPicturePath），导入时写入「生产工艺调查」的工艺图槽位
+          if (key === 'process') {
+            out.processPictures = rows
+              .map((r) => ({ name: String(txt(r.processName)).trim(), path: String(txt(r.processPicturePath)).trim() }))
+              .filter((x) => x.name && x.path);
+          }
+        } catch (e) {
+          out.survey[key] = null;
+          out.errors.push(res + ' 取数失败：' + e.message);
+        }
       }
     }
     return out;
@@ -368,53 +378,67 @@
   }
   // ---------------- 组装：导入模板（20 页） ----------------
 
-  function buildTemplateSheets(up) {
+  // 组装「导入模板」工作表。opts.worker / opts.survey / opts.dicts 控制包含哪些页：
+  //   · 采样方案导入 → { worker: true,  survey: false, dicts: false }  ⇒ 只含主表格页，导入时不会碰调查表
+  //   · 调查表导入 → { worker: false, survey: true,  dicts: false }  ⇒ 只含 6 张调查表，导入时不会碰主表格
+  //   不传 opts 时全部包含（保持旧行为）。
+  //   注：13 张字典页只作参考，importWorkbook 并不读取，故两个导入都不带（少写/少解析，更快）。
+  function buildTemplateSheets(up, opts) {
+    const wantWorker = !opts || opts.worker !== false;
+    const wantSurvey = !opts || opts.survey !== false;
+    const wantDicts = !opts || opts.dicts !== false;
     const D = data();
     const widthsTpl = D.widthsTemplate || {};
     const localSv = surveyData();
     const useUp = !!(up && (up.worker39 || up.survey));
 
     const sheets = [];
-    // 1) 劳动定员和职业病危害因素接触情况调查（39 列，取自上游）
-    const workerBody = (up && up.worker39) ? up.worker39.map((r) => WORKER_HEADERS.map((_, i) => txt(r[i]))) : [];
-    sheets.push({
-      name: '劳动定员和职业病危害因素接触情况调查',
-      rows: [WORKER_HEADERS].concat(workerBody),
-      widths: widthArray(widthsTpl['劳动定员和职业病危害因素接触情况调查'], WORKER_HEADERS.length),
-      freeze: 1,
-      dataValidations: [
-        { sqref: 'M2:M1048576', formula1: '"是,否"' },
-        { sqref: 'N2:N1048576', formula1: '"是,否"' },
-        { sqref: 'AL2:AL1048576', formula1: '"是,否"' },
-      ],
-    });
-    // 2) 现场调查 6 张表
-    for (const sh of SURVEY_SHEETS) {
-      let body;
-      if (useUp) {
-        const src = up.survey ? up.survey[sh.key] : null;
-        const mapper = SURVEY_MAP[sh.key];
-        const empty = SURVEY_EMPTY[sh.key] || {};
-        body = (src || []).map((r) => {
-          const row = (mapper ? mapper(r) : []).slice(0, sh.headers.length).map(txt);
-          while (row.length < sh.headers.length) row.push('');
-          for (const k in empty) if (row[k] === '' || row[k] === null || row[k] === undefined) row[k] = empty[k];
-          return row;
-        });
-      } else {
-        body = (localSv[sh.key] || []).map((row) => sh.headers.map((_, i) => txt(row[i])));
-      }
+    // 1) 劳动定员和职业病危害因素接触情况调查（39 列，取自上游）—— 主表格（测点布局）的数据来源
+    if (wantWorker) {
+      const workerBody = (up && up.worker39) ? up.worker39.map((r) => WORKER_HEADERS.map((_, i) => txt(r[i]))) : [];
       sheets.push({
-        name: sh.name,
-        rows: [sh.headers].concat(body),
-        widths: widthArray(widthsTpl[sh.name], sh.headers.length),
+        name: '劳动定员和职业病危害因素接触情况调查',
+        rows: [WORKER_HEADERS].concat(workerBody),
+        widths: widthArray(widthsTpl['劳动定员和职业病危害因素接触情况调查'], WORKER_HEADERS.length),
         freeze: 1,
+        dataValidations: [
+          { sqref: 'M2:M1048576', formula1: '"是,否"' },
+          { sqref: 'N2:N1048576', formula1: '"是,否"' },
+          { sqref: 'AL2:AL1048576', formula1: '"是,否"' },
+        ],
       });
     }
+    // 2) 现场调查 6 张表
+    if (wantSurvey) {
+      for (const sh of SURVEY_SHEETS) {
+        let body;
+        if (useUp) {
+          const src = up.survey ? up.survey[sh.key] : null;
+          const mapper = SURVEY_MAP[sh.key];
+          const empty = SURVEY_EMPTY[sh.key] || {};
+          body = (src || []).map((r) => {
+            const row = (mapper ? mapper(r) : []).slice(0, sh.headers.length).map(txt);
+            while (row.length < sh.headers.length) row.push('');
+            for (const k in empty) if (row[k] === '' || row[k] === null || row[k] === undefined) row[k] = empty[k];
+            return row;
+          });
+        } else {
+          body = (localSv[sh.key] || []).map((row) => sh.headers.map((_, i) => txt(row[i])));
+        }
+        sheets.push({
+          name: sh.name,
+          rows: [sh.headers].concat(body),
+          widths: widthArray(widthsTpl[sh.name], sh.headers.length),
+          freeze: 1,
+        });
+      }
+    }
     // 3) 13 张字典页
-    for (const d of D.dicts || []) {
-      const rows = (d.rows || []).map((r) => r.map((v) => txt(v)));
-      sheets.push({ name: d.name, rows: rows.length ? rows : [['']], widths: widthArray(widthsTpl[d.name], (rows[0] || [1]).length) });
+    if (wantDicts) {
+      for (const d of D.dicts || []) {
+        const rows = (d.rows || []).map((r) => r.map((v) => txt(v)));
+        sheets.push({ name: d.name, rows: rows.length ? rows : [['']], widths: widthArray(widthsTpl[d.name], (rows[0] || [1]).length) });
+      }
     }
     return sheets;
   }
@@ -427,6 +451,12 @@
   let blfDebounce = null;  // 输入防抖
 
   function uploadApi() { return root.SamplingUpload || null; }
+
+  // 弹窗底部三个「必须先选中项目」的按钮（采样方案导入 / 调查表导入 / 工艺、点位图保存）
+  const BLF_ACTION_IDS = ['blf-do', 'blf-survey', 'blf-export'];
+  function setBlfButtons(on) {
+    BLF_ACTION_IDS.forEach((id) => { const b = $(id); if (b) b.disabled = !on; });
+  }
 
   function setBlfSearching(on) {
     const el = $('blf-searching');
@@ -469,8 +499,7 @@
     const box = $('blf-suggest'); if (box) box.classList.add('hidden');
     const info = $('blf-projectInfo');
     if (info) info.textContent = '已选择项目：' + (p.code || '') + '（' + (p.belongInspectName || '') + '）';
-    const btn = $('blf-do'); if (btn) btn.disabled = false;
-    const exp = $('blf-export'); if (exp) exp.disabled = false;
+    setBlfButtons(true);
   }
 
   function doBlfSearch() {
@@ -486,8 +515,7 @@
 
     blfProject = null;
     if (info) info.textContent = '';
-    const doBtn = $('blf-do'); if (doBtn) doBtn.disabled = true;
-    const expBtn = $('blf-export'); if (expBtn) expBtn.disabled = true;
+    setBlfButtons(false);
 
     const seq = ++blfSeq;
     if (blfAbort) blfAbort.abort();
@@ -522,8 +550,7 @@
     const c = $('blf-projectCode'); if (c) c.value = '';
     const box = $('blf-suggest'); if (box) { box.classList.add('hidden'); box.innerHTML = ''; }
     const info = $('blf-projectInfo'); if (info) info.textContent = '';
-    const doBtn = $('blf-do'); if (doBtn) doBtn.disabled = true;
-    const expBtn = $('blf-export'); if (expBtn) expBtn.disabled = true;
+    setBlfButtons(false);
     const modal = $('blf-modal'); if (modal) modal.classList.remove('hidden');
     if (u) u.focus();
   }
@@ -534,16 +561,21 @@
     setBlfSearching(false);
   }
 
-  async function runImport(project) {
-    const btn = $('blf-do');
+  // kind = 'plan'   采样方案导入：只取「劳动定员…调查」→ 只写主表格（测点布局）
+  // kind = 'survey' 调查表导入：只取 6 张现场调查表（含工艺图）→ 只写调查表页签
+  // 两者各自生成**只含自己那几张工作表**的导入模板，因此互不干扰。
+  async function runImport(project, kind) {
+    const isSurvey = kind === 'survey';
+    const btn = $(isSurvey ? 'blf-survey' : 'blf-do');
     const old = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '导入中…'; }
+    if (btn) btn.textContent = '导入中…';
+    setBlfButtons(false);   // 导入期间禁用底部按钮，避免两个导入并发
     try {
       const api = uploadApi();
       const ctx = api.getUpstreamContext(project);
       if (!ctx || !ctx.loggedIn) { alert('登录状态已失效，请重新登录后再试。'); return; }
 
-      const up = await fetchUpstream(ctx);
+      const up = await fetchUpstream(ctx, { worker: !isSurvey, survey: isSurvey });
       if (up.errors && up.errors.length) console.warn('[网站数据导入] 部分取数失败：', up.errors);
 
       const app = root.SamplingApp;
@@ -552,30 +584,35 @@
         return;
       }
 
-      // 平台上的工艺图 → 「生产工艺调查」对应工艺名称的工艺图槽位（先写入，随导入一起渲染出来）
+      // 工艺图属于「生产工艺调查」这张调查表的内容 → 只在调查表导入时处理
       let picNote = '';
-      if (btn) btn.textContent = '导入工艺图…';
-      try {
-        const pr = await importProcessPictures(ctx, up.processPictures);
-        if (pr.total) {
-          const parts = ['工艺图 ' + pr.ok + ' 张'];
-          if (pr.skip) parts.push('已存在跳过 ' + pr.skip);
-          if (pr.fail) parts.push('失败 ' + pr.fail);
-          picNote = '工艺图片已导入「生产工艺调查」：' + parts.join('，') + '。';
-        }
-      } catch (e) { console.warn('[网站数据导入] 工艺图导入失败：', e); }
+      if (isSurvey) {
+        if (btn) btn.textContent = '导入工艺图…';
+        try {
+          const pr = await importProcessPictures(ctx, up.processPictures);
+          if (pr.total) {
+            const parts = ['工艺图 ' + pr.ok + ' 张'];
+            if (pr.skip) parts.push('已存在跳过 ' + pr.skip);
+            if (pr.fail) parts.push('失败 ' + pr.fail);
+            picNote = '工艺图片已导入「生产工艺调查」：' + parts.join('，') + '。';
+          }
+        } catch (e) { console.warn('[网站数据导入] 工艺图导入失败：', e); }
+      }
 
       // 生成导入模板 → 直接走网页的「导入 Excel」逻辑（不下载文件）
       if (btn) btn.textContent = '导入中…';
       const X = await ensureXlsx();
-      const bytes = await X.writeWorkbook(buildTemplateSheets(up));
+      const bytes = await X.writeWorkbook(buildTemplateSheets(up, {
+        worker: !isSurvey, survey: isSurvey, dicts: false,
+      }));
       await app.importWorkbook(bytes, picNote);
       closeBlfModal();
     } catch (e) {
       console.error(e);
-      alert('网站数据导入失败：' + (e && e.message ? e.message : e));
+      alert((isSurvey ? '调查表导入失败：' : '采样方案导入失败：') + (e && e.message ? e.message : e));
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = old || '导入'; }
+      if (btn) btn.textContent = old || '导入';
+      setBlfButtons(!!blfProject);
     }
   }
 
@@ -593,7 +630,15 @@
     const closeBtn = $('blf-close'); if (closeBtn) closeBtn.addEventListener('click', closeBlfModal);
     const cancelBtn = $('blf-cancel'); if (cancelBtn) cancelBtn.addEventListener('click', closeBlfModal);
     const doBtn = $('blf-do');
-    if (doBtn) doBtn.addEventListener('click', () => { if (blfProject) runImport(blfProject); });
+    if (doBtn) doBtn.addEventListener('click', () => {
+      if (!blfProject) { alert('请先在上方搜索并选中项目，再导入采样方案。'); return; }
+      runImport(blfProject, 'plan');
+    });
+    const svBtn = $('blf-survey');
+    if (svBtn) svBtn.addEventListener('click', () => {
+      if (!blfProject) { alert('请先在上方搜索并选中项目，再导入调查表。'); return; }
+      runImport(blfProject, 'survey');
+    });
     const expBtn = $('blf-export');
     if (expBtn) expBtn.addEventListener('click', () => {
       if (!blfProject) { alert('请先在上方搜索并选中项目，再导出工艺、点位图。'); return; }

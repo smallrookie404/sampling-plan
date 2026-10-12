@@ -341,11 +341,12 @@
         </div>
         <div id="blf-suggest" class="hidden"></div>
         <div id="blf-projectInfo"></div>
-        <p class="tip">输入受检单位或项目编号搜索，<b>选中项目后</b>才可导入/导出：<b>数据、工艺图导入</b>按该项目从上游职卫系统取数，生成「导入模板」直接导入主表格与调查表，并把平台工艺图写入「生产工艺调查」；<b>工艺、点位图保存</b>直连平台取该项目「生产工艺调查」的工艺图与「检测布点图」的布点图，<b>打包为 zip</b> 保存。</p>
+        <p class="tip">输入受检单位或项目编号搜索，<b>选中项目后</b>才可导入/导出：<b>采样方案导入</b>按该项目从上游职卫系统取「劳动定员和职业病危害因素接触情况调查」数据，只导入<b>主表格（测点布局）</b>；<b>调查表导入</b>取 6 张现场调查表数据（并把平台工艺图写入「生产工艺调查」），只更新<b>调查表页签</b>。两者互不影响、可单独执行。<b>工艺、点位图保存</b>直连平台取该项目「生产工艺调查」的工艺图与「检测布点图」的布点图，<b>打包为 zip</b> 保存。</p>
         <div class="modal-actions">
           <button id="blf-cancel" class="btn ghost">取消</button>
           <button id="blf-export" class="btn ghost" disabled title="直连平台取该项目「生产工艺调查」的工艺图与「检测布点图」的布点图，打包为 zip 保存">工艺、点位图保存</button>
-          <button id="blf-do" class="btn ghost" disabled>数据、工艺图导入</button>
+          <button id="blf-do" class="btn ghost" disabled title="按所选项目从上游职卫系统取「劳动定员和职业病危害因素接触情况调查」数据，只导入主表格（测点布局）；不改动调查表">采样方案导入</button>
+          <button id="blf-survey" class="btn ghost" disabled title="按所选项目从上游职卫系统取 6 张现场调查表数据（含平台工艺图），只更新调查表页签；不改动主表格">调查表导入</button>
         </div>
       </div>
     </div>
