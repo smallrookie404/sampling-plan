@@ -2931,7 +2931,6 @@
     const q = $("db-search").value.trim().toLowerCase();
     const list = (await loadRecords()).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
     const shown = q ? list.filter((r) => recordSearchText(r).includes(q)) : list;
-    $("db-refresh").style.display = (storageMode === "github" || storageMode === "server") ? "" : "none";
     $("db-count").textContent = `共 ${list.length} 条${q ? ` · 匹配 ${shown.length} 条` : ""}`;
     const box = $("db-list");
     if (!shown.length) {
@@ -2979,8 +2978,6 @@
     if (dbSearchTimer) clearTimeout(dbSearchTimer);
     dbSearchTimer = setTimeout(() => { dbSearchTimer = null; renderDbList(); }, 200);
   });
-  $("db-refresh").addEventListener("click", () => renderDbList());
-
   $("db-list").addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
     if (!btn) return;
@@ -4002,9 +3999,6 @@
       } catch {}
     }
     rebuildDatalist();
-    if (hasGithubConfig()) {
-      loadRecords().catch(() => {}); // 打开时自动从 GitHub 同步
-    }
     L.computeRows(rows, { hazardFactors, detectionItems });
     $("hazard-count").textContent = hazardFactors.length;
     $("items-count").textContent = detectionItems.length;
