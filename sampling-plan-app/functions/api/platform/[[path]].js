@@ -84,7 +84,7 @@ function chunkedComplete(body) {
 // 若一直读到 EOF 会永远等不到（Cloudflare 约 20s 后取消流 → "Stream was cancelled."）。
 // 因此这里按**报文自身的长度信息**判定读完即返回：chunked 结束块 / Content-Length 满足 /
 // 无响应体状态码（HEAD、204、304、1xx）；仅当两者都没有时才读至 EOF。
-async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, body, timeoutMs) {
+async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, body, timeoutMs, stallMs) {
   const t0 = Date.now();
   let stage = "connect";                 // 出错时用于定位阶段（诊断信息随 502 返回）
   const socket = connect({ hostname: host, port: port });
@@ -98,6 +98,15 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
       reject(new Error("请求超时"));
     }, timeoutMs || 60000);
   });
+  // 「首字节前停滞」看门狗：连接被黑洞（SYN/响应被丢）时不会有任何数据，尽早失败好换连接重试；
+  // 一旦收到任何数据就解除，不会影响「响应慢但在传」的正常请求
+  let stallTimer = null;
+  const stall = stallMs > 0
+    ? new Promise((_, reject) => {
+        stallTimer = setTimeout(() => reject(new Error(`连接无响应（${stallMs}ms 内未收到任何数据）`)), stallMs);
+      })
+    : null;
+  const clearStall = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } };
 
   try {
     const head =
@@ -128,7 +137,7 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
       stage = "read";
       let r;
       try {
-        r = await Promise.race([reader.read(), timeout]);
+        r = await Promise.race(stall ? [reader.read(), timeout, stall] : [reader.read(), timeout]);
       } catch (e) {
         // 远端关闭连接时，Workers 的 socket 流可能**以错误形式结束**（"Stream was cancelled."）
         // 而不是返回 { done: true }。此时已收到的数据往往是完整响应（如平台对带体请求会回
@@ -137,6 +146,7 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
         break;
       }
       if (r.done) break;                       // 服务器主动关闭：正常结束
+      clearStall();                            // 已有数据：解除停滞看门狗
       chunks.push(r.value);
       raw = concatBytes(chunks);
       if (!hdr) {
@@ -203,6 +213,7 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
     throw new Error(`[${stage} ${Date.now() - t0}ms] ${(e && e.message) || e}`);
   } finally {
     clearTimeout(timer);
+    clearStall();
     try {
       reader.releaseLock();
     } catch {}
@@ -258,7 +269,22 @@ export async function onRequest(context) {
 
   let result;
   try {
-    result = await rawHttpRequest(TARGET_HOST, TARGET_PORT, request.method, pathAndQuery, headerLines, body, 60000);
+    // 平台侧对该链路偶发「按连接/出口 IP」的拦截（表现为连响应头都收不到，~20s 后流被取消）。
+    // 幂等请求（GET/HEAD）失败时自动换连接重试：首字节前 8s 无数据即判定为黑洞连接、立即重试，
+    // 3 次尝试最坏约 24s（客户端默认 30s 超时内），明显降低验证码 / 搜索这类请求的翻车概率；
+    // 带体请求（POST/PUT/DELETE）不重试，避免重复提交。
+    const canRetry = request.method === "GET" || request.method === "HEAD";
+    const attempts = canRetry ? 3 : 1;
+    const stallMs = canRetry ? 8000 : 0;
+    for (let i = 1; ; i++) {
+      try {
+        result = await rawHttpRequest(TARGET_HOST, TARGET_PORT, request.method, pathAndQuery, headerLines, body, 60000, stallMs);
+        break;
+      } catch (e) {
+        if (i >= attempts) throw e;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
   } catch (e) {
     return new Response(JSON.stringify({ error: String((e && e.message) || e) }), {
       status: 502,
