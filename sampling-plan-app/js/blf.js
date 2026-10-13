@@ -1018,7 +1018,7 @@
         worker: !isSurvey, survey: isSurvey, dicts: false,
       }));
       await app.importWorkbook(bytes, picNote);
-      closeBlfModal();
+      // 导入成功后不自动关闭弹窗：保留已选项目，方便接着做另一种导入（采样方案 / 调查表）
     } catch (e) {
       console.error(e);
       alert((isSurvey ? '调查表导入失败：' : '采样方案导入失败：') + (e && e.message ? e.message : e));
