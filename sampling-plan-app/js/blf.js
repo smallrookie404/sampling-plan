@@ -673,15 +673,21 @@
 
   // 噪声页签下方「生成检评报告」按钮：按「数据上传」里选中的项目生成并下载 Word。
   // 若「噪声数据结果」页签已经生成并下载过该项目的报告，直接复用缓存（省掉平台 ~20s 生成）。
+  // 全程不弹窗：进度 / 结果 / 错误都写在按钮旁的 #pjbg-status（错误红色加粗）。
   async function generatePjbgReport() {
+    const status = $('pjbg-status');
+    const setStatus = (msg, isErr) => {
+      if (!status) return;
+      status.textContent = msg || '';
+      status.classList.toggle('err', !!isErr);
+    };
     const api = uploadApi();
     const ctx = api && typeof api.getUpstreamContext === 'function' ? api.getUpstreamContext() : null;
     if (!ctx || !ctx.loggedIn || !ctx.project) {
-      alert('尚未选择项目。\n\n请先点击顶部工具栏的「数据上传」，查询并选中项目后，再生成检评报告。');
+      setStatus('尚未选择项目：请先到「数据上传」查询并选中项目', true);
       return;
     }
     const btn = $('btn-pjbg');
-    const status = $('pjbg-status');
     const old = btn ? btn.textContent : '';
     const t0 = Date.now();
     let reused = false;
@@ -692,7 +698,7 @@
         // 复用「噪声数据结果」已下载的报告：只需做后处理（高毒物品 / 非噪声岗位），秒级完成
         reused = true;
         if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
-        if (status) status.textContent = '正在复用「噪声数据结果」已生成的报告…';
+        setStatus('正在复用「噪声数据结果」已生成的报告…');
         g = {
           buf: await patchPjbgDocx(cached.buf),
           fileName: cached.fileName || '',
@@ -700,7 +706,7 @@
         };
       } else {
         if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
-        if (status) status.textContent = '正在生成报告（平台约需 20 秒）…';
+        setStatus('正在生成报告（平台约需 20 秒）…');
         g = await genPjbgDocx(ctx);
       }
       // 文件名沿用平台生成的原始文件名（与「直接在网站上导出」一致）
@@ -710,14 +716,10 @@
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       }), name);
       const sec = ((Date.now() - t0) / 1000).toFixed(1);
-      if (status) status.textContent = (reused ? '已复用报告缓存，' : '已生成，') + '耗时 ' + sec + 's';
-      alert('已生成检评报告' + (g.modName ? '（模板「' + g.modName + '」）' : '') + '：\n' + name +
-        '\n\n来源：' + (reused ? '复用「噪声数据结果」已生成的报告' : '平台现场生成') +
-        '\n耗时：' + sec + ' 秒\n文件已保存到浏览器下载目录。');
+      setStatus((reused ? '已复用报告缓存，' : '已生成，') + '耗时 ' + sec + 's：' + name);
     } catch (e) {
       console.error(e);
-      if (status) status.textContent = '';
-      alert('生成检评报告失败：' + (e && e.message ? e.message : e));
+      setStatus('生成检评报告失败：' + (e && e.message ? e.message : e), true);
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = old || '生成检评报告'; }
     }
