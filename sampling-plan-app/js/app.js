@@ -3181,7 +3181,6 @@
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + activeTab));
       if (activeTab === "hazard") renderHazard();
       if (activeTab === "survey" && window.SurveySheets) window.SurveySheets.refresh();
-      if (activeTab === "items") renderItems();
       if (activeTab === "main") renderWindow();
     });
   });
@@ -3875,7 +3874,6 @@
         }
       }
       rebuildDatalist(); // 参考库不随导入变化，仅重建录入区的联想列表
-      renderItems();
       renderWindow();
       let message;
       if (surveyMatched > 0 && mainImported === 0) {
