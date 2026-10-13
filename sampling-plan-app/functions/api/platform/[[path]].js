@@ -85,6 +85,8 @@ function chunkedComplete(body) {
 // 因此这里按**报文自身的长度信息**判定读完即返回：chunked 结束块 / Content-Length 满足 /
 // 无响应体状态码（HEAD、204、304、1xx）；仅当两者都没有时才读至 EOF。
 async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, body, timeoutMs) {
+  const t0 = Date.now();
+  let stage = "connect";                 // 出错时用于定位阶段（诊断信息随 502 返回）
   const socket = connect({ hostname: host, port: port });
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
@@ -106,13 +108,13 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
       headerLines.join("\r\n") +
       `\r\n` +
       `\r\n`;
-    await Promise.race([
-      writer.write(new TextEncoder().encode(head)),
-      timeout,
-    ]);
-    if (body && body.length) {
-      await Promise.race([writer.write(body), timeout]);
-    }
+    // 头部与请求体**一次写出**：分两次 write 时带体的请求（POST/PUT）可能只送达头部，
+    // 平台一直等请求体、永不响应 → 客户端侧表现为 502 卡死
+    stage = "write";
+    const payload = body && body.length
+      ? concatBytes([new TextEncoder().encode(head), body])
+      : new TextEncoder().encode(head);
+    await Promise.race([writer.write(payload), timeout]);
 
     // 增量读取：头部解析出长度信息后，收满响应体即停，不等连接关闭
     const chunks = [];
@@ -122,6 +124,7 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
     let contentLength = -1;
     let chunked = false;
     while (true) {
+      stage = "read";
       const r = await Promise.race([reader.read(), timeout]);
       if (r.done) break;                       // 服务器主动关闭：正常结束
       chunks.push(r.value);
@@ -173,6 +176,9 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
       bodyBytes = bodyBytes.subarray(0, len);
     }
     return { status, headers, body: bodyBytes };
+  } catch (e) {
+    // 带上「阶段 + 耗时」，便于从 502 响应体直接定位（connect / write / read / 超时）
+    throw new Error(`[${stage} ${Date.now() - t0}ms] ${(e && e.message) || e}`);
   } finally {
     clearTimeout(timer);
     try {
