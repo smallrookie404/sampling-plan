@@ -481,6 +481,57 @@
     renderSurvey();
   });
 
+  // ---------- 岗位列校验：岗位内容须能对上主表「对应车间」下的岗位 ----------
+  // 各「岗位(工种)」列（操作/使用/影响/设置/配置）的内容（可「、」分隔多个）必须全部出现在
+  // 主表自动计算区 W(单元/工作场所)→X(岗位/工种) 映射（SamplingApp.workshopPosts）中
+  // 「同行 单元/工作场所 车间」对应的岗位列表里，否则该岗位单元格标红边框醒目提示。
+  // 车间列未填或主表没有任何车间/岗位数据时不标红（无从比对）。
+  const S_POST_COL_RE = /(操作|使用|影响|设置|配置)岗位\(工种\)/;
+  function sPostCols(sh) {
+    if (!sh) return { wsCol: -1, cols: [] };
+    const wsCol = sh.headers.findIndex((h) => h && h.includes("单元/工作场所"));
+    const cols = [];
+    sh.headers.forEach((h, i) => { if (h && S_POST_COL_RE.test(h)) cols.push(i); });
+    return { wsCol, cols };
+  }
+  // 按逗号/顿号/换行拆分为去空白的条目
+  function sMultiParts(v) {
+    return String(v ?? "").split(/[、，,\n]/).map((s) => s.trim()).filter(Boolean);
+  }
+  // 行级上下文：主表「该行各车间」对应的岗位集合；返回 null 表示该行不做校验
+  function sPostCtx(sh, r) {
+    const app = window.SamplingApp;
+    if (!app || typeof app.workshopPosts !== "function") return null;
+    const postsMap = app.workshopPosts();
+    if (!Object.keys(postsMap).length) return null; // 主表无车间/岗位数据：不标红
+    const row = surveyRows()[r];
+    if (!row) return null;
+    const { wsCol } = sPostCols(sh);
+    const wsNames = wsCol >= 0 ? sMultiParts(row[wsCol]) : [];
+    if (!wsNames.length) return null; // 未填对应车间：无法比对，不标红
+    const valid = new Set();
+    for (const name of wsNames) for (const p of postsMap[name] || []) valid.add(p);
+    return valid;
+  }
+  function sPostCellBad(ctx, row, ci) {
+    if (!ctx || !row) return false;
+    const jobParts = sMultiParts(row[ci]);
+    return jobParts.length > 0 && jobParts.some((p) => !ctx.has(p));
+  }
+  // 编辑提交/取消后即时刷新某行各岗位列的红边框（无需整表重渲染）
+  function sApplyBadPost(sh, r) {
+    if (!sh || !sh.headers) return;
+    const { wsCol, cols } = sPostCols(sh);
+    if (!cols.length) return;
+    const ctx = sPostCtx(sh, r);
+    const row = surveyRows()[r];
+    if (!row) return;
+    for (const ci of cols) {
+      const td = sFindTd(r, ci);
+      if (td) td.classList.toggle("s-bad-post", sPostCellBad(ctx, row, ci));
+    }
+  }
+
   function renderSurvey() {
     sCellCommit(); // 重建 tbody 前先提交未完成的编辑，防止 sEditing 残留导致首次点击无法进入编辑
     sCloseWsPanel(); // tbody 重建会销毁编辑框，下拉面板一并清理
@@ -502,20 +553,24 @@
       $S("survey-cols").innerHTML = sh.headers.map((h, i) => `<col style="width:${i === 0 ? 150 : 140}px">`).join("");
     }
     // 全量渲染（调查表行数有限，无需虚拟化）；不显示序号列；data-r 始终为原始行号，筛选仅隐藏行
+    const postCols = sPostCols(sh).cols;
     $S("survey-body").innerHTML = rows.length
-      ? rows.map((x) =>
-          `<tr data-r="${x.ri}">` +
+      ? rows.map((x) => {
+          const pctx = sPostCtx(sh, x.ri); // 行级岗位校验上下文（主表车间→岗位集合）
+          return `<tr data-r="${x.ri}">` +
           sh.headers.map((h, ci) => {
             // 生产工艺调查：工艺名称列（第 0 列）有内容的单元格挂一个「工艺图」上传按钮
             const isProcImg = sh.key === "process" && ci === 0 && String(x.r[0] || "").trim() !== "";
-            const tdCls = ci === 0 ? ("s-sticky-name" + (isProcImg ? " s-proc-name" : "")) : "";
+            // 各「岗位(工种)」列：内容对不上主表「对应车间」下的岗位 → 红边框醒目
+            const badPost = postCols.includes(ci) && sPostCellBad(pctx, x.r, ci);
+            const tdCls = (ci === 0 ? "s-sticky-name" + (isProcImg ? " s-proc-name" : "") : "") + (badPost ? " s-bad-post" : "");
             return `<td data-c="${ci}"${tdCls ? ` class="${tdCls}"` : ""}>` +
               `<div class="ctext">${escHtml(x.r[ci])}</div>` +
               `${isProcImg ? procImgBtnHtml(String(x.r[0]).trim()) : ""}` +
               `</td>`;
           }).join("") +
-          `</tr>`
-        ).join("")
+          `</tr>`;
+        }).join("")
       : `<tr class="empty-row"><td colspan="${sh.headers.length}" style="text-align:center;color:#94a3b8;padding:16px">暂无数据，点击「+ 新增行」开始填写</td></tr>`;
     $S("survey-status").textContent = `${sh.name} · 共 ${rows.length} 行` + (sFilterMode && sFilterCount(sh) ? `（已筛选，原 ${surveyRows().length} 行）` : "");
     updateSurveySelection();
@@ -768,6 +823,8 @@
     sEditing = false;
     sEditOriginal = null;
     if (td && cur) td.innerHTML = `<div class="ctext">${escHtml(rows[cur.r] ? (rows[cur.r][cur.c] ?? "") : "")}</div>`;
+    // 岗位列内容变化后即时刷新红边框标记
+    if (cur && rows[cur.r]) sApplyBadPost(SURVEY_SHEETS.find((s) => s.key === surveyCur), cur.r);
   }
 
   function sCellCancel() {
@@ -781,6 +838,7 @@
     sEditing = false;
     sEditOriginal = null;
     if (td) td.innerHTML = `<div class="ctext">${escHtml(sCellValue(sCur.r, sCur.c))}</div>`;
+    sApplyBadPost(SURVEY_SHEETS.find((s) => s.key === surveyCur), sCur.r);
   }
 
   function sMove(dr, dc, opts = {}) {
