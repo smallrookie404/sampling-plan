@@ -52,41 +52,8 @@ function dechunk(data) {
   return concatBytes(out);
 }
 
-// 找响应头结束位置（\r\n\r\n，兼容仅 \n\n）；返回 { idx, crlf } 或 null
-function findHeaderEnd(raw) {
-  for (let i = 0; i + 3 < raw.length; i++) {
-    if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) return { idx: i, crlf: true };
-  }
-  for (let i = 0; i + 1 < raw.length; i++) {
-    if (raw[i] === 10 && raw[i + 1] === 10) return { idx: i, crlf: false };
-  }
-  return null;
-}
-
-// chunked 响应体是否已完整（出现长度为 0 的结束块）
-function chunkedComplete(body) {
-  let i = 0;
-  const dec = new TextDecoder();
-  while (i < body.length) {
-    const nl = indexOfBytes(body, i, 0x0a);
-    if (nl < 0) return false;
-    const size = parseInt(dec.decode(body.subarray(i, nl)).trim().split(";")[0].trim(), 16);
-    if (isNaN(size)) return false;
-    if (size === 0) return true;              // 结束块 0\r\n\r\n
-    i = nl + 1 + size + 2;                    // 跳过数据块与结尾 CRLF
-    if (i > body.length) return false;        // 数据还没收全
-  }
-  return false;
-}
-
 // 原始 TCP + HTTP/1.1 请求，返回 { status, headers, body(Uint8Array) }
-// 注意：平台响应为 chunked 且**不遵守 Connection: close**（HTTP/1.1 keep-alive），
-// 若一直读到 EOF 会永远等不到（Cloudflare 约 20s 后取消流 → "Stream was cancelled."）。
-// 因此这里按**报文自身的长度信息**判定读完即返回：chunked 结束块 / Content-Length 满足 /
-// 无响应体状态码（HEAD、204、304、1xx）；仅当两者都没有时才读至 EOF。
-async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, body, timeoutMs, stallMs) {
-  const t0 = Date.now();
-  let stage = "connect";                 // 出错时用于定位阶段（诊断信息随 502 返回）
+async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, body, timeoutMs) {
   const socket = connect({ hostname: host, port: port });
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
@@ -94,19 +61,10 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
   let timer = null;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      try { socket.close(); } catch {}
+      socket.close();
       reject(new Error("请求超时"));
     }, timeoutMs || 60000);
   });
-  // 「首字节前停滞」看门狗：连接被黑洞（SYN/响应被丢）时不会有任何数据，尽早失败好换连接重试；
-  // 一旦收到任何数据就解除，不会影响「响应慢但在传」的正常请求
-  let stallTimer = null;
-  const stall = stallMs > 0
-    ? new Promise((_, reject) => {
-        stallTimer = setTimeout(() => reject(new Error(`连接无响应（${stallMs}ms 内未收到任何数据）`)), stallMs);
-      })
-    : null;
-  const clearStall = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } };
 
   try {
     const head =
@@ -117,81 +75,48 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
       headerLines.join("\r\n") +
       `\r\n` +
       `\r\n`;
-    // 头部与请求体**一次写出**：分两次 write 时带体的请求（POST/PUT）可能只送达头部，
-    // 平台一直等请求体、永不响应 → 客户端侧表现为 502 卡死
-    stage = "write";
-    const payload = body && body.length
-      ? concatBytes([new TextEncoder().encode(head), body])
-      : new TextEncoder().encode(head);
-    await Promise.race([writer.write(payload), timeout]);
+    await Promise.race([
+      writer.write(new TextEncoder().encode(head)),
+      timeout,
+    ]);
+    if (body && body.length) {
+      await Promise.race([writer.write(body), timeout]);
+    }
 
-    // 增量读取：头部解析出长度信息后，收满响应体即停，不等连接关闭
+    // 不主动关闭写端：服务器按 Connection: close 返回后自行关闭连接
     const chunks = [];
-    let raw = new Uint8Array(0);
-    let hdr = null;          // { idx, crlf }
-    let status = 0;
-    let contentLength = -1;
-    let chunked = false;
-    let readErr = null;
     while (true) {
-      stage = "read";
-      let r;
-      try {
-        r = await Promise.race(stall ? [reader.read(), timeout, stall] : [reader.read(), timeout]);
-      } catch (e) {
-        // 远端关闭连接时，Workers 的 socket 流可能**以错误形式结束**（"Stream was cancelled."）
-        // 而不是返回 { done: true }。此时已收到的数据往往是完整响应（如平台对带体请求会回
-        // Connection: close 并立刻断开），因此先跳出循环、按报文完整性判定后再决定是否报错。
-        readErr = e;
+      const r = await Promise.race([reader.read(), timeout]);
+      if (r.done) break;
+      chunks.push(r.value);
+    }
+
+    const raw = concatBytes(chunks);
+    // 找 \r\n\r\n；找不到时兼容仅 \n\n 的响应
+    let headerEnd = -1;
+    let crlf = true;
+    for (let i = 0; i + 3 < raw.length; i++) {
+      if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) {
+        headerEnd = i;
         break;
       }
-      if (r.done) break;                       // 服务器主动关闭：正常结束
-      clearStall();                            // 已有数据：解除停滞看门狗
-      chunks.push(r.value);
-      raw = concatBytes(chunks);
-      if (!hdr) {
-        hdr = findHeaderEnd(raw);
-        if (!hdr) continue;                    // 头部还没收全
-        const headText = new TextDecoder().decode(raw.subarray(0, hdr.idx));
-        const lines = headText.split(hdr.crlf ? "\r\n" : "\n");
-        status = parseInt((lines[0] || "").split(" ")[1], 10) || 0;
-        for (let i = 1; i < lines.length; i++) {
-          const ci = lines[i].indexOf(":");
-          if (ci <= 0) continue;
-          const k = lines[i].slice(0, ci).trim().toLowerCase();
-          const v = lines[i].slice(ci + 1).trim();
-          if (k === "content-length") contentLength = parseInt(v, 10);
-          else if (k === "transfer-encoding") chunked = v.toLowerCase().includes("chunked");
-        }
-        // 这些情况没有响应体，头部收全即可结束
-        if (method === "HEAD" || status === 204 || status === 304 || (status >= 100 && status < 200)) break;
-      }
-      const bodyBytes = raw.subarray(hdr.idx + (hdr.crlf ? 4 : 2));
-      if (chunked) {
-        if (chunkedComplete(bodyBytes)) break;
-      } else if (contentLength >= 0) {
-        if (bodyBytes.length >= contentLength) break;
-      }
-      // 既非 chunked 也无 Content-Length：只能读到 EOF（由超时兜底）
     }
-
-    if (!hdr) {
-      if (readErr) throw new Error(`连接中断：${(readErr && readErr.message) || readErr}`);
+    if (headerEnd < 0) {
+      for (let i = 0; i + 1 < raw.length; i++) {
+        if (raw[i] === 10 && raw[i + 1] === 10) {
+          headerEnd = i;
+          crlf = false;
+          break;
+        }
+      }
+    }
+    if (headerEnd < 0) {
       throw new Error("平台响应格式错误（原始响应前200字节：" + bytesPreview(raw) + "）");
     }
-    // 读到错误结束但报文已完整（chunked 结束块 / Content-Length 满足）：照常返回，
-    // 不要因为「流被取消」把已经拿到的完整响应丢掉（这正是带体请求 502 的原因）
-    if (readErr) {
-      const bodySoFar = raw.subarray(hdr.idx + (hdr.crlf ? 4 : 2));
-      const complete = chunked
-        ? chunkedComplete(bodySoFar)
-        : (contentLength >= 0 ? bodySoFar.length >= contentLength : true);
-      if (!complete) {
-        throw new Error(`连接中断且响应不完整：${(readErr && readErr.message) || readErr}（已收 ${raw.length} 字节）`);
-      }
-    }
-    const headText = new TextDecoder().decode(raw.subarray(0, hdr.idx));
-    const lines = headText.split(hdr.crlf ? "\r\n" : "\n");
+
+    const headText = new TextDecoder().decode(raw.subarray(0, headerEnd));
+    const lines = headText.split(crlf ? "\r\n" : "\n");
+    const status = parseInt((lines[0] || "").split(" ")[1], 10);
     const headers = {};
     for (let i = 1; i < lines.length; i++) {
       const idx = lines[i].indexOf(":");
@@ -199,7 +124,7 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
         headers[lines[i].slice(0, idx).trim().toLowerCase()] = lines[i].slice(idx + 1).trim();
       }
     }
-    let bodyBytes = raw.subarray(hdr.idx + (hdr.crlf ? 4 : 2));
+    let bodyBytes = raw.subarray(headerEnd + (crlf ? 4 : 2));
     const te = (headers["transfer-encoding"] || "").toLowerCase();
     if (te.includes("chunked")) {
       bodyBytes = dechunk(bodyBytes);
@@ -208,12 +133,8 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
       bodyBytes = bodyBytes.subarray(0, len);
     }
     return { status, headers, body: bodyBytes };
-  } catch (e) {
-    // 带上「阶段 + 耗时」，便于从 502 响应体直接定位（connect / write / read / 超时）
-    throw new Error(`[${stage} ${Date.now() - t0}ms] ${(e && e.message) || e}`);
   } finally {
     clearTimeout(timer);
-    clearStall();
     try {
       reader.releaseLock();
     } catch {}
@@ -269,32 +190,9 @@ export async function onRequest(context) {
 
   let result;
   try {
-    // 平台侧对该链路偶发「按连接/出口 IP」的拦截（表现为连响应头都收不到，~20s 后流被取消）。
-    // 幂等请求（GET/HEAD）失败时自动换连接重试：首字节前 8s 无数据即判定为黑洞连接、立即重试，
-    // 3 次尝试最坏约 24s（客户端默认 30s 超时内），明显降低验证码 / 搜索这类请求的翻车概率；
-    // 带体请求（POST/PUT/DELETE）不重试，避免重复提交。
-    const canRetry = request.method === "GET" || request.method === "HEAD";
-    const attempts = canRetry ? 3 : 1;
-    const stallMs = canRetry ? 8000 : 0;
-    for (let i = 1; ; i++) {
-      try {
-        result = await rawHttpRequest(TARGET_HOST, TARGET_PORT, request.method, pathAndQuery, headerLines, body, 60000, stallMs);
-        break;
-      } catch (e) {
-        if (i >= attempts) throw e;
-        await new Promise((r) => setTimeout(r, 150));
-      }
-    }
+    result = await rawHttpRequest(TARGET_HOST, TARGET_PORT, request.method, pathAndQuery, headerLines, body, 60000);
   } catch (e) {
-    // 平台不可达时给出可操作的提示（前端登录页会优先显示 hint）。
-    // 典型原因：平台防火墙拦截了本机房（Cloudflare 出口 IP 段）——表现为连响应头都收不到。
-    const msg = String((e && e.message) || e);
-    const hint = '平台接口不可达（' + msg + '）。常见原因是平台防火墙拦了 Cloudflare 出口 IP：'
-      + '① 改用本地版（双击「启动采样计划软件.bat」，直连平台不经 Cloudflare）；'
-      + '② 或在 Cloudflare 控制台为本项目开启 Smart Placement'
-      + '（Workers & Pages → 选中项目 → Settings → Runtime → Placement → Smart，开启后发 20-30 个请求待其生效）；'
-      + '③ 或联系平台管理员放行 Cloudflare 出口 IP 段。';
-    return new Response(JSON.stringify({ error: msg, hint: hint }), {
+    return new Response(JSON.stringify({ error: String((e && e.message) || e) }), {
       status: 502,
       headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });

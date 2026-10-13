@@ -100,9 +100,7 @@
     const init = { method: method, headers: headers };
     const ac = new AbortController();
     // timeout 为 0 表示不限时（如大文件上传，平台处理时间不可预估）
-    let timedOut = false;
-    const limit = opts.timeout === 0 ? 0 : (opts.timeout || 30000);
-    const timer = limit === 0 ? null : setTimeout(function () { timedOut = true; ac.abort(); }, limit);
+    const timer = opts.timeout === 0 ? null : setTimeout(function () { ac.abort(); }, opts.timeout || 30000);
     if (opts.signal) {
       opts.signal.addEventListener('abort', function () { ac.abort(); });
     }
@@ -121,33 +119,16 @@
       // 登录失效：平台对过期会话返回 401（"找不到当前登录的信息"）→ 提示并引导重新登录
       if (resp.status === 401 && opts.token && typeof authExpiredHandler === 'function') authExpiredHandler();
       return { status: resp.status, data: data, text: text };
-    } catch (e) {
-      // 自身超时触发的 abort：原生 AbortError 的 message 是 "signal is aborted without reason"，
-      // 对用户毫无意义，这里换成明确提示（调用方主动 abort 的不受影响，仍为 AbortError）
-      if (timedOut && e && e.name === 'AbortError') {
-        throw new Error('请求超时（' + Math.round(limit / 1000) + ' 秒无响应）：' + path);
-      }
-      throw e;
     } finally {
       clearTimeout(timer);
     }
   }
 
   // ---------------- 平台接口 ----------------
-  // 平台接口错误文案：优先用服务端返回的 hint（如「平台不可达」的可操作建议，
-  // 由 Cloudflare 同源代理在 502 时给出），其次平台原文，最后兜底文案。
-  function platformErrText(data, fallback) {
-    if (data && typeof data === 'object') {
-      if (typeof data.hint === 'string' && data.hint) return data.hint;
-      if (data.message || data.msg) return String(data.message || data.msg);
-    }
-    return fallback;
-  }
-
   async function fetchCaptcha() {
     const r = await apiRequest('GET', '/auth/code');
     if (r.status !== 200 || !r.data || !r.data.img || !r.data.uuid) {
-      throw new Error(platformErrText(r.data, '获取验证码失败(HTTP ' + r.status + ')：' + r.text));
+      throw new Error('获取验证码失败(HTTP ' + r.status + ')：' + r.text);
     }
     return r.data; // { uuid, img }
   }
@@ -742,7 +723,8 @@
       try {
         const r = await login(user, pass, code, uuid);
         if (r.status !== 200 || !r.data || !r.data.token) {
-          throw new Error(platformErrText(r.data, 'HTTP ' + r.status));
+          const msg = (r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status);
+          throw new Error(msg);
         }
         token = r.data.token;
         userInfo = r.data.user.user || {};

@@ -3,21 +3,6 @@
   "name": "sampling-plan",
   "compatibility_date": "2024-11-01",
   "pages_build_output_dir": "sampling-plan-app",
-  // 放置（Placement）：把 Pages Function 放到「离上游平台最近」的机房执行。
-  // 背景：平台接口是裸 IP + 端口（223.93.144.122:27800），默认放置随访问者位置变化——
-  // 国内访问会落到远端机房（实测 colo=SJC），而平台防火墙拦了部分 Cloudflare 出口 IP 段，
-  // 表现为 Worker 连上后收不到任何字节 → 20s 后流被取消 → 502「Stream was cancelled.」、
-  // 验证码拿不到；挂 VPN 换机房才通。
-  //
-  // 注意（2026-10-13 实测）：Pages 的 Smart Placement 官方路径是**在 Cloudflare 控制台开启**
-  //   Workers & Pages → 选中本项目 → Settings → Runtime → Placement → 选 Smart
-  //   （开启后需向 Functions 发 ~20-30 个请求，几分钟后生效；响应头 cf-placement 变为 remote-XXX）
-  // 仅写在本文件里的 Placement Hint（host/region）对 Pages 似乎不生效：实测响应头仍是
-  //   Cf-Placement: local-SJC（local- 前缀＝仍按访问者就近放置）。故此处保留 mode=smart 作为
-  //   声明，真正生效请按上面路径在控制台开启；若控制台开启后仍为 local-，说明该字段被 Pages 忽略。
-  "placement": {
-    "mode": "smart"
-  },
   // Cloudflare KV 命名空间：先用以下命令创建，再把返回的 id 填到下方
   //   npx wrangler kv namespace create SAMPLING_RECORDS
   "kv_namespaces": [
