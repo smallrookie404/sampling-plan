@@ -273,7 +273,8 @@ table.survey td, table.survey thead th { word-break: break-word; overflow-wrap: 
 table.survey tbody td { cursor: default; }
 /* 显示态与编辑态共用同一套字体度量（与主表格 .grid input 一致：12px、padding 2px 6px），排版零变动 */
 table.survey td .ctext { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; font-size: 12px; line-height: 1.4; padding: 2px 6px; }
-/* 各「岗位(工种)」列：内容对不上主表「对应车间」下的岗位时，单元格红色边框醒目提示
+/* 与主表格核对不上的单元格红色边框醒目：「单元/工作场所」列对不上主表车间、
+   各「岗位(工种)」列对不上主表「对应车间」下的岗位
    （specificity 高于 .sel/.cur 的蓝色选中框，保证选中时红框仍然可见） */
 table.survey tbody td.s-bad-post { box-shadow: inset 0 0 0 2px var(--error-line); }
 /* 生产工艺调查：工艺名称单元格里的「工艺图」按钮/缩略图（单元格内右侧、上下居中） */
