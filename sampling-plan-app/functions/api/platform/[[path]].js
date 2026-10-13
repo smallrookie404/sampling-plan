@@ -123,9 +123,19 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
     let status = 0;
     let contentLength = -1;
     let chunked = false;
+    let readErr = null;
     while (true) {
       stage = "read";
-      const r = await Promise.race([reader.read(), timeout]);
+      let r;
+      try {
+        r = await Promise.race([reader.read(), timeout]);
+      } catch (e) {
+        // 远端关闭连接时，Workers 的 socket 流可能**以错误形式结束**（"Stream was cancelled."）
+        // 而不是返回 { done: true }。此时已收到的数据往往是完整响应（如平台对带体请求会回
+        // Connection: close 并立刻断开），因此先跳出循环、按报文完整性判定后再决定是否报错。
+        readErr = e;
+        break;
+      }
       if (r.done) break;                       // 服务器主动关闭：正常结束
       chunks.push(r.value);
       raw = concatBytes(chunks);
@@ -156,7 +166,19 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
     }
 
     if (!hdr) {
+      if (readErr) throw new Error(`连接中断：${(readErr && readErr.message) || readErr}`);
       throw new Error("平台响应格式错误（原始响应前200字节：" + bytesPreview(raw) + "）");
+    }
+    // 读到错误结束但报文已完整（chunked 结束块 / Content-Length 满足）：照常返回，
+    // 不要因为「流被取消」把已经拿到的完整响应丢掉（这正是带体请求 502 的原因）
+    if (readErr) {
+      const bodySoFar = raw.subarray(hdr.idx + (hdr.crlf ? 4 : 2));
+      const complete = chunked
+        ? chunkedComplete(bodySoFar)
+        : (contentLength >= 0 ? bodySoFar.length >= contentLength : true);
+      if (!complete) {
+        throw new Error(`连接中断且响应不完整：${(readErr && readErr.message) || readErr}（已收 ${raw.length} 字节）`);
+      }
     }
     const headText = new TextDecoder().decode(raw.subarray(0, hdr.idx));
     const lines = headText.split(hdr.crlf ? "\r\n" : "\n");
