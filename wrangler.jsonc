@@ -3,6 +3,15 @@
   "name": "sampling-plan",
   "compatibility_date": "2024-11-01",
   "pages_build_output_dir": "sampling-plan-app",
+  // 放置（Placement Hint）：把 Worker 固定在「离上游平台最近」的机房执行。
+  // 背景：平台接口是裸 IP + 端口（223.93.144.122:27800），默认放置会随访问者所在位置变化
+  // （如国内访问落在 SJC 等远端机房），而平台防火墙对部分 Cloudflare 出口 IP 段有拦截，
+  // 表现为「连响应头都收不到 → 502 / 验证码拿不到」，挂 VPN 换机房才能通。
+  // 指定 host 后 Cloudflare 用 TCP 探测定位该主机，把 Worker 放在与其延迟最低的机房，
+  // 与访问者位置/是否挂 VPN 无关，行为稳定。验证：响应头 cf-placement: remote-XXX。
+  "placement": {
+    "host": "223.93.144.122:27800"
+  },
   // Cloudflare KV 命名空间：先用以下命令创建，再把返回的 id 填到下方
   //   npx wrangler kv namespace create SAMPLING_RECORDS
   "kv_namespaces": [
