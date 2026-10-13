@@ -134,10 +134,20 @@
   }
 
   // ---------------- 平台接口 ----------------
+  // 平台接口错误文案：优先用服务端返回的 hint（如「平台不可达」的可操作建议，
+  // 由 Cloudflare 同源代理在 502 时给出），其次平台原文，最后兜底文案。
+  function platformErrText(data, fallback) {
+    if (data && typeof data === 'object') {
+      if (typeof data.hint === 'string' && data.hint) return data.hint;
+      if (data.message || data.msg) return String(data.message || data.msg);
+    }
+    return fallback;
+  }
+
   async function fetchCaptcha() {
     const r = await apiRequest('GET', '/auth/code');
     if (r.status !== 200 || !r.data || !r.data.img || !r.data.uuid) {
-      throw new Error('获取验证码失败(HTTP ' + r.status + ')：' + r.text);
+      throw new Error(platformErrText(r.data, '获取验证码失败(HTTP ' + r.status + ')：' + r.text));
     }
     return r.data; // { uuid, img }
   }
@@ -732,8 +742,7 @@
       try {
         const r = await login(user, pass, code, uuid);
         if (r.status !== 200 || !r.data || !r.data.token) {
-          const msg = (r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status);
-          throw new Error(msg);
+          throw new Error(platformErrText(r.data, 'HTTP ' + r.status));
         }
         token = r.data.token;
         userInfo = r.data.user.user || {};

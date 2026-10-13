@@ -286,7 +286,15 @@ export async function onRequest(context) {
       }
     }
   } catch (e) {
-    return new Response(JSON.stringify({ error: String((e && e.message) || e) }), {
+    // 平台不可达时给出可操作的提示（前端登录页会优先显示 hint）。
+    // 典型原因：平台防火墙拦截了本机房（Cloudflare 出口 IP 段）——表现为连响应头都收不到。
+    const msg = String((e && e.message) || e);
+    const hint = '平台接口不可达（' + msg + '）。常见原因是平台防火墙拦了 Cloudflare 出口 IP：'
+      + '① 改用本地版（双击「启动采样计划软件.bat」，直连平台不经 Cloudflare）；'
+      + '② 或在 Cloudflare 控制台为本项目开启 Smart Placement'
+      + '（Workers & Pages → 选中项目 → Settings → Runtime → Placement → Smart，开启后发 20-30 个请求待其生效）；'
+      + '③ 或联系平台管理员放行 Cloudflare 出口 IP 段。';
+    return new Response(JSON.stringify({ error: msg, hint: hint }), {
       status: 502,
       headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
