@@ -488,20 +488,25 @@
   // · 「单元/工作场所」列：内容必须都能在主表已填车间（SamplingApp.workshopNames，A 列）中找到。
   // 任一条目对不上 → 该单元格红色边框醒目提示。车间列未填或主表无车间数据时不标红（无从比对）。
   const S_POST_COL_RE = /(操作|使用|影响|设置|配置)岗位\(工种\)/;
+  // 与主表核对标红的「地点」列（按子表 key → 表头名）：内容须为主表「同行车间+岗位」下的点位
+  const S_SITE_COL = { equipment: "工作地点", material: "使用地点" };
   function sCheckCols(sh) {
-    if (!sh) return { wsCol: -1, cols: [] };
+    if (!sh) return { wsCol: -1, cols: [], siteCol: -1 };
     const wsCol = sh.headers.findIndex((h) => h && h.includes("单元/工作场所"));
     const cols = [];
     sh.headers.forEach((h, i) => { if (h && S_POST_COL_RE.test(h)) cols.push(i); });
-    return { wsCol, cols };
+    const siteName = sh && S_SITE_COL[sh.key];
+    const siteCol = siteName ? sh.headers.indexOf(siteName) : -1;
+    return { wsCol, cols, siteCol };
   }
   // 按逗号/顿号/换行拆分为去空白的条目
   function sMultiParts(v) {
     return String(v ?? "").split(/[、，,\n]/).map((s) => s.trim()).filter(Boolean);
   }
   // 行级校验上下文；返回 null 表示该行不做校验：
-  //   wsSet = 主表已填车间名集合（核对「单元/工作场所」列）
-  //   valid = 该行各车间在主表中对应的岗位集合（核对各「岗位(工种)」列）
+  //   wsSet   = 主表已填车间名集合（核对「单元/工作场所」列）
+  //   valid   = 该行各车间在主表中对应的岗位集合（核对各「岗位(工种)」列）
+  //   siteSet = 该行各「车间×岗位」组合在主表中对应的点位集合（核对「工作地点/使用地点」列）
   function sCheckCtx(sh, r) {
     const app = window.SamplingApp;
     if (!app || typeof app.workshopNames !== "function") return null;
@@ -510,14 +515,25 @@
     const postsMap = typeof app.workshopPosts === "function" ? app.workshopPosts() : {};
     const row = surveyRows()[r];
     if (!row) return null;
-    const { wsCol } = sCheckCols(sh);
+    const { wsCol, cols } = sCheckCols(sh);
     const wsNames = wsCol >= 0 ? sMultiParts(row[wsCol]) : [];
     if (!wsNames.length) return null; // 未填对应车间：无法比对，不标红
+    const postCol = cols.length ? cols[0] : -1;
+    const postNames = postCol >= 0 ? sMultiParts(row[postCol]) : [];
+    if (!postNames.length) return null; // 未填岗位：地点列无从比对，一并跳过
     const valid = new Set();
     for (const name of wsNames) for (const p of postsMap[name] || []) valid.add(p);
-    return { valid, wsSet: new Set(wsNamesMain) };
+    // 点位集合：主表中「车间×岗位」都一致的点位并集
+    const sitesMap = typeof app.workshopPostSites === "function" ? app.workshopPostSites() : {};
+    const siteSet = new Set();
+    for (const name of wsNames) {
+      for (const post of postNames) {
+        for (const s of (sitesMap[name] && sitesMap[name][post]) || []) siteSet.add(s);
+      }
+    }
+    return { valid, wsSet: new Set(wsNamesMain), siteSet };
   }
-  // 单元格内容拆条目后只要有任一条不在集合 setKey（"wsSet" / "valid"）中即视为不匹配
+  // 单元格内容拆条目后只要有任一条不在集合 setKey（"wsSet" / "valid" / "siteSet"）中即视为不匹配
   function sCellBad(ctx, row, ci, setKey) {
     if (!ctx || !row) return false;
     const parts = sMultiParts(row[ci]);
@@ -526,17 +542,17 @@
   // 编辑提交/取消后即时刷新某行各核对列的红边框（无需整表重渲染）
   function sApplyBadCells(sh, r) {
     if (!sh || !sh.headers) return;
-    const { wsCol, cols } = sCheckCols(sh);
-    if (!cols.length && wsCol < 0) return;
+    const { wsCol, cols, siteCol } = sCheckCols(sh);
+    if (!cols.length && wsCol < 0 && siteCol < 0) return;
     const ctx = sCheckCtx(sh, r);
     const row = surveyRows()[r];
     if (!row) return;
-    const targets = cols.concat(wsCol >= 0 ? [wsCol] : []);
+    const targets = cols.concat(wsCol >= 0 ? [wsCol] : [], siteCol >= 0 ? [siteCol] : []);
     for (const ci of targets) {
       const td = sFindTd(r, ci);
       if (!td) continue;
-      const bad = sCellBad(ctx, row, ci, ci === wsCol ? "wsSet" : "valid");
-      td.classList.toggle("s-bad-post", bad);
+      const setKey = ci === wsCol ? "wsSet" : (ci === siteCol ? "siteSet" : "valid");
+      td.classList.toggle("s-bad-post", sCellBad(ctx, row, ci, setKey));
     }
   }
 
@@ -569,9 +585,11 @@
           sh.headers.map((h, ci) => {
             // 生产工艺调查：工艺名称列（第 0 列）有内容的单元格挂一个「工艺图」上传按钮
             const isProcImg = sh.key === "process" && ci === 0 && String(x.r[0] || "").trim() !== "";
-            // 「单元/工作场所」列对不上主表车间、各「岗位(工种)」列对不上主表「对应车间」下的岗位 → 红边框醒目
-            const isCheckCol = ci === checkCols.wsCol || checkCols.cols.includes(ci);
-            const badCell = isCheckCol && sCellBad(cctx, x.r, ci, ci === checkCols.wsCol ? "wsSet" : "valid");
+            // 「单元/工作场所」列对不上主表车间、各「岗位(工种)」列对不上主表「对应车间」下的岗位、
+            // 「工作地点/使用地点」对不上主表「同行车间+岗位」下的点位 → 红边框醒目
+            const isCheckCol = ci === checkCols.wsCol || ci === checkCols.siteCol || checkCols.cols.includes(ci);
+            const setKey = ci === checkCols.wsCol ? "wsSet" : (ci === checkCols.siteCol ? "siteSet" : "valid");
+            const badCell = isCheckCol && sCellBad(cctx, x.r, ci, setKey);
             const tdCls = (ci === 0 ? "s-sticky-name" + (isProcImg ? " s-proc-name" : "") : "") + (badCell ? " s-bad-post" : "");
             return `<td data-c="${ci}"${tdCls ? ` class="${tdCls}"` : ""}>` +
               `<div class="ctext">${escHtml(x.r[ci])}</div>` +
@@ -704,6 +722,24 @@
         }
       }
       wsOpts = merged;
+    } else if ((headerName === "工作地点" || headerName === "使用地点" || headerName === "设置地点") && window.SamplingApp && window.SamplingApp.workshopPostSites) {
+      // 「工作地点」(设备设施) /「使用地点」(原辅物料) /「设置地点」(职业防护)：选项 = 主表中「同行 单元/工作场所 + 岗位(工种)」都一致的 点位（*点位/采样对象）
+      // 车间、岗位均支持「、」多选（合并去重）；无匹配点位时不显示下拉（退回普通文本编辑）
+      const { wsCol, cols } = sCheckCols(sh);
+      const postCol = cols.length ? cols[0] : -1;
+      const row = surveyRows()[sCur.r] || [];
+      const postsMap = window.SamplingApp.workshopPostSites();
+      const wsNames = sMultiParts(wsCol >= 0 ? row[wsCol] : "");
+      const postNames = sMultiParts(postCol >= 0 ? row[postCol] : "");
+      const opts = [];
+      for (const ws of wsNames) {
+        for (const post of postNames) {
+          for (const s of (postsMap[ws] && postsMap[ws][post]) || []) {
+            if (!opts.includes(s)) opts.push(s);
+          }
+        }
+      }
+      wsOpts = opts.length ? opts : null;
     } else if (headerName === "*防护用品类别") {
       // 个体防护表「防护用品类别」：选项按同行「防护用品分类」联动；分类无对应（未填/防护服装/手部防护）时不显示下拉
       const clsCol = sh.headers.indexOf("*防护用品分类");

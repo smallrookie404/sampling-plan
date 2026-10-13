@@ -3642,6 +3642,23 @@
       }
       return map;
     },
+    // 车间 + 岗位 → 点位（AL=*点位/采样对象）映射：map[车间][岗位] = [点位, ...]
+    // 供调查表「工作地点」(设备设施) /「使用地点」(原辅物料) 列下拉：同行车间与岗位都一致的点位
+    workshopPostSites: () => {
+      const map = {};
+      for (const row of rows) {
+        const ws = (row.values["W"] ?? "").trim();
+        const post = (row.values["X"] ?? "").trim();
+        const site = (row.values["AL"] ?? "").trim();
+        if (!ws || !post || !site) continue;
+        if (!map[ws]) map[ws] = {};
+        if (!map[ws][post]) map[ws][post] = [];
+        for (const s of site.split(/[\n、]/).map((x) => x.trim()).filter(Boolean)) {
+          if (!map[ws][post].includes(s)) map[ws][post].push(s);
+        }
+      }
+      return map;
+    },
     // 「生成2个xlsx」用：主表行快照（录入区 input + 自动计算区 values）、参考库快照、列顺序
     rowsSnapshot: () => rows.map((r) => ({
       input: Object.assign({}, r.input),
