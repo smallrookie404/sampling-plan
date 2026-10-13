@@ -52,7 +52,38 @@ function dechunk(data) {
   return concatBytes(out);
 }
 
+// 找响应头结束位置（\r\n\r\n，兼容仅 \n\n）；返回 { idx, crlf } 或 null
+function findHeaderEnd(raw) {
+  for (let i = 0; i + 3 < raw.length; i++) {
+    if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) return { idx: i, crlf: true };
+  }
+  for (let i = 0; i + 1 < raw.length; i++) {
+    if (raw[i] === 10 && raw[i + 1] === 10) return { idx: i, crlf: false };
+  }
+  return null;
+}
+
+// chunked 响应体是否已完整（出现长度为 0 的结束块）
+function chunkedComplete(body) {
+  let i = 0;
+  const dec = new TextDecoder();
+  while (i < body.length) {
+    const nl = indexOfBytes(body, i, 0x0a);
+    if (nl < 0) return false;
+    const size = parseInt(dec.decode(body.subarray(i, nl)).trim().split(";")[0].trim(), 16);
+    if (isNaN(size)) return false;
+    if (size === 0) return true;              // 结束块 0\r\n\r\n
+    i = nl + 1 + size + 2;                    // 跳过数据块与结尾 CRLF
+    if (i > body.length) return false;        // 数据还没收全
+  }
+  return false;
+}
+
 // 原始 TCP + HTTP/1.1 请求，返回 { status, headers, body(Uint8Array) }
+// 注意：平台响应为 chunked 且**不遵守 Connection: close**（HTTP/1.1 keep-alive），
+// 若一直读到 EOF 会永远等不到（Cloudflare 约 20s 后取消流 → "Stream was cancelled."）。
+// 因此这里按**报文自身的长度信息**判定读完即返回：chunked 结束块 / Content-Length 满足 /
+// 无响应体状态码（HEAD、204、304、1xx）；仅当两者都没有时才读至 EOF。
 async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, body, timeoutMs) {
   const socket = connect({ hostname: host, port: port });
   const writer = socket.writable.getWriter();
@@ -61,7 +92,7 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
   let timer = null;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      socket.close();
+      try { socket.close(); } catch {}
       reject(new Error("请求超时"));
     }, timeoutMs || 60000);
   });
@@ -83,40 +114,49 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
       await Promise.race([writer.write(body), timeout]);
     }
 
-    // 不主动关闭写端：服务器按 Connection: close 返回后自行关闭连接
+    // 增量读取：头部解析出长度信息后，收满响应体即停，不等连接关闭
     const chunks = [];
+    let raw = new Uint8Array(0);
+    let hdr = null;          // { idx, crlf }
+    let status = 0;
+    let contentLength = -1;
+    let chunked = false;
     while (true) {
       const r = await Promise.race([reader.read(), timeout]);
-      if (r.done) break;
+      if (r.done) break;                       // 服务器主动关闭：正常结束
       chunks.push(r.value);
+      raw = concatBytes(chunks);
+      if (!hdr) {
+        hdr = findHeaderEnd(raw);
+        if (!hdr) continue;                    // 头部还没收全
+        const headText = new TextDecoder().decode(raw.subarray(0, hdr.idx));
+        const lines = headText.split(hdr.crlf ? "\r\n" : "\n");
+        status = parseInt((lines[0] || "").split(" ")[1], 10) || 0;
+        for (let i = 1; i < lines.length; i++) {
+          const ci = lines[i].indexOf(":");
+          if (ci <= 0) continue;
+          const k = lines[i].slice(0, ci).trim().toLowerCase();
+          const v = lines[i].slice(ci + 1).trim();
+          if (k === "content-length") contentLength = parseInt(v, 10);
+          else if (k === "transfer-encoding") chunked = v.toLowerCase().includes("chunked");
+        }
+        // 这些情况没有响应体，头部收全即可结束
+        if (method === "HEAD" || status === 204 || status === 304 || (status >= 100 && status < 200)) break;
+      }
+      const bodyBytes = raw.subarray(hdr.idx + (hdr.crlf ? 4 : 2));
+      if (chunked) {
+        if (chunkedComplete(bodyBytes)) break;
+      } else if (contentLength >= 0) {
+        if (bodyBytes.length >= contentLength) break;
+      }
+      // 既非 chunked 也无 Content-Length：只能读到 EOF（由超时兜底）
     }
 
-    const raw = concatBytes(chunks);
-    // 找 \r\n\r\n；找不到时兼容仅 \n\n 的响应
-    let headerEnd = -1;
-    let crlf = true;
-    for (let i = 0; i + 3 < raw.length; i++) {
-      if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) {
-        headerEnd = i;
-        break;
-      }
-    }
-    if (headerEnd < 0) {
-      for (let i = 0; i + 1 < raw.length; i++) {
-        if (raw[i] === 10 && raw[i + 1] === 10) {
-          headerEnd = i;
-          crlf = false;
-          break;
-        }
-      }
-    }
-    if (headerEnd < 0) {
+    if (!hdr) {
       throw new Error("平台响应格式错误（原始响应前200字节：" + bytesPreview(raw) + "）");
     }
-
-    const headText = new TextDecoder().decode(raw.subarray(0, headerEnd));
-    const lines = headText.split(crlf ? "\r\n" : "\n");
-    const status = parseInt((lines[0] || "").split(" ")[1], 10);
+    const headText = new TextDecoder().decode(raw.subarray(0, hdr.idx));
+    const lines = headText.split(hdr.crlf ? "\r\n" : "\n");
     const headers = {};
     for (let i = 1; i < lines.length; i++) {
       const idx = lines[i].indexOf(":");
@@ -124,7 +164,7 @@ async function rawHttpRequest(host, port, method, pathAndQuery, headerLines, bod
         headers[lines[i].slice(0, idx).trim().toLowerCase()] = lines[i].slice(idx + 1).trim();
       }
     }
-    let bodyBytes = raw.subarray(headerEnd + (crlf ? 4 : 2));
+    let bodyBytes = raw.subarray(hdr.idx + (hdr.crlf ? 4 : 2));
     const te = (headers["transfer-encoding"] || "").toLowerCase();
     if (te.includes("chunked")) {
       bodyBytes = dechunk(bodyBytes);

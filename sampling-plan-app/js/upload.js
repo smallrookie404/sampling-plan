@@ -100,7 +100,9 @@
     const init = { method: method, headers: headers };
     const ac = new AbortController();
     // timeout 为 0 表示不限时（如大文件上传，平台处理时间不可预估）
-    const timer = opts.timeout === 0 ? null : setTimeout(function () { ac.abort(); }, opts.timeout || 30000);
+    let timedOut = false;
+    const limit = opts.timeout === 0 ? 0 : (opts.timeout || 30000);
+    const timer = limit === 0 ? null : setTimeout(function () { timedOut = true; ac.abort(); }, limit);
     if (opts.signal) {
       opts.signal.addEventListener('abort', function () { ac.abort(); });
     }
@@ -119,6 +121,13 @@
       // 登录失效：平台对过期会话返回 401（"找不到当前登录的信息"）→ 提示并引导重新登录
       if (resp.status === 401 && opts.token && typeof authExpiredHandler === 'function') authExpiredHandler();
       return { status: resp.status, data: data, text: text };
+    } catch (e) {
+      // 自身超时触发的 abort：原生 AbortError 的 message 是 "signal is aborted without reason"，
+      // 对用户毫无意义，这里换成明确提示（调用方主动 abort 的不受影响，仍为 AbortError）
+      if (timedOut && e && e.name === 'AbortError') {
+        throw new Error('请求超时（' + Math.round(limit / 1000) + ' 秒无响应）：' + path);
+      }
+      throw e;
     } finally {
       clearTimeout(timer);
     }
