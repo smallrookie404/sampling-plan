@@ -1822,7 +1822,7 @@
     //   检测结果报告单 = 'jcbg'    检测底稿 = 'jcdg'
     //   POST /api/projectXccyLastAffix/resetProjectApprovalProcess
     //   body { belongProject, projectProcess }
-    // 审核（通过）走 POST /api/projectJcbgLastAffixNew/auditAll
+    // 审核（通过）走 POST /api/projectJcbgLastAffixNew/audit（单个对象 body，见下）
     //   body [{ belongProject, projectName, suggestions, type, isPass }]
     // 平台原生「重置审批状态」是**三次连续确认**，这里照搬。
     // ⚠️ 回退是**两步**：先重置「检测结果报告单」，再重置「检测底稿」（顺序与人工操作一致）。
@@ -1837,25 +1837,56 @@
 
     // 「数据报告审核」= 一条**跨账号的审批链**（与人工在平台上的操作顺序一致）：
     //   ① btc-jyg：检测底稿页「提交审复核」        POST /api/projectJcdgLastAffixNew/submitJcdgReview {belongProject}
-    //   ② btc-wcy：流程审批→检测底稿→通过          POST /api/projectJcdgLastAffixNew/auditAll  [{…,type:当前status,isPass:'1'}]
-    //   ③ btc-zhj：流程审批→检测结果报告单→通过     POST /api/projectJcbgLastAffixNew/auditAll  [{…,type:当前status,isPass:'1'}]
-    //   ④ btc-gxz：流程审批→检测结果报告单→通过     POST /api/projectJcbgLastAffixNew/auditAll  [{…,type:当前status,isPass:'1'}]
-    // ⚠ 通过类的 type **必须取该项目当时的 status**（上一步通过后状态会推进），所以每步通过前都重新读一次列表。
+    //   ② btc-wcy：检测底稿 理化复核通过            POST /api/projectJcdgLastAffixNew/audit  {…,type:当前节点,isPass:'1'}   （单对象！）
+    //   ③ btc-zhj：检测结果报告单 理化审核通过       POST /api/projectJcbgLastAffixNew/audit  {…,type:当前节点,isPass:'1'}   （单对象！）
+    //   ④ btc-gxz：检测结果报告单 理化签发通过       POST /api/projectJcbgLastAffixNew/audit  {…,type:当前节点,isPass:'1'}   （单对象！）
+    //
+    // ⚠⚠ 实测结论（2026-10-15 真机验证，见 HANDOFF-数据报告审核.md）：
+    //   1) 通过类接口是 **`audit`（单个对象 body）**，**不是 `auditAll`**（auditAll 传数组 → HTTP 400）。
+    //   2) `type` **必须取「该流程当前节点号」**，来源是 **`getAffix` 返回的 `type`**，不是列表行的 `status`：
+    //        · jcdg 的列表 `projectJcdgLastAffixNew` 里 status 恒为 "0"（**不可用**）；
+    //        · jcbg 的列表 status 恰好 == getAffix 的 type，但为统一稳妥，两者都用 getAffix 的 type。
+    //   3) **jcbg 的 `type` 必须是数字**（如 `2`）；传字符串 `"2"` → 400「Required request body is missing」。
+    //      jcdg 对 type 字符串宽容，但统一转 int 最稳。
+    //   4) 节点号含义（来自前端 statusFn）：0=理化复核 1=复核 2=理化审核 3=审核 4=职卫复核 5=职卫审核
+    //      6=理化签发 7=职卫签发 8=签发 9=第三方审核 10=签章 11=批准。
+    //      流程节点序列见 `/api/ohitBusinessProcess`（type=8 检测底稿 = "0"；type=3 报告单 = "2,6"）。
+    //   5) 每步通过后节点会推进，所以**下一步前重新调 getAffix** 取新节点号。
     const AUDIT_STEPS = [
       { kind: 'submitJcdg', account: 'btc-jyg', label: '提交审复核（检测底稿）' },
-      { kind: 'auditJcdg', account: 'btc-wcy', label: '检测底稿 审批通过' },
-      { kind: 'auditJcbg', account: 'btc-zhj', label: '检测结果报告单 审批通过（1/2）' },
-      { kind: 'auditJcbg', account: 'btc-gxz', label: '检测结果报告单 审批通过（2/2）' },
+      { kind: 'auditJcdg', account: 'btc-wcy', label: '检测底稿 理化复核通过' },
+      { kind: 'auditJcbg', account: 'btc-zhj', label: '检测结果报告单 理化审核通过' },
+      { kind: 'auditJcbg', account: 'btc-gxz', label: '检测结果报告单 理化签发通过' },
     ];
 
-    // 审批列表接口：读「当前 status」用 list，提交通过用 audit
-    function auditPaths(kind) {
-      return kind === 'auditJcdg'
-        ? { list: '/api/projectJcdgLastAffixNew', audit: '/api/projectJcdgLastAffixNew/auditAll' }
-        : { list: '/api/projectJcbgLastAffixNew', audit: '/api/projectJcbgLastAffixNew/auditAll' };
+    // 节点号 → 中文名（来自前端 statusFn，见 AUDIT_STEPS 注释）
+    const NODE_NAMES = { '0': '理化复核', '1': '复核', '2': '理化审核', '3': '审核', '4': '职卫复核',
+      '5': '职卫审核', '6': '理化签发', '7': '职卫签发', '8': '签发', '9': '第三方审核',
+      '10': '签章', '11': '批准' };
+    function nodeName(t) {
+      if (t === null || t === undefined || t === '') return '未开始';
+      return NODE_NAMES[String(t)] || ('节点' + t);
     }
 
-    // 按项目编号在审批列表里读该项目的**当前**行（含 status / id）
+    // 审批日期 yyyy-MM-dd（本地时区）
+    function auditDateStr() {
+      const d = new Date();
+      const p = function (n) { return String(n).padStart(2, '0'); };
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+
+    // 审批相关接口：list = 提交审复核后轮询用；affix = 读**当前节点号**；audit = 单对象通过
+    function auditPaths(kind) {
+      return kind === 'auditJcdg'
+        ? { list: '/api/projectJcdgLastAffixNew',
+            affix: '/api/projectJcdgLastAffixNew/getAffix',
+            audit: '/api/projectJcdgLastAffixNew/audit' }
+        : { list: '/api/projectJcbgLastAffixNew',
+            affix: '/api/projectJcbgLastAffix/getAffix',
+            audit: '/api/projectJcbgLastAffixNew/audit' };
+    }
+
+    // 按项目编号在审批列表里读该项目的**当前**行（含 status / id）——仅用于提交审复核后的轮询
     async function readApprovalRow(bearer, org, listPath, code) {
       const r = await apiRequest('GET',
         listPath + '?pageNumber=1&pageSize=50&code=' + encodeURIComponent(String(code || '').trim()),
@@ -1869,20 +1900,35 @@
       return null;
     }
 
-    // 轮询等待审批状态变化：提交后反复读列表，直到 status 变了或从列表消失（最多等 30s）
-    async function pollApprovalChange(bearer, org, listPath, code, oldStatus, opts) {
+    // 读某流程「当前节点号」：GET getAffix {belongProject} → body[0].type（+ isOver）
+    // 返回 {type, isOver, id}；body 为空时返回 null（说明该流程已完结/无待审记录）。
+    async function readAffixNode(bearer, org, affixPath, projectId) {
+      const r = await apiRequest('GET',
+        affixPath + '?belongProject=' + encodeURIComponent(String(projectId)),
+        { token: bearer, orgId: org, timeout: 60000 });
+      if (r.status !== 200) throw new Error('读取当前审批节点失败(HTTP ' + r.status + ')');
+      const rows = (r.data && r.data.body) || [];
+      if (!rows.length) return null;
+      return { type: rows[0].type, isOver: rows[0].isOver, id: rows[0].id };
+    }
+
+    // 轮询等待「当前节点号」变化：通过后反复读 getAffix，直到 type 变了 / body 消失 / isOver 变 1（最多等 30s）
+    async function pollNodeChange(bearer, org, affixPath, projectId, oldType, opts) {
       opts = opts || {};
       const maxWait = opts.maxWaitMs || 30000;
       const interval = opts.intervalMs || 2000;
       const start = Date.now();
       while (Date.now() - start < maxWait) {
-        const row = await readApprovalRow(bearer, org, listPath, code);
-        if (!row) {
-          // 项目从当前列表消失 → 可能已流转到下一阶段，视为成功
+        const node = await readAffixNode(bearer, org, affixPath, projectId);
+        if (!node) {
+          // 该流程已无待审记录 → 视为已流转（结束/进入下一阶段的新记录）
           return { changed: true, gone: true, waited: Date.now() - start };
         }
-        if (String(row.status) !== String(oldStatus)) {
-          return { changed: true, gone: false, newStatus: row.status, waited: Date.now() - start };
+        if (String(node.isOver) === '1') {
+          return { changed: true, gone: false, over: true, waited: Date.now() - start };
+        }
+        if (String(node.type) !== String(oldType)) {
+          return { changed: true, gone: false, newType: node.type, waited: Date.now() - start };
         }
         await new Promise(function (res) { setTimeout(res, interval); });
       }
@@ -1973,7 +2019,7 @@
           + RESET_STEPS.map(function (s) { return esc(s.account) + ' 身份重置 ' + esc(s.label) + '（' + s.process + '）'; }).join(' → ')
           + ' · 回退前会先在「已完结」项目中定位该项目'
           + (selectedProject.status !== undefined && selectedProject.status !== null
-            ? ' · 当前审批状态：' + esc(String(selectedProject.status)) : '')
+            ? ' · 当前审批状态：' + esc(String(selectedProject.status)) + '（' + esc(nodeName(selectedProject.status)) + '）' : '')
           + '</div>'
           + '<div class="report-sub">审核将依次执行 ' + AUDIT_STEPS.length + ' 步：'
           + AUDIT_STEPS.map(function (s, i) { return (i + 1) + '. ' + esc(s.account) + ' ' + esc(s.label); }).join('　')
@@ -2136,49 +2182,53 @@
             }
             const b = r.data && r.data.body;
             if (b && b.msg) msgs.push(step.label + '：' + b.msg);
-            // 轮询等待状态流转（最多 30s，每 2s 查一次）
-            if (oldStatus !== null && oldStatus !== undefined) {
-              if (el.status) el.status.textContent = '等待状态流转中…' + tag + '（' + step.account + ' · ' + step.label + '）';
-              const poll = await pollApprovalChange(tk.token, tk.orgId, ap.list, selectedProject.code, oldStatus, pollOpts);
-              if (!poll.changed) {
-                msgs.push(step.label + '：状态流转等待超时（' + (poll.waited / 1000).toFixed(1) + 's），继续下一步');
-              } else {
-                msgs.push(step.label + '：状态流转完成（等待 ' + (poll.waited / 1000).toFixed(1) + 's' + (poll.gone ? '，项目已从当前列表消失' : '') + '）');
-              }
+            // 轮询等待流程产生待审记录（getAffix 出现 type）最多 30s，每 2s 查一次
+            if (el.status) el.status.textContent = '等待状态流转中…' + tag + '（' + step.account + ' · ' + step.label + '）';
+            const poll = await pollNodeChange(tk.token, tk.orgId, ap.affix, selectedProject.id, null, pollOpts);
+            if (!poll.changed) {
+              msgs.push(step.label + '：状态流转等待超时（' + (poll.waited / 1000).toFixed(1) + 's），继续下一步');
+            } else {
+              msgs.push(step.label + '：待审记录已生成（等待 ' + (poll.waited / 1000).toFixed(1) + 's）');
             }
           } else {
             const ap = auditPaths(step.kind);
-            // type 必须取**当前** status：上一步通过后状态会推进，所以每步重新读
-            const row = await readApprovalRow(tk.token, tk.orgId, ap.list, selectedProject.code);
-            if (!row) {
-              throw new Error('在「' + step.label + '」的待审列表里找不到项目 ' + (selectedProject.code || '')
-                + '（' + step.account + '）——上一步可能尚未生效，或该账号看不到该项目');
+            // 当前节点号必须**每次重新读 getAffix**（上一步通过后节点会推进）
+            const node = await readAffixNode(tk.token, tk.orgId, ap.affix, selectedProject.id);
+            if (!node) {
+              // 该流程已无待审记录：若这是链尾，视为已完成；否则报错
+              if (i === AUDIT_STEPS.length - 1) {
+                msgs.push(step.label + '：该流程已无待审记录（视为已完成）');
+                break;
+              }
+              throw new Error('「' + step.label + '」（' + step.account + '）：该流程已无待审的检测记录'
+                + '——上一步可能尚未生效，或该项目本就不在该节点');
             }
-            const oldStatus = row.status;
+            const oldType = node.type;
             const r = await apiRequest('POST', ap.audit, {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
-              json: [{
-                belongProject: row.id,
-                projectName: row.code || selectedProject.code || '',
+              // ⚠ 单个对象（不是数组）；jcbg 的 type 必须为数字
+              json: {
+                belongProject: selectedProject.id,
+                projectName: selectedProject.code || '',
                 suggestions: '通过',
-                type: row.status,
+                type: /^\d+$/.test(String(oldType)) ? Number(oldType) : oldType,
                 isPass: '1',
-              }],
+                auditDate: auditDateStr(),
+              },
             });
             if (!(r.status === 200 && r.data && String(r.data.code) === '200')) {
               throw new Error('「' + step.label + '」（' + step.account + '）失败：'
                 + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120))));
             }
-            if (r.data.body && r.data.body.length) {
-              msgs.push(r.data.body.map(function (x) { return (x.prjCode || '') + '：' + (x.msg || ''); }).join('；'));
-            }
-            // 轮询等待状态流转
+            msgs.push(step.label + '：' + ((r.data && r.data.message) || '审批成功') + '（节点 ' + nodeName(oldType) + '）');
+            // 轮询等待节点推进
             if (el.status) el.status.textContent = '等待状态流转中…' + tag + '（' + step.account + ' · ' + step.label + '）';
-            const poll = await pollApprovalChange(tk.token, tk.orgId, ap.list, selectedProject.code, oldStatus, pollOpts);
+            const poll = await pollNodeChange(tk.token, tk.orgId, ap.affix, selectedProject.id, oldType, pollOpts);
             if (!poll.changed) {
               msgs.push(step.label + '：状态流转等待超时（' + (poll.waited / 1000).toFixed(1) + 's），继续下一步');
             } else {
-              msgs.push(step.label + '：状态流转完成（等待 ' + (poll.waited / 1000).toFixed(1) + 's' + (poll.gone ? '，项目已从当前列表消失' : '') + '）');
+              msgs.push(step.label + '：状态流转完成（等待 ' + (poll.waited / 1000).toFixed(1) + 's'
+                + (poll.gone ? '，该流程已完结' : (poll.newType !== undefined ? '，推进到 ' + nodeName(poll.newType) : '')) + '）');
             }
           }
           done++;

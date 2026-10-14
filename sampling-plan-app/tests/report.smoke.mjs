@@ -70,15 +70,35 @@ await page.route("**/api/bridge/ping", (route) =>
 await page.route("**/token/*", (route) => route.fulfill(j({ token: "bridge-token", orgId: "1" })));
 
 // 审核链（4 步）用到的接口。注意各 pattern 互不重叠（`*` 不跨 `/`），顺序无关。
+// ⚠ 实测要点（2026-10-15）：通过类是 `audit`（**单个对象**），不是 auditAll（数组 → 400）；
+//   `type` 必须取 getAffix 的当前节点号（不是列表 status）；jcbg 的 type 须为数字。
 await page.route("**/api/projectJcdgLastAffixNew/submitJcdgReview*", (route) =>
   route.fulfill(j({ code: "200", body: { prjCode: "BTC26-SZJC0959", msg: "提交成功" } })));
-await page.route("**/api/projectJcdgLastAffixNew/auditAll*", (route) =>
-  route.fulfill(j({ code: "200", body: [{ prjCode: "BTC26-SZJC0959", msg: "通过" }] })));
-await page.route("**/api/projectJcbgLastAffixNew/auditAll*", (route) =>
-  route.fulfill(j({ code: "200", body: [{ prjCode: "BTC26-SZJC0959", msg: "通过" }] })));
+await page.route("**/api/projectJcdgLastAffixNew/audit*", (route) =>
+  route.fulfill(j({ code: "200", message: "审批成功！", body: "审批成功！" })));
+await page.route("**/api/projectJcbgLastAffixNew/audit*", (route) =>
+  route.fulfill(j({ code: "200", message: "审批成功！", body: "审批成功！" })));
+// getAffix 返回「当前节点号」：mock 成状态机——每被 audit 通过一次就推进到下一节点
+//   jcdg：初始无记录(未提交) → 提交后 type=0(理化复核) → 通过后无记录(流程完结)
+//   jcbg：type=2(理化审核) → 通过后 type=6(理化签发) → 通过后 isOver=1
+const affixState = { jcdg: null, jcbg: "2", jcbgOver: false };
+// 先注册「列表」路由，再注册「getAffix」路由（Playwright 后注册者优先，保证 getAffix 命中）
 await page.route("**/api/projectJcdgLastAffix*", (route) =>
   route.fulfill(j({ code: "200", body: { total: 1, records: [
     { id: 6205, code: "BTC26-SZJC0959", status: "0", isDel: "0" }] } })));
+await page.route("**/api/projectJcdgLastAffixNew/getAffix*", (route) =>
+  route.fulfill(j({ code: "200", body: affixState.jcdg == null ? [] : [{ id: 6255, type: affixState.jcdg, isOver: "0" }] })));
+await page.route("**/api/projectJcbgLastAffix/getAffix*", (route) =>
+  route.fulfill(j({ code: "200", body: affixState.jcbg == null ? [] : [{ id: 6198, type: affixState.jcbg, isOver: affixState.jcbgOver ? "1" : "0" }] })));
+// audit 被调用后推进 mock 节点状态（供下一次 getAffix 读到新节点）
+page.on("request", (r) => {
+  const u = r.url();
+  if (r.method() === "POST" && /submitJcdgReview/.test(u)) { affixState.jcdg = "0"; }
+  else if (r.method() === "POST" && /projectJcdgLastAffixNew\/audit$/.test(u)) { affixState.jcdg = null; }
+  else if (r.method() === "POST" && /projectJcbgLastAffixNew\/audit$/.test(u)) {
+    if (affixState.jcbg === "2") affixState.jcbg = "6"; else { affixState.jcbgOver = true; }
+  }
+});
 await page.route("**/projectXccyLastAffix/resetProjectApprovalProcess*", (route) =>
   route.fulfill(j({ code: "200", message: "重置成功！", body: false })));
 page.on("request", (r) => { if (/resetProjectApprovalProcess/.test(r.url())) seen.reset.push(r.url()); });
@@ -119,7 +139,7 @@ check("未选项目时显示空态提示", /尚未在「数据上传」中选择
 
 // 5) 未选项目时点「回退」→ 弹提示且不发请求
 let requested = false;
-page.on("request", (r) => { if (/resetProjectApprovalProcess|auditAll/.test(r.url())) requested = true; });
+page.on("request", (r) => { if (/resetProjectApprovalProcess|\/audit$|submitJcdgReview/.test(r.url())) requested = true; });
 await page.click("#report-reset");
 await page.waitForTimeout(400);
 check("未选项目点回退会提示且不请求接口", dialogs.length > 0 && !requested,
@@ -170,15 +190,20 @@ check("body:false 视为成功（两步都跑完，不误报「重置失败」�
   "reset次数=" + seen.reset.length + " ／ status=" + rstat2 + " ／ 弹窗=" + JSON.stringify(newDlg).slice(0, 160));
 
 // 8) 「数据报告审核」= 4 步跨账号审批链
-//    ① btc-jyg 提交审复核（检测底稿） ② btc-wcy 检测底稿通过
-//    ③ btc-zhj 检测结果报告单通过    ④ btc-gxz 检测结果报告单通过
+//    ① btc-jyg 提交审复核（检测底稿） ② btc-wcy 理化复核通过
+//    ③ btc-zhj 报告单理化审核通过     ④ btc-gxz 报告单理化签发通过
 const calls = [];      // 审批类请求（按发生顺序）
 const tokenCalls = []; // 账号桥取令牌的账号（按发生顺序）
+const auditReqBodies = []; // 通过类请求的 body（解析后对象，附 __url）
 page.on("request", (r) => {
   const u = r.url();
-  if (/submitJcdgReview|auditAll/.test(u)) calls.push(u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]);
+  if (/submitJcdgReview|projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u))
+    calls.push(u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]);
   const m = /\/token\/([^/?#]+)/.exec(u);
   if (m) tokenCalls.push(decodeURIComponent(m[1]));
+  if (r.method() === "POST" && /projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u)) {
+    try { const body = JSON.parse(r.postData() || "null"); if (body && typeof body === "object") body.__url = u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]; auditReqBodies.push(body); } catch (e) {}
+  }
 });
 const dlgBefore2 = dialogs.length;
 // 缩短轮询等待时间：mock 固定响应不会变，避免等满 30s
@@ -189,16 +214,22 @@ const rstat3 = await page.$eval("#report-status", (e) => e.textContent.trim());
 const newDlg2 = dialogs.slice(dlgBefore2);
 const expectCalls = [
   "/api/projectJcdgLastAffixNew/submitJcdgReview",
-  "/api/projectJcdgLastAffixNew/auditAll",
-  "/api/projectJcbgLastAffixNew/auditAll",
-  "/api/projectJcbgLastAffixNew/auditAll",
+  "/api/projectJcdgLastAffixNew/audit",
+  "/api/projectJcbgLastAffixNew/audit",
+  "/api/projectJcbgLastAffixNew/audit",
 ];
-check("审核按 4 步链顺序执行（提交审复核 → jcdg通过 → jcbg通过 ×2）",
+check("审核按 4 步链顺序执行（提交审复核 → jcdg理化复核 → jcbg理化审核 → jcbg理化签发）",
   JSON.stringify(calls) === JSON.stringify(expectCalls),
   JSON.stringify(calls));
 check("4 步分别用各自账号取令牌（btc-jyg → btc-wcy → btc-zhj → btc-gxz）",
   JSON.stringify(tokenCalls.slice(-4)) === JSON.stringify(["btc-jyg", "btc-wcy", "btc-zhj", "btc-gxz"]),
   JSON.stringify(tokenCalls.slice(-4)));
+// 通过类请求体：单个对象（非数组），且 jcbg 的 type 为**数字**（平台要求 int，字符串会 400）
+const auditBodies = auditReqBodies; // 见上方 request 监听收集
+const jcbgBody = auditBodies.find((b) => b && b.__url && /projectJcbgLastAffixNew\/audit$/.test(b.__url));
+check("通过类请求体为单个对象（非数组）且 jcbg.type 为数字",
+  jcbgBody && !Array.isArray(jcbgBody) && typeof jcbgBody.type === "number",
+  jcbgBody ? JSON.stringify(jcbgBody) : "（未捕获到 jcbg 请求体）");
 check("审核链全部完成且无失败弹窗",
   /审核链全部完成/.test(rstat3) && !newDlg2.some((m) => /失败/.test(m)),
   "status=" + rstat3 + " ／ 弹窗=" + JSON.stringify(newDlg2).slice(0, 140));
