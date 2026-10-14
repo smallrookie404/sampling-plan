@@ -305,7 +305,7 @@
     <div class="grid-toolbar">
       <div class="left">
         <button id="report-reset" class="btn small danger" title="以 btc-gxz 身份重置「检测结果报告单」、再以 btc-wcy 身份重置「检测底稿」（两步顺序执行，需先运行 captcha-ocr/bridge.py 提供账号令牌）；回退前会先在该项目的「已完结」记录中定位（回退只对已完结项目有效）">数据报告回退</button>
-        <button id="report-audit" class="btn small" title="对选中项目的「检测结果报告单」执行审批通过（与平台「流程审批 → 通过」等效）">数据报告审核</button>
+        <button id="report-audit" class="btn small" title="对「数据上传」中选中的项目执行「数据报告审核」：按顺序跑 4 步跨账号审批链——① btc-jyg 提交审复核（检测底稿）→ ② btc-wcy 检测底稿通过 → ③ btc-zhj 检测结果报告单通过 → ④ btc-gxz 检测结果报告单通过；每步用各自账号的令牌（本地服务自动拉起账号桥 / 云端 Worker 提供）">数据报告审核</button>
         <span id="report-status" class="status"></span>
       </div>
     </div>

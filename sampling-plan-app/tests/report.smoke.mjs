@@ -68,6 +68,17 @@ await page.route("**/api/projectXcdcUser*", (route) => route.fulfill(j({ code: "
 await page.route("**/api/bridge/ping", (route) =>
   route.fulfill(j({ ok: true, autoStart: true, up: true })));
 await page.route("**/token/*", (route) => route.fulfill(j({ token: "bridge-token", orgId: "1" })));
+
+// 审核链（4 步）用到的接口。注意各 pattern 互不重叠（`*` 不跨 `/`），顺序无关。
+await page.route("**/api/projectJcdgLastAffixNew/submitJcdgReview*", (route) =>
+  route.fulfill(j({ code: "200", body: { prjCode: "BTC26-SZJC0959", msg: "提交成功" } })));
+await page.route("**/api/projectJcdgLastAffixNew/auditAll*", (route) =>
+  route.fulfill(j({ code: "200", body: [{ prjCode: "BTC26-SZJC0959", msg: "通过" }] })));
+await page.route("**/api/projectJcbgLastAffixNew/auditAll*", (route) =>
+  route.fulfill(j({ code: "200", body: [{ prjCode: "BTC26-SZJC0959", msg: "通过" }] })));
+await page.route("**/api/projectJcdgLastAffix*", (route) =>
+  route.fulfill(j({ code: "200", body: { total: 1, records: [
+    { id: 6205, code: "BTC26-SZJC0959", status: "0", isDel: "0" }] } })));
 await page.route("**/projectXccyLastAffix/resetProjectApprovalProcess*", (route) =>
   route.fulfill(j({ code: "200", message: "重置成功！", body: false })));
 page.on("request", (r) => { if (/resetProjectApprovalProcess/.test(r.url())) seen.reset.push(r.url()); });
@@ -157,6 +168,38 @@ check("body:false 视为成功（两步都跑完，不误报「重置失败」�
   seen.reset.length === 2 && /两步回退全部完成/.test(rstat2)
     && newDlg.some((m) => /回退成功/.test(m)) && !newDlg.some((m) => /失败/.test(m)),
   "reset次数=" + seen.reset.length + " ／ status=" + rstat2 + " ／ 弹窗=" + JSON.stringify(newDlg).slice(0, 160));
+
+// 8) 「数据报告审核」= 4 步跨账号审批链
+//    ① btc-jyg 提交审复核（检测底稿） ② btc-wcy 检测底稿通过
+//    ③ btc-zhj 检测结果报告单通过    ④ btc-gxz 检测结果报告单通过
+const calls = [];      // 审批类请求（按发生顺序）
+const tokenCalls = []; // 账号桥取令牌的账号（按发生顺序）
+page.on("request", (r) => {
+  const u = r.url();
+  if (/submitJcdgReview|auditAll/.test(u)) calls.push(u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]);
+  const m = /\/token\/([^/?#]+)/.exec(u);
+  if (m) tokenCalls.push(decodeURIComponent(m[1]));
+});
+const dlgBefore2 = dialogs.length;
+await page.click("#report-audit");
+await page.waitForTimeout(8000);
+const rstat3 = await page.$eval("#report-status", (e) => e.textContent.trim());
+const newDlg2 = dialogs.slice(dlgBefore2);
+const expectCalls = [
+  "/api/projectJcdgLastAffixNew/submitJcdgReview",
+  "/api/projectJcdgLastAffixNew/auditAll",
+  "/api/projectJcbgLastAffixNew/auditAll",
+  "/api/projectJcbgLastAffixNew/auditAll",
+];
+check("审核按 4 步链顺序执行（提交审复核 → jcdg通过 → jcbg通过 ×2）",
+  JSON.stringify(calls) === JSON.stringify(expectCalls),
+  JSON.stringify(calls));
+check("4 步分别用各自账号取令牌（btc-jyg → btc-wcy → btc-zhj → btc-gxz）",
+  JSON.stringify(tokenCalls.slice(-4)) === JSON.stringify(["btc-jyg", "btc-wcy", "btc-zhj", "btc-gxz"]),
+  JSON.stringify(tokenCalls.slice(-4)));
+check("审核链全部完成且无失败弹窗",
+  /审核链全部完成/.test(rstat3) && !newDlg2.some((m) => /失败/.test(m)),
+  "status=" + rstat3 + " ／ 弹窗=" + JSON.stringify(newDlg2).slice(0, 140));
 
 await page.screenshot({ path: path.join(SHOT_DIR, "report-tab.png") });
 check("无控制台错误", errors.length === 0, errors.slice(0, 2).join(" ; "));

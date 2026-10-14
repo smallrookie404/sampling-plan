@@ -1835,6 +1835,40 @@
       { process: 'jcdg', label: '检测底稿', account: 'btc-wcy' },
     ];
 
+    // 「数据报告审核」= 一条**跨账号的审批链**（与人工在平台上的操作顺序一致）：
+    //   ① btc-jyg：检测底稿页「提交审复核」        POST /api/projectJcdgLastAffixNew/submitJcdgReview {belongProject}
+    //   ② btc-wcy：流程审批→检测底稿→通过          POST /api/projectJcdgLastAffixNew/auditAll  [{…,type:当前status,isPass:'1'}]
+    //   ③ btc-zhj：流程审批→检测结果报告单→通过     POST /api/projectJcbgLastAffixNew/auditAll  [{…,type:当前status,isPass:'1'}]
+    //   ④ btc-gxz：流程审批→检测结果报告单→通过     POST /api/projectJcbgLastAffixNew/auditAll  [{…,type:当前status,isPass:'1'}]
+    // ⚠ 通过类的 type **必须取该项目当时的 status**（上一步通过后状态会推进），所以每步通过前都重新读一次列表。
+    const AUDIT_STEPS = [
+      { kind: 'submitJcdg', account: 'btc-jyg', label: '提交审复核（检测底稿）' },
+      { kind: 'auditJcdg', account: 'btc-wcy', label: '检测底稿 审批通过' },
+      { kind: 'auditJcbg', account: 'btc-zhj', label: '检测结果报告单 审批通过（1/2）' },
+      { kind: 'auditJcbg', account: 'btc-gxz', label: '检测结果报告单 审批通过（2/2）' },
+    ];
+
+    // 审批列表接口：读「当前 status」用 list，提交通过用 audit（与平台 jcbg 的 list/audit 命名规律一致）
+    function auditPaths(kind) {
+      return kind === 'auditJcdg'
+        ? { list: '/api/projectJcdgLastAffix', audit: '/api/projectJcdgLastAffixNew/auditAll' }
+        : { list: '/api/projectJcbgLastAffix', audit: '/api/projectJcbgLastAffixNew/auditAll' };
+    }
+
+    // 按项目编号在审批列表里读该项目的**当前**行（含 status / id）
+    async function readApprovalRow(bearer, org, listPath, code) {
+      const r = await apiRequest('GET',
+        listPath + '?pageNumber=1&pageSize=50&code=' + encodeURIComponent(String(code || '').trim()),
+        { token: bearer, orgId: org, timeout: 60000 });
+      if (r.status !== 200) throw new Error('读取审批列表失败(HTTP ' + r.status + ')');
+      const rows = (r.data && r.data.body && r.data.body.records) || [];
+      const up = String(code || '').trim().toUpperCase();
+      for (let i = 0; i < rows.length; i++) {
+        if (String(rows[i].code || '').trim().toUpperCase() === up) return rows[i];
+      }
+      return null;
+    }
+
     const ACCOUNT_BRIDGE_URL = 'http://127.0.0.1:8787';
 
     // 账号桥地址（只解析一次）：
@@ -1920,6 +1954,9 @@
           + ' · 回退前会先在「已完结」项目中定位该项目'
           + (selectedProject.status !== undefined && selectedProject.status !== null
             ? ' · 当前审批状态：' + esc(String(selectedProject.status)) : '')
+          + '</div>'
+          + '<div class="report-sub">审核将依次执行 ' + AUDIT_STEPS.length + ' 步：'
+          + AUDIT_STEPS.map(function (s, i) { return (i + 1) + '. ' + esc(s.account) + ' ' + esc(s.label); }).join('　')
           + '</div>';
       }
       if (el.status) el.status.textContent = '';
@@ -2038,6 +2075,7 @@
       }
     }
 
+    // 审核 = 4 步跨账号审批链（见 AUDIT_STEPS 注释）。每步都用**各自账号**的令牌（经账号桥获取）。
     async function auditReport() {
       const el = reportEls();
       if (!token) { showLogin(); return; }
@@ -2045,35 +2083,72 @@
         alert('尚未在「数据上传」中选择项目。\n请先到「数据上传」查询并选中项目，再进行数据报告处理。');
         return;
       }
-      if (!window.confirm('确认对以下项目执行「检测结果报告单」审批通过？\n\n' + reportProjectLabel())) return;
+      const chain = AUDIT_STEPS.map(function (s, i) { return (i + 1) + '. ' + s.account + ' → ' + s.label; }).join('\n');
+      if (!window.confirm('确认对以下项目执行「数据报告审核」？\n\n' + reportProjectLabel()
+        + '\n\n将按顺序执行 ' + AUDIT_STEPS.length + ' 步（各步用各自账号）：\n' + chain)) return;
       const btn = document.getElementById('report-audit');
       const old = btn ? btn.textContent : '';
-      if (btn) { btn.disabled = true; btn.textContent = '审核中…'; }
-      if (el.status) el.status.textContent = '正在提交审批…';
+      if (btn) { btn.disabled = true; }
+      const msgs = [];
       try {
-        const payload = [{
-          belongProject: selectedProject.id,
-          projectName: selectedProject.code || '',
-          suggestions: '通过',
-          type: selectedProject.status,
-          isPass: '1',
-        }];
-        const r = await apiRequest('POST', '/api/projectJcbgLastAffixNew/auditAll', {
-          token: token, orgId: orgId, timeout: 60000, json: payload,
-        });
-        const code = r.data && r.data.code;
-        if (r.status === 200 && String(code) === '200') {
-          let msg = '';
-          if (r.data.body && r.data.body.length) {
-            msg = r.data.body.map(function (x) { return x.prjCode + '：' + x.msg; }).join('；');
+        let done = 0;
+        for (let i = 0; i < AUDIT_STEPS.length; i++) {
+          const step = AUDIT_STEPS[i];
+          const tag = '（' + (i + 1) + '/' + AUDIT_STEPS.length + '）';
+          if (btn) btn.textContent = '审核中…' + tag + ' ' + step.account;
+          if (el.status) el.status.textContent = '正在以 ' + step.account + ' 执行「' + step.label + '」' + tag + '…';
+          const tk = await fetchBridgeToken(step.account);
+
+          if (step.kind === 'submitJcdg') {
+            const r = await apiRequest('POST', '/api/projectJcdgLastAffixNew/submitJcdgReview', {
+              token: tk.token, orgId: tk.orgId, timeout: 60000,
+              json: { belongProject: selectedProject.id },
+            });
+            if (!(r.status === 200 && r.data && String(r.data.code) === '200')) {
+              throw new Error('「' + step.label + '」（' + step.account + '）失败：'
+                + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120))));
+            }
+            const b = r.data && r.data.body;
+            if (b && b.msg) msgs.push(step.label + '：' + b.msg);
+          } else {
+            const ap = auditPaths(step.kind);
+            // type 必须取**当前** status：上一步通过后状态会推进，所以每步重新读
+            const row = await readApprovalRow(tk.token, tk.orgId, ap.list, selectedProject.code);
+            if (!row) {
+              throw new Error('在「' + step.label + '」的待审列表里找不到项目 ' + (selectedProject.code || '')
+                + '（' + step.account + '）——上一步可能尚未生效，或该账号看不到该项目');
+            }
+            const r = await apiRequest('POST', ap.audit, {
+              token: tk.token, orgId: tk.orgId, timeout: 60000,
+              json: [{
+                belongProject: row.id,
+                projectName: row.code || selectedProject.code || '',
+                suggestions: '通过',
+                type: row.status,
+                isPass: '1',
+              }],
+            });
+            if (!(r.status === 200 && r.data && String(r.data.code) === '200')) {
+              throw new Error('「' + step.label + '」（' + step.account + '）失败：'
+                + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120))));
+            }
+            if (r.data.body && r.data.body.length) {
+              msgs.push(r.data.body.map(function (x) { return (x.prjCode || '') + '：' + (x.msg || ''); }).join('；'));
+            }
           }
-          if (el.status) el.status.textContent = '✅ 审批通过已提交 · ' + reportProjectLabel() + (msg ? ' · ' + msg : '');
-          alert('审批通过已提交。\n' + reportProjectLabel() + (msg ? '\n' + msg : ''));
-        } else {
-          throw new Error((r.data && r.data.message) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120)));
+          done++;
+          if (el.status) el.status.textContent = '✅ 第 ' + done + '/' + AUDIT_STEPS.length
+            + ' 步完成（' + step.account + ' · ' + step.label + '）';
+          // 给平台状态机一点推进时间，再读下一步的当前 status
+          if (i < AUDIT_STEPS.length - 1) await new Promise(function (res) { setTimeout(res, 1000); });
         }
+        const tail = msgs.length ? ' · ' + msgs.join('；') : '';
+        if (el.status) el.status.textContent = '✅ 审核链全部完成（' + AUDIT_STEPS.length + ' 步）· ' + reportProjectLabel() + tail;
+        alert('数据报告审核完成（已依次执行 ' + AUDIT_STEPS.length + ' 步：'
+          + AUDIT_STEPS.map(function (s) { return s.account; }).join(' → ') + '）。\n'
+          + reportProjectLabel() + (tail ? '\n' + tail : ''));
       } catch (e) {
-        if (el.status) el.status.textContent = '❌ 审核失败：' + e.message;
+        if (el.status) el.status.textContent = '❌ 审核失败（已完成 ' + msgs.length + ' 步）：' + e.message;
         alert('数据报告审核失败：' + e.message);
       } finally {
         if (btn) { btn.disabled = false; btn.textContent = old || '数据报告审核'; }
