@@ -3719,6 +3719,47 @@
 
   // ---------- 导入（仅主表测点布局，不导入危害因素库） ----------
 
+  // 危害因素名的比较键：统一全/半角尖括号与括号、去掉空白，避免「游离SiO2含量＜10%」与
+  // 「游离SiO2含量<10%」这类写法差异导致查不到库内记录。
+  function normHazardKey(s) {
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/[＜﹤]/g, "<")
+      .replace(/[＞﹥]/g, ">")
+      .replace(/（/g, "(")
+      .replace(/）/g, ")")
+      .replace(/[\s\u00a0\u3000]+/g, "")
+      .trim();
+  }
+
+  // 把导入文件里的「检测项目」文本解析为危害因素库的识别名（rec）。
+  // 粉尘类必须结合「粉尘性质」（总尘 / 呼尘）消歧：库内同一系统名常对应多条记录，
+  // 例如系统名「滑石粉尘(游离SiO2含量＜10%)」下有
+  //   滑石粉尘(总尘) / 滑石粉尘(呼尘) / 滑石粉尘(游离SiO2含量<10%)(总尘) / …(呼尘) / 滑石粉尘1 / 滑石粉尘2
+  // 旧逻辑用 find() 取第一条，导致呼尘行也被解析成总尘。
+  // 入参：text = 文件里的检测项目（可能是识别名、也可能是系统名或简称）；dustHint = 文件的粉尘性质。
+  function resolveHazardRec(text, dustHint) {
+    const t = String(text === null || text === undefined ? "" : text).trim();
+    if (!t) return t;
+    const key = normHazardKey(t);
+    const dk = normHazardKey(dustHint);
+    const recHit = hazardFactors.find((x) => normHazardKey(x.rec) === key);
+    const nameHits = hazardFactors.filter((x) => normHazardKey(x.name) === key);
+    if (dk) {
+      // ① 用「检测项目 + 粉尘性质」拼库内识别名：文件里写系统名、全称或简称都能命中
+      const combo = hazardFactors.find((x) => normHazardKey(x.rec) === key + "(" + dk + ")");
+      if (combo) return combo.rec;
+      // ② 系统名命中多条时，按粉尘性质挑
+      const byDust = nameHits.find((x) => normHazardKey(x.dust) === dk);
+      if (byDust) return byDust.rec;
+      // ③ 本身已是库内识别名，且粉尘性质一致
+      if (recHit && normHazardKey(recHit.dust) === dk) return recHit.rec;
+    }
+    // ④ 没有可用的「粉尘性质」时保持原有行为（识别名优先，其次系统名）
+    if (recHit) return recHit.rec;
+    if (nameHits.length) return nameHits[0].rec;
+    return t;
+  }
+
   // 解析并导入一个 xlsx 工作簿；供「导入 Excel」按钮与「网站数据导入」共用。
   // 成功时弹提示并返回 { mainImported, surveyMatched, totalRows, message }；失败时抛错。
   async function importWorkbookBuffer(buf, extraNote) {
@@ -3779,13 +3820,14 @@
             }
             // AE 的自动默认值“长白班”不是录入区 S 列的合法下拉值，跳过反推（引擎会自动重算出来）
             if (row.input.S === "长白班") row.input.S = "";
-            // 接害因素：优先用库内“识别名”，其次用系统名对应的识别名，保证导入后能反查出检测项目
-            const anText = row.input.D;
-            if (anText) {
-              const byName = hazardFactors.find((x) => x.name === anText);
-              const byRec = hazardFactors.find((x) => x.rec === anText);
-              row.input.D = byName && !byRec ? byName.rec : anText;
-            }
+          }
+          // 接害因素（D）：把导入文件里的「检测项目」文本解析为危害因素库的识别名（rec）。
+          // 粉尘类必须用同行的「粉尘性质」(AU) 消歧：库内同一系统名往往对应多条记录
+          // （如「滑石粉尘(游离SiO2含量＜10%)」下有 滑石粉尘(总尘)/滑石粉尘(呼尘)/滑石粉尘1/滑石粉尘2 …），
+          // 旧逻辑 find() 只取第一条 → 呼尘行也会被解析成总尘。
+          if (row.input.D) {
+            const dustH = HEADERS[colIdx("AU")];
+            row.input.D = resolveHazardRec(row.input.D, dustH in idx ? fmt(r[idx[dustH]]) : "");
           }
           for (const c of MANUAL_COLS) {
             const h = HEADERS[colIdx(c)];
