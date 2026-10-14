@@ -157,7 +157,9 @@
   function procImgSave() {
     try { localStorage.setItem(PROC_IMG_KEY, JSON.stringify(processImages || {})); } catch (e) {}
   }
-  // 读取并压缩为 JPEG（长边 ≤1280、质量 0.75），避免 localStorage 超限
+  // 读取并压缩为 JPEG（长边 ≤1280、质量 0.75），避免 localStorage 超限。
+  // 注意：JPEG 无透明通道，透明像素默认会变成黑色（透明底 PNG 上传后全图变黑）。
+  // 因此先在画布上铺满白底，再把原图叠上去，透明区域即显示为白色。
   function procImgCompress(file) {
     return new Promise(function (resolve, reject) {
       const reader = new FileReader();
@@ -174,7 +176,11 @@
           h = Math.max(1, Math.round(h * k));
           const cv = document.createElement("canvas");
           cv.width = w; cv.height = h;
-          cv.getContext("2d").drawImage(img, 0, 0, w, h);
+          const ctx = cv.getContext("2d");
+          // 白色底：避免透明底图片（PNG/GIF/WebP）转 JPEG 后透明区变黑
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
           resolve(cv.toDataURL("image/jpeg", 0.75));
         };
         img.src = String(reader.result);
