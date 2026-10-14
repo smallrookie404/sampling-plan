@@ -73,15 +73,19 @@ await page.route("**/token/*", (route) => route.fulfill(j({ token: "bridge-token
 // ⚠ 实测要点（2026-10-15）：通过类是 `audit`（**单个对象**），不是 auditAll（数组 → 400）；
 //   `type` 必须取 getAffix 的当前节点号（不是列表 status）；jcbg 的 type 须为数字。
 await page.route("**/api/projectJcdgLastAffixNew/submitJcdgReview*", (route) =>
-  route.fulfill(j({ code: "200", body: { prjCode: "BTC26-SZJC0959", msg: "提交成功" } })));
+  route.fulfill(j({ code: "200", body: { prjCode: "BTC26-SZJC0959", msg: "检测底稿提交成功！" } })));
+// ★ 检测报告单的「提交审复核」是**独立接口**（前端「检测报告单」页的按钮用的就是它）
+await page.route("**/api/reportFile/submitJcbgReview*", (route) =>
+  route.fulfill(j({ code: "200", body: { prjCode: "BTC26-SZJC0959", msg: "检测报告提交成功" } })));
 await page.route("**/api/projectJcdgLastAffixNew/audit*", (route) =>
   route.fulfill(j({ code: "200", message: "审批成功！", body: "审批成功！" })));
 await page.route("**/api/projectJcbgLastAffixNew/audit*", (route) =>
   route.fulfill(j({ code: "200", message: "审批成功！", body: "审批成功！" })));
 // getAffix 返回「当前节点号」：mock 成状态机——每被 audit 通过一次就推进到下一节点
-//   jcdg：初始无记录(未提交) → 提交后 type=0(理化复核) → 通过后无记录(流程完结)
-//   jcbg：type=2(理化审核) → 通过后 type=6(理化签发) → 通过后 isOver=1
-const affixState = { jcdg: null, jcbg: "2", jcbgOver: false };
+//   jcdg：初始无记录(未提交) → 调 submitJcdgReview 后 type=0(理化复核) → 通过后无记录(流程完结)
+//   jcbg：初始无记录(未提交) → 调 reportFile/submitJcbgReview 后 type=2(理化审核) → 通过后 type=6 → 再通过 isOver=1
+//   ⚠ 关键：jcbg 只有在**调用了独立提交接口**之后才出现待审记录——用来锁定「第①步必须补交检测报告单」
+const affixState = { jcdg: null, jcbg: null, jcbgOver: false };
 // 先注册「列表」路由，再注册「getAffix」路由（Playwright 后注册者优先，保证 getAffix 命中）
 await page.route("**/api/projectJcdgLastAffix*", (route) =>
   route.fulfill(j({ code: "200", body: { total: 1, records: [
@@ -98,6 +102,7 @@ await page.route("**/api/projectJcbgLastAffix/getAffix*", (route) =>
 page.on("request", (r) => {
   const u = r.url();
   if (r.method() === "POST" && /submitJcdgReview/.test(u)) { affixState.jcdg = "0"; }
+  else if (r.method() === "POST" && /reportFile\/submitJcbgReview/.test(u)) { affixState.jcbg = "2"; }
   else if (r.method() === "POST" && /projectJcdgLastAffixNew\/audit$/.test(u)) { affixState.jcdg = null; }
   else if (r.method() === "POST" && /projectJcbgLastAffixNew\/audit$/.test(u)) {
     if (affixState.jcbg === "2") affixState.jcbg = "6"; else { affixState.jcbgOver = true; }
@@ -204,7 +209,7 @@ const auditReqBodies = []; // 通过类请求的 body（解析后对象，附 __
 const affixHits = [];  // getAffix 请求（按发生顺序，含 jcdg/jcbg 标识）——用于验证提交后「双流程」等待
 page.on("request", (r) => {
   const u = r.url();
-  if (/submitJcdgReview|projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u))
+  if (/submitJcdgReview|reportFile\/submitJcbgReview|projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u))
     calls.push(u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]);
   const m = /\/token\/([^/?#]+)/.exec(u);
   if (m) tokenCalls.push(decodeURIComponent(m[1]));
@@ -231,13 +236,22 @@ const rstat3 = await page.$eval("#report-status", (e) => e.textContent.trim());
 const newDlg2 = dialogs.slice(dlgBefore2);
 const expectCalls = [
   "/api/projectJcdgLastAffixNew/submitJcdgReview",
+  "/api/reportFile/submitJcbgReview",
   "/api/projectJcdgLastAffixNew/audit",
   "/api/projectJcbgLastAffixNew/audit",
   "/api/projectJcbgLastAffixNew/audit",
 ];
-check("审核按 4 步链顺序执行（提交审复核 → jcdg理化复核 → jcbg理化审核 → jcbg理化签发）",
+check("审核按 4 步链顺序执行（①同时提交底稿+报告单 → ②jcdg理化复核 → ③jcbg理化审核 → ④jcbg理化签发）",
   JSON.stringify(calls) === JSON.stringify(expectCalls),
   JSON.stringify(calls));
+// ★ 关键：第①步必须**先提交检测底稿、再提交检测报告单**（独立接口 /api/reportFile/submitJcbgReview），
+//   否则 jcbg 一直没有待审记录 → 后续 jcbg 审批必然报「该流程已无待审的检测记录」。
+const idxJcdgSubmit = calls.indexOf("/api/projectJcdgLastAffixNew/submitJcdgReview");
+const idxJcbgSubmit = calls.indexOf("/api/reportFile/submitJcbgReview");
+const idxFirstJcbgAudit = calls.indexOf("/api/projectJcbgLastAffixNew/audit");
+check("第①步补交了「检测报告单」（独立接口 reportFile/submitJcbgReview），且在任何 jcbg 审批之前",
+  idxJcdgSubmit === 0 && idxJcbgSubmit === 1 && idxFirstJcbgAudit > idxJcbgSubmit,
+  "idxJcdgSubmit=" + idxJcdgSubmit + " idxJcbgSubmit=" + idxJcbgSubmit + " idxFirstJcbgAudit=" + idxFirstJcbgAudit);
 check("4 步分别用各自账号取令牌（btc-jyg → btc-wcy → btc-zhj → btc-gxz）",
   JSON.stringify(tokenCalls.slice(-4)) === JSON.stringify(["btc-jyg", "btc-wcy", "btc-zhj", "btc-gxz"]),
   JSON.stringify(tokenCalls.slice(-4)));
