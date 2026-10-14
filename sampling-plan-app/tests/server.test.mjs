@@ -3,7 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { startServer } from "../server.mjs";
 
-const TEST_DATA = path.resolve("data/test-server.json");
+// ⚠ 必须用**独立临时目录**：server.mjs 会把单条记录写到 dataFile 同级的 records/ 下，
+// 若沿用 data/test-server.json，测试的清理会连真实的 data/records/ 一起删掉（曾误删过仓库里的记录）。
+const TEST_DIR = path.resolve("data/_test-server");
+const TEST_DATA = path.join(TEST_DIR, "records.json");
 const server = await startServer({ port: 0, dataFile: TEST_DATA });
 const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -20,8 +23,8 @@ try {
     throw new Error("GET 结果不符");
   }
 
-  // 2) 单条完整记录落盘到 data/records/<id>.json
-  const recFile = JSON.parse(fs.readFileSync(path.resolve("data/records/1.json"), "utf8"));
+  // 2) 单条完整记录落盘到 <dataFile 同级>/records/<id>.json
+  const recFile = JSON.parse(fs.readFileSync(path.join(TEST_DIR, "records", "1.json"), "utf8"));
   if (recFile.id !== "1" || recFile.name !== "服务测试记录") throw new Error("单条记录未写入数据文件");
 
   // 3) 静态首页可访问
@@ -67,7 +70,6 @@ try {
     server.closeAllConnections();
     await server.close();
   } catch {}
-  fs.rmSync(TEST_DATA, { force: true });
-  fs.rmSync(path.resolve("data/records/1.json"), { force: true });
-  fs.rmSync(path.resolve("data/records"), { recursive: true, force: true });
+  // 只清理本测试自己的临时目录（绝不碰真实的 data/records/）
+  fs.rmSync(TEST_DIR, { recursive: true, force: true });
 }

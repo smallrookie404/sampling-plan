@@ -9,7 +9,9 @@ const xlsxio = require("../js/xlsxio.js");
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const SHOT_DIR = "tests/shots";
-const TEST_DATA = path.resolve("data/test-records.json");
+// 用独立临时目录：server.mjs 会在 dataFile 同级建 records/，避免污染真实的 data/records/
+const TEST_DIR = path.resolve("data/_test-ui");
+const TEST_DATA = path.join(TEST_DIR, "records.json");
 fs.mkdirSync(SHOT_DIR, { recursive: true });
 
 const server = await startServer({ port: 0, dataFile: TEST_DATA });
@@ -17,7 +19,7 @@ const PORT = server.address().port;
 const APP_URL = `http://127.0.0.1:${PORT}/`;
 process.on("exit", () => {
   try { server.close(); } catch {}
-  try { fs.rmSync(TEST_DATA, { force: true }); } catch {}
+  try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
   // 同步兜底：断言抛错退出时终止浏览器子进程，避免残留 Chrome 进程（正常结束仍走 await browser.close() 优雅关闭）
   try { if (typeof browser !== "undefined" && browser) browser.process()?.kill(); } catch {}
 });
@@ -441,4 +443,4 @@ console.log("UI 冒烟测试全部通过 ✔");
 await browser.close();
 server.closeAllConnections();
 await server.close();
-fs.rmSync(TEST_DATA, { force: true });
+fs.rmSync(TEST_DIR, { recursive: true, force: true });
