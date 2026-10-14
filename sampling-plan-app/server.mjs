@@ -9,10 +9,17 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 8017;
+// 账号桥（captcha-ocr/bridge.py）：为「数据报告回退」提供 btc-gxz / btc-wcy 的令牌。
+// 浏览器无法启动本机进程，所以由**本地服务按需自动拉起**，网页只需调同源 /api/bridge/token/<账号>。
+const BRIDGE_PORT = Number(process.env.BRIDGE_PORT || 8787);
+const BRIDGE_DIR = path.resolve(__dirname, "..", "captcha-ocr");
+const BRIDGE_SCRIPT = path.join(BRIDGE_DIR, "bridge.py");
+const BRIDGE_BASE = `http://127.0.0.1:${BRIDGE_PORT}`;
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -113,6 +120,60 @@ export function createServer(opts = {}) {
     res.end(JSON.stringify(obj));
   }
 
+  // ---------------- 账号桥（按需自动拉起） ----------------
+  async function bridgeHealth(timeoutMs = 800) {
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), timeoutMs);
+      const r = await fetch(BRIDGE_BASE + "/health", { signal: ac.signal, cache: "no-store" });
+      clearTimeout(timer);
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function findPython() {
+    if (process.env.SAMPLING_PYTHON) return process.env.SAMPLING_PYTHON;
+    // 绝对路径候选（存在才用），否则回退到 PATH 上的命令名
+    const cands = [];
+    const local = process.env.LOCALAPPDATA || "";
+    const pf = process.env.ProgramFiles || "C:\\Program Files";
+    for (const v of ["Python314", "Python313", "Python312", "Python311"]) {
+      if (local) cands.push(path.join(local, "Programs", "Python", v, "python.exe"));
+      cands.push(path.join(pf, v, "python.exe"));
+    }
+    for (const c of cands) if (fs.existsSync(c)) return c;
+    return "py"; // Windows 的 Python 启动器；非 Windows 下 spawn 失败会走错误分支
+  }
+
+  let bridgeStarting = null;
+  // 返回 true 表示账号桥可用（本来就在跑，或刚被拉起）
+  function ensureBridge() {
+    if (bridgeStarting) return bridgeStarting;
+    const p = (async () => {
+      if (await bridgeHealth()) return true;
+      if (!fs.existsSync(BRIDGE_SCRIPT)) return false;
+      try {
+        const child = spawn(findPython(), [BRIDGE_SCRIPT], {
+          cwd: BRIDGE_DIR, detached: true, stdio: "ignore", windowsHide: true,
+        });
+        child.on("error", () => {});   // 找不到解释器时不要抛出未捕获异常
+        child.unref();
+      } catch {
+        return false;
+      }
+      for (let i = 0; i < 40; i++) {   // 最多等约 12 秒
+        await new Promise((r) => setTimeout(r, 300));
+        if (await bridgeHealth()) return true;
+      }
+      return false;
+    })();
+    bridgeStarting = p;
+    p.then((ok) => { if (!ok) bridgeStarting = null; }, () => { bridgeStarting = null; });
+    return p;
+  }
+
   // 读取请求体文本：前端 persistRecord 会 gzip 压缩（Content-Encoding: gzip，Cloudflare
   // Functions 自动解压），本地 Node http 需自行解压，否则 JSON.parse 失败（保存报 400/500）
   function readBody(req) {
@@ -140,6 +201,35 @@ export function createServer(opts = {}) {
       const pathname = decodeURIComponent(url.pathname);
 
       if (pathname === "/api/health") return sendJson(res, 200, { ok: true });
+
+      // 账号桥探针：网页据此决定用同源 /api/bridge/token 还是直连 127.0.0.1:8787
+      if (pathname === "/api/bridge/ping") {
+        return sendJson(res, 200, { ok: true, autoStart: true, up: await bridgeHealth() });
+      }
+
+      // 取账号令牌（btc-gxz / btc-wcy）：桥没起就先自动拉起，再转发
+      if (pathname.startsWith("/api/bridge/token/")) {
+        const account = pathname.slice("/api/bridge/token/".length);
+        if (!account) return sendJson(res, 400, { ok: false, message: "缺少账号名" });
+        if (!(await bridgeHealth())) {
+          const ok = await ensureBridge();
+          if (!ok) {
+            return sendJson(res, 502, {
+              ok: false,
+              message: "账号桥未能自动启动。请确认已安装 Python 3，且 " + BRIDGE_SCRIPT + " 可运行"
+                + "（也可手动执行 captcha-ocr/start-bridge.bat）。",
+            });
+          }
+        }
+        try {
+          const r = await fetch(BRIDGE_BASE + "/token/" + encodeURIComponent(account), { cache: "no-store" });
+          const text = await r.text();
+          res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          return res.end(text);
+        } catch (e) {
+          return sendJson(res, 502, { ok: false, message: "账号桥请求失败：" + (e && e.message ? e.message : e) });
+        }
+      }
 
       if (pathname === "/api/records") {
         migrateLegacy();
