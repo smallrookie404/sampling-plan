@@ -192,11 +192,12 @@ check("定位成功并提示；三重确认被取消时不发重置请求",
 await page.evaluate(() => { window.confirm = () => true; });
 const dlgBefore = dialogs.length;
 await page.click("#report-reset");
-await page.waitForTimeout(2000);
+await page.waitForTimeout(2500);
 const rstat2 = await page.$eval("#report-status", (e) => e.textContent.trim());
 const newDlg = dialogs.slice(dlgBefore);
+// ⚠ 回退成功后状态栏会被「正在加载/已显示 检测结果报告单」覆盖，故用弹窗判断回退本身是否成功
 check("body:false 视为成功（两步都跑完，不误报「重置失败」）",
-  seen.reset.length === 2 && /两步回退全部完成/.test(rstat2)
+  seen.reset.length === 2
     && newDlg.some((m) => /回退成功/.test(m)) && !newDlg.some((m) => /失败/.test(m)),
   "reset次数=" + seen.reset.length + " ／ status=" + rstat2 + " ／ 弹窗=" + JSON.stringify(newDlg).slice(0, 160));
 
@@ -312,6 +313,29 @@ check("打开 PDF 后整页可纵向滚动（body.pdf-open + 文档高于视口�
 check("滚动条足够长：滚到底能把 PDF 顶部带到浏览器顶部",
   scrollInfo.topAfter !== null && scrollInfo.topAfter <= 4,
   "滚动前top=" + scrollInfo.topBefore + " 滚动到底top=" + scrollInfo.topAfter);
+
+// 11) 「数据报告回退」成功后：与「数据报告审核」同一套界面/逻辑，自动在下方内嵌显示「检测结果报告单」PDF
+//     此时项目已审核完结（jcbg isOver=1），回退应能取到报告单 PDF 并内嵌显示
+await page.evaluate(() => {
+  // 先清掉上一次的预览（模拟回退前状态），并隐藏已完结预览
+  if (window.SamplingUpload && window.SamplingUpload.hideReportPdf) window.SamplingUpload.hideReportPdf();
+});
+const dlgBeforeReset = dialogs.length;
+const openedBeforeReset = (await page.evaluate(() => window.__openedUrls || [])).length;
+await page.click("#report-reset");
+await page.waitForTimeout(2500);
+const rstatReset = await page.$eval("#report-status", (e) => e.textContent.trim());
+const resetDlg = dialogs.slice(dlgBeforeReset);
+const resetBoxVisible = await page.isVisible("#report-pdf-box");
+const resetIframeSrc = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
+const openedAfterReset = (await page.evaluate(() => window.__openedUrls || [])).length;
+check("回退成功后自动在下方内嵌 iframe 显示检测结果报告单（界面/逻辑同审核）",
+  resetBoxVisible && resetIframeSrc.startsWith("blob:")
+    && openedAfterReset === openedBeforeReset
+    && /已在下方显示回退后检测结果报告单/.test(rstatReset)
+    && resetDlg.some((m) => /回退成功/.test(m)) && !resetDlg.some((m) => /失败/.test(m)),
+  "boxVisible=" + resetBoxVisible + " iframeSrc=" + String(resetIframeSrc).slice(0, 24)
+    + " openedDiff=" + (openedAfterReset - openedBeforeReset) + " ／ status=" + rstatReset.slice(0, 70));
 
 await page.screenshot({ path: path.join(SHOT_DIR, "report-tab.png") });
 check("无控制台错误", errors.length === 0, errors.slice(0, 2).join(" ; "));

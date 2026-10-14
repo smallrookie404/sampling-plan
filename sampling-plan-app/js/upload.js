@@ -2149,6 +2149,13 @@
           + (changedAny ? '' : '（两步都无需变更，原本已是初始状态）');
         alert('数据报告回退成功（已依次重置：' + RESET_STEPS.map(function (s) { return s.label; }).join(' → ') + '）。'
           + (changedAny ? '' : '\n注：两步都无需变更，该项目原本已是初始状态。') + '\n' + reportProjectLabel());
+        // ★ 回退成功后，与「数据报告审核」同一套界面/逻辑：自动在下方内嵌显示该项目的「检测结果报告单」PDF
+        if (el.status) el.status.textContent = '✅ 两步回退全部完成，正在加载检测结果报告单…';
+        try {
+          await showFinalReportPdf({ quiet: true, context: '回退后' });
+        } catch (e) {
+          if (el.status) el.status.textContent = '✅ 两步回退全部完成，但检测结果报告单加载失败：' + (e && e.message ? e.message : e);
+        }
       } catch (e) {
         if (el.status) el.status.textContent = '❌ 回退失败：' + e.message;
         alert('数据报告回退失败：' + e.message);
@@ -2323,9 +2330,13 @@
       try { document.body.classList.remove('pdf-open'); } catch (e) {}
       if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} reportPdfObjUrl = null; }
     }
-    // 取「审批完结检测结果报告单」并内嵌显示。返回 { ok, fname, isOver } 或抛错。
+    // 取「检测结果报告单」PDF 并内嵌显示（与「数据报告审核」同一套界面/逻辑）。
+    //   opts.quiet   ：失败/未完结时只写状态栏、不弹 alert（供审核/回退成功后自动调用）
+    //   opts.context ：状态栏文案里的场景名（默认「审批完结」），如「回退后」
+    //   返回 { ok, fname, isOver } 或抛错。
     async function showFinalReportPdf(opts) {
       opts = opts || {};
+      const ctxName = opts.context || '审批完结';
       const el = reportEls();
       const r = await apiRequest('GET',
         auditPaths('jcbg').affix + '?belongProject=' + encodeURIComponent(String(selectedProject.id)),
@@ -2358,14 +2369,14 @@
         wrap.innerHTML = '';
         const fr = document.createElement('iframe');
         fr.src = reportPdfObjUrl;
-        fr.title = '审批完结检测结果报告单';
+        fr.title = '检测结果报告单';
         wrap.appendChild(fr);
       }
       if (box) { box.classList.remove('hidden'); }
       // 让整个页面可纵向滚动，方便把 PDF 区域继续往上滚查看
       try { document.body.classList.add('pdf-open'); } catch (e) {}
       try { box && box.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
-      if (el.status) el.status.textContent = '✅ 已在下方显示审批完结检测结果报告单：' + fname;
+      if (el.status) el.status.textContent = '✅ 已在下方显示' + ctxName + '检测结果报告单：' + fname;
       return { ok: true, fname: fname, isOver: isOver };
     }
 
