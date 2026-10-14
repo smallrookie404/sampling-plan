@@ -117,6 +117,11 @@ body {
 .noise-wrap { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 10px; }
 .noise-empty { color: #64748b; font-size: 13px; padding: 18px 4px; }
 .noise-empty.hidden { display: none; }
+/* 数据报告处理页签 */
+.report-wrap { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 10px; }
+.report-info { font-size: 13px; color: #1f2937; padding: 10px 4px; }
+.report-info.hidden { display: none; }
+.report-info .report-sub { color: #64748b; font-size: 12px; margin-top: 4px; }
 table.noise-table { border-collapse: collapse; font-size: 12px; background: #fff; }
 table.noise-table th,
 table.noise-table td { border: 1px solid var(--line); padding: 4px 8px; white-space: pre-line; text-align: center; vertical-align: middle; }

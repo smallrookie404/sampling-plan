@@ -1062,6 +1062,7 @@
           $('projectInfo').className = 'info ok';
           log('已选择项目：' + p.code + ' ' + (p.belongInspectName || ''));
           loadProjectTeam(p.id);
+          refreshReportPanel();   // 「数据报告处理」页签同步显示当前项目
         });
         suggestBox.appendChild(item);
       });
@@ -1103,6 +1104,7 @@
         selectedProject = null;
         $('projectInfo').textContent = '';
         $('projectInfo').className = 'info';
+        refreshReportPanel();
         const seq = ++searchSeq;
         if (currentAbort) currentAbort.abort();
         currentAbort = new AbortController();
@@ -1815,6 +1817,277 @@
     const noiseRefreshBtn = document.getElementById('noise-refresh');
     if (noiseRefreshBtn) noiseRefreshBtn.addEventListener('click', function () { loadNoiseResult(true); });
 
+    // ---------- 数据报告处理（回退 / 审核） ----------
+    // 对应平台「流程审批」里两个界面的「重置审批状态」，走的是**同一个接口**，只是 projectProcess 不同：
+    //   检测结果报告单 = 'jcbg'    检测底稿 = 'jcdg'
+    //   POST /api/projectXccyLastAffix/resetProjectApprovalProcess
+    //   body { belongProject, projectProcess }
+    // 审核（通过）走 POST /api/projectJcbgLastAffixNew/auditAll
+    //   body [{ belongProject, projectName, suggestions, type, isPass }]
+    // 平台原生「重置审批状态」是**三次连续确认**，这里照搬。
+    // ⚠️ 回退是**两步**：先重置「检测结果报告单」，再重置「检测底稿」（顺序与人工操作一致）。
+    // 回退 = 两步顺序重置（与人工操作一致）：
+    //   ① 检测结果报告单（jcbg）→ ② 检测底稿（jcdg）
+    // 两者走同一接口，仅 projectProcess 不同。**B 方案**：两步分别以 btc-gxz / btc-wcy 身份执行。
+    // 浏览器不持有这些账号令牌，统一从本地「账号桥」(captcha-ocr/bridge.py) 取（桥调账号池，缓存命中不消耗验证码）。
+    const RESET_STEPS = [
+      { process: 'jcbg', label: '检测结果报告单', account: 'btc-gxz' },
+      { process: 'jcdg', label: '检测底稿', account: 'btc-wcy' },
+    ];
+
+    const ACCOUNT_BRIDGE_URL = 'http://127.0.0.1:8787';
+
+    // 账号桥地址（只解析一次）：
+    //  1) localStorage.xcdc_bridge_url 显式覆盖优先（末尾的 /token 由下面统一拼）；
+    //  2) 本地服务模式（/api/bridge/ping 有响应）→ 用同源 /api/bridge/token，
+    //     本地服务(server.mjs)会在首次使用时**自动拉起** captcha-ocr/bridge.py，
+    //     所以点「回退」不需要任何人工启动步骤；
+    //  3) 其它情况（直接双击 index.html / 静态部署）→ 直连 127.0.0.1:8787。
+    let bridgeBasePromise = null;
+    function bridgeBase() {
+      if (bridgeBasePromise) return bridgeBasePromise;
+      bridgeBasePromise = (async function () {
+        try {
+          const ov = (typeof localStorage !== 'undefined') && localStorage.getItem('xcdc_bridge_url');
+          if (ov) return String(ov).replace(/\/+$/, '');
+        } catch (e) {}
+        try {
+          const r = await fetch('/api/bridge/ping', { cache: 'no-store' });
+          if (r.ok) return '/api/bridge/token';
+        } catch (e) {}
+        return ACCOUNT_BRIDGE_URL + '/token';
+      })();
+      return bridgeBasePromise;
+    }
+
+    async function fetchBridgeToken(account) {
+      const base = await bridgeBase();
+      // 同源路由（本地服务 / Cloudflare）带上本会话令牌：
+      // 云端版靠它校验调用方是已登录平台的用户（本地版忽略该头）
+      const headers = {};
+      if (base.charAt(0) === '/') {
+        if (token) headers.Authorization = token;
+        if (orgId) headers.organizationId = String(orgId);
+      }
+      let resp;
+      try {
+        resp = await fetch(base + '/' + encodeURIComponent(account), { cache: 'no-store', headers: headers });
+      } catch (e) {
+        // fetch 只会抛 TypeError: Failed to fetch，这里换成可操作的提示
+        throw new Error('连不上账号桥 ' + base
+          + '（若用本地服务打开，请确认 Python 3 可用；也可双击 captcha-ocr/start-bridge.bat 手动启动）');
+      }
+      if (!resp.ok) {
+        let msg = '账号桥返回 HTTP ' + resp.status;
+        try { const d = await resp.json(); if (d && d.message) msg = d.message; } catch (e) {}
+        throw new Error(msg);
+      }
+      const d = await resp.json();
+      if (!d || !d.token) throw new Error('账号桥未返回 token：' + account);
+      return { token: d.token, orgId: d.orgId };
+    }
+
+    function reportEls() {
+      return {
+        status: document.getElementById('report-status'),
+        empty: document.getElementById('report-empty'),
+        info: document.getElementById('report-info'),
+      };
+    }
+
+    function reportProjectLabel() {
+      const p = selectedProject;
+      if (!p) return '';
+      return '项目 ' + (p.code || '') + (p.belongInspectName ? '（' + p.belongInspectName + '）' : '');
+    }
+
+    function refreshReportPanel() {
+      const el = reportEls();
+      if (!el.empty) return;
+      if (!selectedProject || !selectedProject.id) {
+        el.empty.textContent = '尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再进行数据报告处理。';
+        el.empty.classList.remove('hidden');
+        if (el.info) el.info.classList.add('hidden');
+        if (el.status) el.status.textContent = '';
+        return;
+      }
+      el.empty.classList.add('hidden');
+      if (el.info) {
+        el.info.classList.remove('hidden');
+        el.info.innerHTML = '<b>' + esc(reportProjectLabel()) + '</b>'
+          + '<div class="report-sub">回退将依次以 '
+          + RESET_STEPS.map(function (s) { return esc(s.account) + ' 身份重置 ' + esc(s.label) + '（' + s.process + '）'; }).join(' → ')
+          + ' · 回退前会先在「已完结」项目中定位该项目'
+          + (selectedProject.status !== undefined && selectedProject.status !== null
+            ? ' · 当前审批状态：' + esc(String(selectedProject.status)) : '')
+          + '</div>';
+      }
+      if (el.status) el.status.textContent = '';
+    }
+
+    function esc(s) {
+      return String(s === null || s === undefined ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // 平台原生是三次连续确认；照搬，避免误触
+    function tripleConfirm(what) {
+      const tail = '\n\n' + reportProjectLabel();
+      const qs = [
+        '确认' + what + '所选中项目的审批状态？',
+        '慎重考虑，确认' + what + '所选中项目的审批状态？',
+        '再次强调，确定' + what + '所选中项目的审批状态？',
+      ];
+      for (let i = 0; i < qs.length; i++) {
+        if (!window.confirm(qs[i] + tail)) return false;
+      }
+      return true;
+    }
+
+    // 回退 = 两步顺序重置（与人工操作一致）：
+    //   ① 检测结果报告单（jcbg）→ ② 检测底稿（jcdg）
+    // 两者走同一接口，仅 projectProcess 不同。当前用 App 当前会话（Plan A）执行；
+    // 若日后要求以 btc-gxz / btc-wcy 各自的账号身份执行，则需接入账号池（见交接文档）。
+    // ★ 回退只对**已完结**项目有效。平台「流程审批 → 检测结果报告单」的列表接口
+    //     GET /api/projectJcbgLastAffix?isDel=1
+    //   才是回退对象的权威来源（平台里「已完结」的定义就是 isDel==='1'）。
+    //   ⚠ /api/reportData/findList 会忽略 isDel（实测 1/0/不带返回完全相同），
+    //     用它搜出来的项目直接拿去回退会「找不到」，所以回退前必须先在该接口里定位。
+    async function findFinishedProject(code) {
+      const kw = String(code || '').trim();
+      if (!kw) return null;
+      const r = await apiRequest('GET',
+        '/api/projectJcbgLastAffix?pageNumber=1&pageSize=50&isDel=1&code=' + encodeURIComponent(kw),
+        { token: token, orgId: orgId, timeout: 60000 });
+      if (r.status !== 200) throw new Error('查询「已完结」项目失败(HTTP ' + r.status + ')');
+      const rows = (r.data && r.data.body && r.data.body.records) || [];
+      const up = kw.toUpperCase();
+      for (let i = 0; i < rows.length; i++) {
+        if (String(rows[i].code || '').trim().toUpperCase() === up) return rows[i];
+      }
+      return null;
+    }
+
+    async function resetReportApproval() {
+      const el = reportEls();
+      if (!token) { showLogin(); return; }
+      if (!selectedProject || !selectedProject.id) {
+        alert('尚未在「数据上传」中选择项目。\n请先到「数据上传」查询并选中项目，再进行数据报告处理。');
+        return;
+      }
+      const btn = document.getElementById('report-reset');
+      const old = btn ? btn.textContent : '';
+      // ① 先在「已完结」项目中定位（回退只能作用于已完结项目）
+      let target = null;
+      if (btn) { btn.disabled = true; btn.textContent = '定位中…'; }
+      if (el.status) el.status.textContent = '正在「已完结」项目中定位 ' + (selectedProject.code || '') + '…';
+      try {
+        target = await findFinishedProject(selectedProject.code);
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = old || '数据报告回退'; }
+        if (el.status) el.status.textContent = '❌ 定位失败：' + e.message;
+        alert('数据报告回退失败：' + e.message);
+        return;
+      }
+      if (btn) { btn.disabled = false; btn.textContent = old || '数据报告回退'; }
+      if (!target) {
+        if (el.status) el.status.textContent = '❌ 「已完结」项目中未找到 ' + (selectedProject.code || '');
+        alert('在「已完结」项目中未找到该项目：' + (selectedProject.code || '')
+          + '\n\n回退（重置审批状态）只对**已完结**项目有效，请确认该项目是否已审批完结。');
+        return;
+      }
+      if (el.status) el.status.textContent = '✅ 已在「已完结」项目中定位到 ' + (target.code || '') + '，等待确认…';
+      // ② 三重确认（照搬平台）
+      if (!tripleConfirm('重置')) return;
+      if (btn) { btn.disabled = true; }
+      try {
+        let done = 0;
+        let changedAny = false;
+        for (let i = 0; i < RESET_STEPS.length; i++) {
+          const step = RESET_STEPS[i];
+          if (btn) btn.textContent = '回退中…（' + (i + 1) + '/' + RESET_STEPS.length + ' ' + step.account + '·' + step.label + '）';
+          if (el.status) el.status.textContent = '正在以 ' + step.account + ' 身份重置「' + step.label + '」（' + (i + 1) + '/' + RESET_STEPS.length + '）…';
+          const tk = await fetchBridgeToken(step.account);
+          const r = await apiRequest('POST', '/api/projectXccyLastAffix/resetProjectApprovalProcess', {
+            token: tk.token, orgId: tk.orgId, timeout: 60000,
+            json: { belongProject: target.id, projectProcess: step.process },
+          });
+          // ⚠ 平台返回形如 {"code":"200","message":"重置成功！","body":true|false}：
+          //   body 只表示「本次是否真的发生了状态变更」——已处于初始状态时返回 false，
+          //   但**仍是成功**（幂等，实测重复调用/已重置过的项目都返回 body:false）。
+          //   所以成败只认 code==='200'，不能拿 body 当成功标志（否则会误报「重置失败：重置成功！」）。
+          if (!(r.status === 200 && r.data && String(r.data.code) === '200')) {
+            throw new Error('「' + step.label + '」以 ' + step.account + ' 身份重置失败：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120))));
+          }
+          const changed = !!(r.data && r.data.body);
+          if (changed) changedAny = true;
+          done++;
+          if (el.status) el.status.textContent = '✅ 已以 ' + step.account + ' 身份重置「' + step.label + '」'
+            + (changed ? '' : '（无需变更，原本已是初始状态）')
+            + '（' + done + '/' + RESET_STEPS.length + '）';
+        }
+        if (el.status) el.status.textContent = '✅ 两步回退全部完成 · ' + reportProjectLabel()
+          + (changedAny ? '' : '（两步都无需变更，原本已是初始状态）');
+        alert('数据报告回退成功（已依次重置：' + RESET_STEPS.map(function (s) { return s.label; }).join(' → ') + '）。'
+          + (changedAny ? '' : '\n注：两步都无需变更，该项目原本已是初始状态。') + '\n' + reportProjectLabel());
+      } catch (e) {
+        if (el.status) el.status.textContent = '❌ 回退失败：' + e.message;
+        alert('数据报告回退失败：' + e.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = old || '数据报告回退'; }
+      }
+    }
+
+    async function auditReport() {
+      const el = reportEls();
+      if (!token) { showLogin(); return; }
+      if (!selectedProject || !selectedProject.id) {
+        alert('尚未在「数据上传」中选择项目。\n请先到「数据上传」查询并选中项目，再进行数据报告处理。');
+        return;
+      }
+      if (!window.confirm('确认对以下项目执行「检测结果报告单」审批通过？\n\n' + reportProjectLabel())) return;
+      const btn = document.getElementById('report-audit');
+      const old = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '审核中…'; }
+      if (el.status) el.status.textContent = '正在提交审批…';
+      try {
+        const payload = [{
+          belongProject: selectedProject.id,
+          projectName: selectedProject.code || '',
+          suggestions: '通过',
+          type: selectedProject.status,
+          isPass: '1',
+        }];
+        const r = await apiRequest('POST', '/api/projectJcbgLastAffixNew/auditAll', {
+          token: token, orgId: orgId, timeout: 60000, json: payload,
+        });
+        const code = r.data && r.data.code;
+        if (r.status === 200 && String(code) === '200') {
+          let msg = '';
+          if (r.data.body && r.data.body.length) {
+            msg = r.data.body.map(function (x) { return x.prjCode + '：' + x.msg; }).join('；');
+          }
+          if (el.status) el.status.textContent = '✅ 审批通过已提交 · ' + reportProjectLabel() + (msg ? ' · ' + msg : '');
+          alert('审批通过已提交。\n' + reportProjectLabel() + (msg ? '\n' + msg : ''));
+        } else {
+          throw new Error((r.data && r.data.message) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120)));
+        }
+      } catch (e) {
+        if (el.status) el.status.textContent = '❌ 审核失败：' + e.message;
+        alert('数据报告审核失败：' + e.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = old || '数据报告审核'; }
+      }
+    }
+
+    const reportTabBtn = document.querySelector('.tab[data-tab="report"]');
+    if (reportTabBtn) reportTabBtn.addEventListener('click', function () { refreshReportPanel(); });
+    const reportResetBtn = document.getElementById('report-reset');
+    if (reportResetBtn) reportResetBtn.addEventListener('click', resetReportApproval);
+    const reportAuditBtn = document.getElementById('report-audit');
+    if (reportAuditBtn) reportAuditBtn.addEventListener('click', auditReport);
+    refreshReportPanel();
+
     // ---------- 非噪声岗位同步 ----------
     function splitLines(v) {
       const arr = String(v === null || v === undefined ? '' : v).split('\n').map(function (s) { return s.trim(); });
@@ -1921,6 +2194,10 @@
       notifyAuthExpired: notifyAuthExpired,
       // 加载「噪声数据结果」页签（供其它模块触发）
       loadNoise: loadNoiseResult,
+      // 数据报告处理（检测结果报告单：回退 / 审核，供其它模块触发/复用）
+      refreshReportPanel: refreshReportPanel,
+      resetReportApproval: resetReportApproval,
+      auditReport: auditReport,
       // 解析**检评报告** docx 中「噪声检测结果分析与评价」标题下的表（供测试/复用）
       parseNoiseTable: parsePjbgNoiseTableFromDocx,
       // 渲染噪声表（供测试/复用）

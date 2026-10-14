@@ -199,6 +199,7 @@
     <button class="tab" data-tab="survey">调查表</button>
     <button class="tab" data-tab="hazard">危害因素库 <span id="hazard-count" class="badge"></span></button>
     <button class="tab tabs-right" data-tab="noise">噪声数据结果</button>
+    <button class="tab" data-tab="report">数据报告处理</button>
   </nav>
   <div id="storage-notice" class="notice hidden">
     当前为「直接打开页面」模式，数据仅暂存于浏览器。请通过「启动采样计划软件.bat」打开软件，数据将保存到项目文件夹 <b>data\records.json</b>。
@@ -297,6 +298,20 @@
     <div class="noise-wrap">
       <div id="noise-empty" class="noise-empty">尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再查看噪声数据结果。</div>
       <div id="noise-table-box"></div>
+    </div>
+  </section>
+
+  <section id="tab-report" class="tab-panel">
+    <div class="grid-toolbar">
+      <div class="left">
+        <button id="report-reset" class="btn small danger" title="以 btc-gxz 身份重置「检测结果报告单」、再以 btc-wcy 身份重置「检测底稿」（两步顺序执行，需先运行 captcha-ocr/bridge.py 提供账号令牌）；回退前会先在该项目的「已完结」记录中定位（回退只对已完结项目有效）">数据报告回退</button>
+        <button id="report-audit" class="btn small" title="对选中项目的「检测结果报告单」执行审批通过（与平台「流程审批 → 通过」等效）">数据报告审核</button>
+        <span id="report-status" class="status"></span>
+      </div>
+    </div>
+    <div class="report-wrap">
+      <div id="report-empty" class="noise-empty">尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再进行数据报告处理。</div>
+      <div id="report-info" class="report-info hidden"></div>
     </div>
   </section>
 
