@@ -1869,6 +1869,26 @@
       return null;
     }
 
+    // 轮询等待审批状态变化：提交后反复读列表，直到 status 变了或从列表消失（最多等 30s）
+    async function pollApprovalChange(bearer, org, listPath, code, oldStatus, opts) {
+      opts = opts || {};
+      const maxWait = opts.maxWaitMs || 30000;
+      const interval = opts.intervalMs || 2000;
+      const start = Date.now();
+      while (Date.now() - start < maxWait) {
+        const row = await readApprovalRow(bearer, org, listPath, code);
+        if (!row) {
+          // 项目从当前列表消失 → 可能已流转到下一阶段，视为成功
+          return { changed: true, gone: true, waited: Date.now() - start };
+        }
+        if (String(row.status) !== String(oldStatus)) {
+          return { changed: true, gone: false, newStatus: row.status, waited: Date.now() - start };
+        }
+        await new Promise(function (res) { setTimeout(res, interval); });
+      }
+      return { changed: false, waited: Date.now() - start };
+    }
+
     const ACCOUNT_BRIDGE_URL = 'http://127.0.0.1:8787';
 
     // 账号桥地址（只解析一次）：
@@ -2090,6 +2110,8 @@
       const old = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; }
       const msgs = [];
+      // 测试可通过 window.__AUDIT_POLL_OPTS__ 覆盖轮询参数（避免 mock 固定响应导致超时）
+      const pollOpts = (typeof window !== 'undefined' && window.__AUDIT_POLL_OPTS__) || {};
       try {
         let done = 0;
         for (let i = 0; i < AUDIT_STEPS.length; i++) {
@@ -2100,6 +2122,10 @@
           const tk = await fetchBridgeToken(step.account);
 
           if (step.kind === 'submitJcdg') {
+            const ap = auditPaths('jcdg');
+            // 先读当前 status，用于后续轮询判断状态是否已流转
+            const beforeRow = await readApprovalRow(tk.token, tk.orgId, ap.list, selectedProject.code);
+            const oldStatus = beforeRow ? beforeRow.status : null;
             const r = await apiRequest('POST', '/api/projectJcdgLastAffixNew/submitJcdgReview', {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
               json: { belongProject: selectedProject.id },
@@ -2110,6 +2136,16 @@
             }
             const b = r.data && r.data.body;
             if (b && b.msg) msgs.push(step.label + '：' + b.msg);
+            // 轮询等待状态流转（最多 30s，每 2s 查一次）
+            if (oldStatus !== null && oldStatus !== undefined) {
+              if (el.status) el.status.textContent = '等待状态流转中…' + tag + '（' + step.account + ' · ' + step.label + '）';
+              const poll = await pollApprovalChange(tk.token, tk.orgId, ap.list, selectedProject.code, oldStatus, pollOpts);
+              if (!poll.changed) {
+                msgs.push(step.label + '：状态流转等待超时（' + (poll.waited / 1000).toFixed(1) + 's），继续下一步');
+              } else {
+                msgs.push(step.label + '：状态流转完成（等待 ' + (poll.waited / 1000).toFixed(1) + 's' + (poll.gone ? '，项目已从当前列表消失' : '') + '）');
+              }
+            }
           } else {
             const ap = auditPaths(step.kind);
             // type 必须取**当前** status：上一步通过后状态会推进，所以每步重新读
@@ -2118,6 +2154,7 @@
               throw new Error('在「' + step.label + '」的待审列表里找不到项目 ' + (selectedProject.code || '')
                 + '（' + step.account + '）——上一步可能尚未生效，或该账号看不到该项目');
             }
+            const oldStatus = row.status;
             const r = await apiRequest('POST', ap.audit, {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
               json: [{
@@ -2135,12 +2172,18 @@
             if (r.data.body && r.data.body.length) {
               msgs.push(r.data.body.map(function (x) { return (x.prjCode || '') + '：' + (x.msg || ''); }).join('；'));
             }
+            // 轮询等待状态流转
+            if (el.status) el.status.textContent = '等待状态流转中…' + tag + '（' + step.account + ' · ' + step.label + '）';
+            const poll = await pollApprovalChange(tk.token, tk.orgId, ap.list, selectedProject.code, oldStatus, pollOpts);
+            if (!poll.changed) {
+              msgs.push(step.label + '：状态流转等待超时（' + (poll.waited / 1000).toFixed(1) + 's），继续下一步');
+            } else {
+              msgs.push(step.label + '：状态流转完成（等待 ' + (poll.waited / 1000).toFixed(1) + 's' + (poll.gone ? '，项目已从当前列表消失' : '') + '）');
+            }
           }
           done++;
           if (el.status) el.status.textContent = '✅ 第 ' + done + '/' + AUDIT_STEPS.length
             + ' 步完成（' + step.account + ' · ' + step.label + '）';
-          // 给平台状态机一点推进时间，再读下一步的当前 status
-          if (i < AUDIT_STEPS.length - 1) await new Promise(function (res) { setTimeout(res, 1000); });
         }
         const tail = msgs.length ? ' · ' + msgs.join('；') : '';
         if (el.status) el.status.textContent = '✅ 审核链全部完成（' + AUDIT_STEPS.length + ' 步）· ' + reportProjectLabel() + tail;

@@ -181,6 +181,8 @@ page.on("request", (r) => {
   if (m) tokenCalls.push(decodeURIComponent(m[1]));
 });
 const dlgBefore2 = dialogs.length;
+// 缩短轮询等待时间：mock 固定响应不会变，避免等满 30s
+await page.evaluate(() => { window.__AUDIT_POLL_OPTS__ = { maxWaitMs: 400, intervalMs: 100 }; });
 await page.click("#report-audit");
 await page.waitForTimeout(8000);
 const rstat3 = await page.$eval("#report-status", (e) => e.textContent.trim());
