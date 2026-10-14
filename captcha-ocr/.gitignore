@@ -1,0 +1,10 @@
+# 凭据与运行期状态，严禁入库
+accounts.json
+tokens.json
+captcha-budget.json
+samples/
+out/
+__pycache__/
+
+# 按用户要求：Python 原型脚本不入库（仅本地保留）
+*.py
