@@ -1841,7 +1841,7 @@
     //   ③ btc-zhj：检测结果报告单 理化审核通过       POST /api/projectJcbgLastAffixNew/audit  {…,type:当前节点,isPass:'1'}   （单对象！）
     //   ④ btc-gxz：检测结果报告单 理化签发通过       POST /api/projectJcbgLastAffixNew/audit  {…,type:当前节点,isPass:'1'}   （单对象！）
     //
-    // ⚠⚠ 实测结论（2026-10-15 真机验证，见 HANDOFF-数据报告审核.md）：
+    // ⚠⚠ 实测结论（2026-10-15 真机验证，见 交接文档-现状总览.md §2.1）：
     //   1) 通过类接口是 **`audit`（单个对象 body）**，**不是 `auditAll`**（auditAll 传数组 → HTTP 400）。
     //   2) `type` **必须取「该流程当前节点号」**，来源是 **`getAffix` 返回的 `type`**，不是列表行的 `status`：
     //        · jcdg 的列表 `projectJcdgLastAffixNew` 里 status 恒为 "0"（**不可用**）；
@@ -1852,6 +1852,10 @@
     //      6=理化签发 7=职卫签发 8=签发 9=第三方审核 10=签章 11=批准。
     //      流程节点序列见 `/api/ohitBusinessProcess`（type=8 检测底稿 = "0"；type=3 报告单 = "2,6"）。
     //   5) 每步通过后节点会推进，所以**下一步前重新调 getAffix** 取新节点号。
+    //   6) ★★ 第①步「提交审复核」是**一次提交两条流程**：检测底稿(jcdg) **和** 检测报告单(jcbg) 一起提交
+    //      （平台返回 body.msg 形如「检测底稿提交成功！;检测报告提交成功」，前端只弹一次通知）。
+    //      ⚠ 若提交后只等 jcdg 就绪就往下走，第③步对 jcbg 审批时会报「该流程已无待审的检测记录」
+    //      （jcbg 还没提交完/未流转到位）。**必须等两条 getAffix 都出现待审记录**再继续 → pollBothNodesReady()。
     const AUDIT_STEPS = [
       { kind: 'submitJcdg', account: 'btc-jyg', label: '提交审复核（检测底稿）' },
       { kind: 'auditJcdg', account: 'btc-wcy', label: '检测底稿 理化复核通过' },
@@ -1876,28 +1880,17 @@
     }
 
     // 审批相关接口：list = 提交审复核后轮询用；affix = 读**当前节点号**；audit = 单对象通过
+    // ⚠ kind 既可能是 'jcdg'/'jcbg'（简写，如 pollBothNodesReady 里），也可能是 'auditJcdg'/'auditJcbg'
+    //   （AUDIT_STEPS 的 kind）。两种都要能正确映射，否则 'jcdg' 会误落到 jcbg 分支。
     function auditPaths(kind) {
-      return kind === 'auditJcdg'
+      const isJcdg = kind === 'auditJcdg' || kind === 'jcdg';
+      return isJcdg
         ? { list: '/api/projectJcdgLastAffixNew',
             affix: '/api/projectJcdgLastAffixNew/getAffix',
             audit: '/api/projectJcdgLastAffixNew/audit' }
         : { list: '/api/projectJcbgLastAffixNew',
             affix: '/api/projectJcbgLastAffix/getAffix',
             audit: '/api/projectJcbgLastAffixNew/audit' };
-    }
-
-    // 按项目编号在审批列表里读该项目的**当前**行（含 status / id）——仅用于提交审复核后的轮询
-    async function readApprovalRow(bearer, org, listPath, code) {
-      const r = await apiRequest('GET',
-        listPath + '?pageNumber=1&pageSize=50&code=' + encodeURIComponent(String(code || '').trim()),
-        { token: bearer, orgId: org, timeout: 60000 });
-      if (r.status !== 200) throw new Error('读取审批列表失败(HTTP ' + r.status + ')');
-      const rows = (r.data && r.data.body && r.data.body.records) || [];
-      const up = String(code || '').trim().toUpperCase();
-      for (let i = 0; i < rows.length; i++) {
-        if (String(rows[i].code || '').trim().toUpperCase() === up) return rows[i];
-      }
-      return null;
     }
 
     // 读某流程「当前节点号」：GET getAffix {belongProject} → body[0].type（+ isOver）
@@ -1910,6 +1903,35 @@
       const rows = (r.data && r.data.body) || [];
       if (!rows.length) return null;
       return { type: rows[0].type, isOver: rows[0].isOver, id: rows[0].id };
+    }
+
+    // ★ 提交审复核后，**检测底稿(jcdg) 与 检测报告单(jcbg) 是「一起提交」的**
+    //   （前端点一次「提交审复核」，平台返回 body.msg 形如
+    //    「检测底稿提交成功！;检测报告提交成功」——两条一起）。
+    //   因此下一步(②)之前，必须**两条流程都已生成待审记录**才能继续，
+    //   否则等到后面 ③ 用 jcbg 审批时会报「该流程已无待审的检测记录」。
+    //   本函数轮询等待：jcdg 与 jcbg 的 getAffix **都**出现 type（即都存在待审记录）。
+    //   返回 { ready, jcdg, jcbg, waited }；超时未齐则 ready=false（附带各自最新节点，便于提示）。
+    async function pollBothNodesReady(bearer, org, projectId, opts) {
+      opts = opts || {};
+      const maxWait = opts.maxWaitMs || 60000;
+      const interval = opts.intervalMs || 2000;
+      const jcdgAffix = auditPaths('jcdg').affix;
+      const jcbgAffix = auditPaths('jcbg').affix;
+      const start = Date.now();
+      let jn = null, bn = null;
+      while (true) {
+        // 两个流程各自读一次；任一读失败不致命（当作还没就绪）
+        try { jn = await readAffixNode(bearer, org, jcdgAffix, projectId); } catch (e) { jn = null; }
+        try { bn = await readAffixNode(bearer, org, jcbgAffix, projectId); } catch (e) { bn = null; }
+        if (jn && bn) {
+          return { ready: true, jcdg: jn, jcbg: bn, waited: Date.now() - start };
+        }
+        if (Date.now() - start >= maxWait) {
+          return { ready: false, jcdg: jn, jcbg: bn, waited: Date.now() - start };
+        }
+        await new Promise(function (res) { setTimeout(res, interval); });
+      }
     }
 
     // 轮询等待「当前节点号」变化：通过后反复读 getAffix，直到 type 变了 / body 消失 / isOver 变 1（最多等 30s）
@@ -2168,10 +2190,8 @@
           const tk = await fetchBridgeToken(step.account);
 
           if (step.kind === 'submitJcdg') {
-            const ap = auditPaths('jcdg');
-            // 先读当前 status，用于后续轮询判断状态是否已流转
-            const beforeRow = await readApprovalRow(tk.token, tk.orgId, ap.list, selectedProject.code);
-            const oldStatus = beforeRow ? beforeRow.status : null;
+            // ★ 「提交审复核」一次会**同时提交 检测底稿 + 检测报告单**（平台返回的 body.msg 含两条），
+            //   所以下面必须等**两条流程都生成待审记录**再进下一步，否则后面对 jcbg 的审批会「无待审记录」。
             const r = await apiRequest('POST', '/api/projectJcdgLastAffixNew/submitJcdgReview', {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
               json: { belongProject: selectedProject.id },
@@ -2180,28 +2200,49 @@
               throw new Error('「' + step.label + '」（' + step.account + '）失败：'
                 + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120))));
             }
+            // 平台返回的提交结果文案（形如「检测底稿提交成功！;检测报告提交成功」）直接透出，便于核对
             const b = r.data && r.data.body;
-            if (b && b.msg) msgs.push(step.label + '：' + b.msg);
-            // 轮询等待流程产生待审记录（getAffix 出现 type）最多 30s，每 2s 查一次
-            if (el.status) el.status.textContent = '等待状态流转中…' + tag + '（' + step.account + ' · ' + step.label + '）';
-            const poll = await pollNodeChange(tk.token, tk.orgId, ap.affix, selectedProject.id, null, pollOpts);
-            if (!poll.changed) {
-              msgs.push(step.label + '：状态流转等待超时（' + (poll.waited / 1000).toFixed(1) + 's），继续下一步');
+            const submitMsg = b && (b.msg || b.message);
+            if (submitMsg) msgs.push(step.label + '：' + b.prjCode + ':' + submitMsg);
+            // ★ 等待 jcdg 与 jcbg **两条**待审记录都就绪（最多 60s，每 2s 一次）
+            if (el.status) el.status.textContent = '等待「检测底稿 + 检测报告单」都提交完成…' + tag + '（' + step.account + '）';
+            const poll = await pollBothNodesReady(tk.token, tk.orgId, selectedProject.id, pollOpts);
+            if (!poll.ready) {
+              const miss = [];
+              if (!poll.jcdg) miss.push('检测底稿');
+              if (!poll.jcbg) miss.push('检测报告单');
+              // 两条没齐就继续往下走，后面对应步骤会给出更具体的报错；这里先把警示记进 messages
+              msgs.push(step.label + '：⚠ 等待 ' + (poll.waited / 1000).toFixed(1)
+                + 's 后 ' + miss.join(' / ') + ' 仍无待审记录（本步可能未生效）');
             } else {
-              msgs.push(step.label + '：待审记录已生成（等待 ' + (poll.waited / 1000).toFixed(1) + 's）');
+              msgs.push(step.label + '：✅ 检测底稿（节点 ' + nodeName(poll.jcdg.type)
+                + '）+ 检测报告单（节点 ' + nodeName(poll.jcbg.type) + '）均已就绪（等待 '
+                + (poll.waited / 1000).toFixed(1) + 's）');
             }
           } else {
             const ap = auditPaths(step.kind);
             // 当前节点号必须**每次重新读 getAffix**（上一步通过后节点会推进）
-            const node = await readAffixNode(tk.token, tk.orgId, ap.affix, selectedProject.id);
+            let node = await readAffixNode(tk.token, tk.orgId, ap.affix, selectedProject.id);
+            // 若暂未读到待审记录，先短轮询等待（最多 ~20s）——避免因平台状态机/提交流转延迟而误判
+            if (!node) {
+              const waitMs = pollOpts.nodeWaitMs || 20000;
+              const waitInt = pollOpts.intervalMs || 2000;
+              const t0 = Date.now();
+              while (!node && Date.now() - t0 < waitMs) {
+                await new Promise(function (res) { setTimeout(res, waitInt); });
+                try { node = await readAffixNode(tk.token, tk.orgId, ap.affix, selectedProject.id); } catch (e) { node = null; }
+              }
+            }
             if (!node) {
               // 该流程已无待审记录：若这是链尾，视为已完成；否则报错
               if (i === AUDIT_STEPS.length - 1) {
                 msgs.push(step.label + '：该流程已无待审记录（视为已完成）');
                 break;
               }
-              throw new Error('「' + step.label + '」（' + step.account + '）：该流程已无待审的检测记录'
-                + '——上一步可能尚未生效，或该项目本就不在该节点');
+              const hint = step.kind === 'auditJcbg'
+                ? '——检测报告单可能尚未提交成功（第①步「提交审复核」会同时提交检测底稿与检测报告单，需两条都就绪）'
+                : '——上一步可能尚未生效，或该项目本就不在该节点';
+              throw new Error('「' + step.label + '」（' + step.account + '）：该流程已无待审的检测记录' + hint);
             }
             const oldType = node.type;
             const r = await apiRequest('POST', ap.audit, {

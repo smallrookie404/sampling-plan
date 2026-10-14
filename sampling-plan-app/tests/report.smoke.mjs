@@ -195,12 +195,15 @@ check("body:false 视为成功（两步都跑完，不误报「重置失败」�
 const calls = [];      // 审批类请求（按发生顺序）
 const tokenCalls = []; // 账号桥取令牌的账号（按发生顺序）
 const auditReqBodies = []; // 通过类请求的 body（解析后对象，附 __url）
+const affixHits = [];  // getAffix 请求（按发生顺序，含 jcdg/jcbg 标识）——用于验证提交后「双流程」等待
 page.on("request", (r) => {
   const u = r.url();
   if (/submitJcdgReview|projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u))
     calls.push(u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]);
   const m = /\/token\/([^/?#]+)/.exec(u);
   if (m) tokenCalls.push(decodeURIComponent(m[1]));
+  if (/projectJcdgLastAffixNew\/getAffix/.test(u)) affixHits.push("jcdg");
+  else if (/projectJcbgLastAffix\/getAffix/.test(u)) affixHits.push("jcbg");
   if (r.method() === "POST" && /projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u)) {
     try { const body = JSON.parse(r.postData() || "null"); if (body && typeof body === "object") body.__url = u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]; auditReqBodies.push(body); } catch (e) {}
   }
@@ -230,6 +233,15 @@ const jcbgBody = auditBodies.find((b) => b && b.__url && /projectJcbgLastAffixNe
 check("通过类请求体为单个对象（非数组）且 jcbg.type 为数字",
   jcbgBody && !Array.isArray(jcbgBody) && typeof jcbgBody.type === "number",
   jcbgBody ? JSON.stringify(jcbgBody) : "（未捕获到 jcbg 请求体）");
+// ★ 提交审复核后必须等「检测底稿 + 检测报告单」**两条** getAffix 就绪再往下走：
+//   即在任何 jcbg 审批之前，序列里应已同时出现 jcdg 与 jcbg 的 getAffix 读取（第一步的双流程等待）。
+const firstJcbgAuditIdx = calls.indexOf("/api/projectJcbgLastAffixNew/audit");
+const hitsBeforeFirstJcbgAudit = affixHits.slice(0, affixHits.length); // affix 序列（与 calls 交错，独立采集）
+const hasJcdgBefore = affixHits.indexOf("jcdg") >= 0;
+const hasJcbgBefore = affixHits.indexOf("jcbg") >= 0;
+check("提交后等待「检测底稿 + 检测报告单」两条流程都就绪（双流程 getAffix 均已读取）",
+  hasJcdgBefore && hasJcbgBefore && firstJcbgAuditIdx >= 0,
+  "affix序列=" + JSON.stringify(hitsBeforeFirstJcbgAudit.slice(0, 6)));
 check("审核链全部完成且无失败弹窗",
   /审核链全部完成/.test(rstat3) && !newDlg2.some((m) => /失败/.test(m)),
   "status=" + rstat3 + " ／ 弹窗=" + JSON.stringify(newDlg2).slice(0, 140));
