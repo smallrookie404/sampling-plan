@@ -1698,6 +1698,13 @@
       noiseTabBtnEl.innerHTML = on ? '数据加载中<span class="spinner"></span>' : '噪声数据结果';
     }
 
+    // 状态行里的项目标识：项目代码 + 企业名称（有则显示，形如「项目 BTC26-SZJC0971（浙江省黄岩服装机械厂）」）
+    function noiseProjectLabel() {
+      const code = (selectedProject && selectedProject.code) || '';
+      const ent = (selectedProject && selectedProject.belongInspectName) || '';
+      return '项目 ' + code + (ent ? '（' + ent + '）' : '');
+    }
+
     // 加载并展示噪声数据结果：项目取「数据上传」中选用的项目
     async function loadNoiseResult(force) {
       const box = document.getElementById('noise-table-box');
@@ -1721,7 +1728,7 @@
       if (!force && noiseCache && noiseCache.projectId === pid) {
         if (empty) empty.classList.add('hidden');
         renderNoiseTable(box, noiseCache.data);
-        if (status) status.textContent = '项目 ' + (selectedProject.code || '') + ' · 共 ' + Math.max(0, noiseCache.data.rows.length - 1) + ' 行';
+        if (status) status.textContent = noiseProjectLabel() + ' · 共 ' + Math.max(0, noiseCache.data.rows.length - 1) + ' 行';
         enterNoisePanel();   // 数据已就绪 → 允许进入
         return;
       }
@@ -1767,7 +1774,7 @@
         };
         noiseCache = { projectId: pid, data: data };
         renderNoiseTable(box, data);
-        if (status) status.textContent = '项目 ' + (selectedProject.code || '') + ' · 共 ' + Math.max(0, data.rows.length - 1) + ' 行';
+        if (status) status.textContent = noiseProjectLabel() + ' · 共 ' + Math.max(0, data.rows.length - 1) + ' 行';
         enterNoisePanel();   // 数据就绪 → 首次进入该页签
       } catch (e) {
         box.innerHTML = '';

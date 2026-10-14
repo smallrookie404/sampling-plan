@@ -689,14 +689,11 @@
     }
     const btn = $('btn-pjbg');
     const old = btn ? btn.textContent : '';
-    const t0 = Date.now();
-    let reused = false;
     try {
       const cached = typeof api.getPjbgCache === 'function' ? api.getPjbgCache(ctx.project.id) : null;
       let g;
       if (cached && cached.buf) {
         // 复用「噪声数据结果」已下载的报告：只需做后处理（高毒物品 / 非噪声岗位），秒级完成
-        reused = true;
         if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
         setStatus('正在复用「噪声数据结果」已生成的报告…');
         g = {
@@ -715,8 +712,9 @@
       saveBlobAs(new Blob([g.buf], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       }), name);
-      const sec = ((Date.now() - t0) / 1000).toFixed(1);
-      setStatus((reused ? '已复用报告缓存，' : '已生成，') + '耗时 ' + sec + 's：' + name);
+      // 生成成功后不再显示「已复用报告缓存，耗时 Xs：<文件名>」这类长文案（用户要求去掉）；
+      // 同时清掉「正在生成报告…」进度提示，避免残留。文件已自动下载，无需文字确认。
+      setStatus('');
     } catch (e) {
       console.error(e);
       setStatus('生成检评报告失败：' + (e && e.message ? e.message : e), true);
