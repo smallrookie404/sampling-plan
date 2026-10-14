@@ -3179,6 +3179,13 @@
       activeTab = t.dataset.tab;
       document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + activeTab));
+      // 离开「数据报告处理」页签时，关闭内嵌 PDF 预览并解除整页滚动
+      if (activeTab !== "report") {
+        if (window.SamplingUpload && typeof window.SamplingUpload.hideReportPdf === "function") {
+          window.SamplingUpload.hideReportPdf();
+        }
+        document.body.classList.remove("pdf-open");
+      }
       if (activeTab === "hazard") renderHazard();
       if (activeTab === "survey" && window.SurveySheets) window.SurveySheets.refresh();
       if (activeTab === "main") renderWindow();

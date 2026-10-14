@@ -2026,6 +2026,8 @@
     function refreshReportPanel() {
       const el = reportEls();
       if (!el.empty) return;
+      // 切换项目 / 清空选择时，隐藏并释放上一次的报告 PDF 预览
+      try { if (typeof hideReportPdf === 'function') hideReportPdf(); } catch (e) {}
       if (!selectedProject || !selectedProject.id) {
         el.empty.textContent = '尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再进行数据报告处理。';
         el.empty.classList.remove('hidden');
@@ -2035,17 +2037,9 @@
       }
       el.empty.classList.add('hidden');
       if (el.info) {
-        el.info.classList.remove('hidden');
-        el.info.innerHTML = '<b>' + esc(reportProjectLabel()) + '</b>'
-          + '<div class="report-sub">回退将依次以 '
-          + RESET_STEPS.map(function (s) { return esc(s.account) + ' 身份重置 ' + esc(s.label) + '（' + s.process + '）'; }).join(' → ')
-          + ' · 回退前会先在「已完结」项目中定位该项目'
-          + (selectedProject.status !== undefined && selectedProject.status !== null
-            ? ' · 当前审批状态：' + esc(String(selectedProject.status)) + '（' + esc(nodeName(selectedProject.status)) + '）' : '')
-          + '</div>'
-          + '<div class="report-sub">审核将依次执行 ' + AUDIT_STEPS.length + ' 步：'
-          + AUDIT_STEPS.map(function (s, i) { return (i + 1) + '. ' + esc(s.account) + ' ' + esc(s.label); }).join('　')
-          + '</div>';
+        // 已按要求去除面板内的文字说明，仅保留工具栏与状态栏
+        el.info.innerHTML = '';
+        el.info.classList.add('hidden');
       }
       if (el.status) el.status.textContent = '';
     }
@@ -2281,12 +2275,80 @@
         alert('数据报告审核完成（已依次执行 ' + AUDIT_STEPS.length + ' 步：'
           + AUDIT_STEPS.map(function (s) { return s.account; }).join(' → ') + '）。\n'
           + reportProjectLabel() + (tail ? '\n' + tail : ''));
+        // ★ 审核成功后，自动在下方显示该项目的「审批完结检测结果报告单」PDF（原「查看数据报告」按钮的功能）
+        if (el.status) el.status.textContent = '✅ 审核链全部完成，正在加载项目数据报告…';
+        try {
+          await showFinalReportPdf({ quiet: true });
+        } catch (e) {
+          if (el.status) el.status.textContent = '✅ 审核链全部完成，但项目数据报告加载失败：' + (e && e.message ? e.message : e);
+        }
       } catch (e) {
         if (el.status) el.status.textContent = '❌ 审核失败（已完成 ' + msgs.length + ' 步）：' + e.message;
         alert('数据报告审核失败：' + e.message);
       } finally {
         if (btn) { btn.disabled = false; btn.textContent = old || '数据报告审核'; }
       }
+    }
+
+    // ★ 显示「审批完结检测结果报告单」：即平台「初版原始记录管理 → 检测结果报告单 → 审批完结」标签下
+    //   显示的那份 PDF。来源 = projectJcbgLastAffix/getAffix 的 body[0].jcbgAffix
+    //   （审批链走到「签发」完结后，该路径为 …/review/xxx_检测报告_签发.pdf）。
+    //   用当前会话令牌直连平台取路径。
+    //   ★ 展示方式：**在当前页面下方内嵌 iframe 显示**（不新开标签页）。
+    //   opts.quiet：静默模式——失败/未完结时只写状态栏、不弹 alert（供审核成功后自动调用）。
+    let reportPdfObjUrl = null;
+    function hideReportPdf() {
+      const box = document.getElementById('report-pdf-box');
+      const wrap = document.getElementById('report-pdf-frame-wrap');
+      if (wrap) wrap.innerHTML = '';
+      if (box) box.classList.add('hidden');
+      try { document.body.classList.remove('pdf-open'); } catch (e) {}
+      if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} reportPdfObjUrl = null; }
+    }
+    // 取「审批完结检测结果报告单」并内嵌显示。返回 { ok, fname, isOver } 或抛错。
+    async function showFinalReportPdf(opts) {
+      opts = opts || {};
+      const el = reportEls();
+      const r = await apiRequest('GET',
+        auditPaths('jcbg').affix + '?belongProject=' + encodeURIComponent(String(selectedProject.id)),
+        { token: token, orgId: orgId, timeout: 60000 });
+      if (r.status !== 200) throw new Error('读取检测结果报告单失败(HTTP ' + r.status + ')');
+      const rows = (r.data && r.data.body) || [];
+      if (!rows.length) throw new Error('该项目的「检测结果报告单」流程无记录');
+      const row = rows[0];
+      if (!row.jcbgAffix) throw new Error('该项目尚无「检测结果报告单」文件（可能未提交/未生成）');
+      const isOver = String(row.isOver) === '1';
+      // jcbgAffix 形如 /src/ohit/jcbgReport/.../xxx_检测报告_签发.pdf —— 逐段编码以兼容中文路径
+      const url = API_BASE + String(row.jcbgAffix).split('/').map(encodeURIComponent).join('/');
+      const fname = String(row.jcbgAffix).split('/').pop() || '检测结果报告单.pdf';
+      if (!isOver && !opts.quiet) {
+        alert('该项目「检测结果报告单」尚未审批完结（当前节点：' + nodeName(row.type) + '）。\n'
+          + '仍将显示当前报告文件，如需「审批完结」版请先跑完审核链（或等待其余节点审批）。\n\n' + fname);
+      }
+      // 平台下载接口用 Authorization 头鉴权，iframe 直开带不了头 → 先 fetch 成 blob，再内嵌 blob URL
+      if (el.status) el.status.textContent = '正在加载报告 PDF…' + fname;
+      const resp = await fetch(url, { headers: token ? { Authorization: token } : {} });
+      if (!resp.ok) throw new Error('下载报告失败(HTTP ' + resp.status + ')');
+      const blob = await resp.blob();
+      // 释放上一次的 blob URL
+      if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} }
+      reportPdfObjUrl = URL.createObjectURL(blob);
+      // 内嵌显示在「数据报告审核」页面下方
+      const box = document.getElementById('report-pdf-box');
+      const wrap = document.getElementById('report-pdf-frame-wrap');
+      if (wrap) {
+        wrap.innerHTML = '';
+        const fr = document.createElement('iframe');
+        fr.src = reportPdfObjUrl;
+        fr.title = '审批完结检测结果报告单';
+        wrap.appendChild(fr);
+      }
+      if (box) { box.classList.remove('hidden'); }
+      // 让整个页面可纵向滚动，方便把 PDF 区域继续往上滚查看
+      try { document.body.classList.add('pdf-open'); } catch (e) {}
+      try { box && box.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
+      if (el.status) el.status.textContent = '✅ 已在下方显示审批完结检测结果报告单：' + fname;
+      return { ok: true, fname: fname, isOver: isOver };
     }
 
     const reportTabBtn = document.querySelector('.tab[data-tab="report"]');
@@ -2407,6 +2469,8 @@
       refreshReportPanel: refreshReportPanel,
       resetReportApproval: resetReportApproval,
       auditReport: auditReport,
+      showFinalReportPdf: showFinalReportPdf,
+      hideReportPdf: hideReportPdf,
       // 解析**检评报告** docx 中「噪声检测结果分析与评价」标题下的表（供测试/复用）
       parseNoiseTable: parsePjbgNoiseTableFromDocx,
       // 渲染噪声表（供测试/复用）

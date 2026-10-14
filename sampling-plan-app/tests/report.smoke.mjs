@@ -89,7 +89,11 @@ await page.route("**/api/projectJcdgLastAffix*", (route) =>
 await page.route("**/api/projectJcdgLastAffixNew/getAffix*", (route) =>
   route.fulfill(j({ code: "200", body: affixState.jcdg == null ? [] : [{ id: 6255, type: affixState.jcdg, isOver: "0" }] })));
 await page.route("**/api/projectJcbgLastAffix/getAffix*", (route) =>
-  route.fulfill(j({ code: "200", body: affixState.jcbg == null ? [] : [{ id: 6198, type: affixState.jcbg, isOver: affixState.jcbgOver ? "1" : "0" }] })));
+  route.fulfill(j({ code: "200", body: affixState.jcbg == null ? [] : [{
+    id: 6198, type: affixState.jcbg, isOver: affixState.jcbgOver ? "1" : "0",
+    // 「审批完结检测结果报告单」PDF 路径（签发版）——供「查看审批完结检测结果报告单」用
+    jcbgAffix: "/src/ohit/jcbgReport/913310020555095418/jcbg/BTC26-SZJC0959-x/review/BTC26-SZJC0959_检测报告_签发.pdf",
+  }] })));
 // audit 被调用后推进 mock 节点状态（供下一次 getAffix 读到新节点）
 page.on("request", (r) => {
   const u = r.url();
@@ -127,11 +131,13 @@ await page.waitForTimeout(300);
 const panelActive = await page.$eval("#tab-report", (el) => el.classList.contains("active"));
 check("点击后 #tab-report 激活", panelActive);
 
-// 3) 两个按钮存在且可见
+// 3) 只剩「数据报告回退」「数据报告审核」两个按钮；「查看…报告单」按钮已移除
 const resetVisible = await page.isVisible("#report-reset");
 const auditVisible = await page.isVisible("#report-audit");
+const viewFinalExists = await page.$("#report-view-final");
 check("「数据报告回退」按钮可见", resetVisible);
 check("「数据报告审核」按钮可见", auditVisible);
+check("「查看…报告单」按钮已移除（审核成功自动显示）", viewFinalExists === null);
 
 // 4) 未选项目时显示空态提示
 const emptyText = await page.$eval("#report-empty", (el) => el.textContent.trim());
@@ -211,6 +217,14 @@ page.on("request", (r) => {
 const dlgBefore2 = dialogs.length;
 // 缩短轮询等待时间：mock 固定响应不会变，避免等满 30s
 await page.evaluate(() => { window.__AUDIT_POLL_OPTS__ = { maxWaitMs: 400, intervalMs: 100 }; });
+// ★ 审核成功后会自动加载「审批完结检测结果报告单」PDF：
+//   mock 报告 PDF 路径的下载请求返回一个最小 PDF；劫持 window.open 以确认**未被调用**（内嵌而非新开标签页）
+await page.route("**/src/ohit/**", (route) =>
+  route.fulfill({ status: 200, contentType: "application/pdf", body: "%PDF-1.4\n%mock\n" }));
+await page.evaluate(() => {
+  window.__openedUrls = [];
+  window.open = (u) => { window.__openedUrls.push(String(u)); return null; };
+});
 await page.click("#report-audit");
 await page.waitForTimeout(8000);
 const rstat3 = await page.$eval("#report-status", (e) => e.textContent.trim());
@@ -242,9 +256,48 @@ const hasJcbgBefore = affixHits.indexOf("jcbg") >= 0;
 check("提交后等待「检测底稿 + 检测报告单」两条流程都就绪（双流程 getAffix 均已读取）",
   hasJcdgBefore && hasJcbgBefore && firstJcbgAuditIdx >= 0,
   "affix序列=" + JSON.stringify(hitsBeforeFirstJcbgAudit.slice(0, 6)));
+// 审核链完成的标志：完成弹窗出现 且 无失败弹窗（状态栏随后会被「已显示报告 PDF」覆盖，故改用弹窗判断）
 check("审核链全部完成且无失败弹窗",
-  /审核链全部完成/.test(rstat3) && !newDlg2.some((m) => /失败/.test(m)),
+  newDlg2.some((m) => /数据报告审核完成/.test(m)) && !newDlg2.some((m) => /失败/.test(m)),
   "status=" + rstat3 + " ／ 弹窗=" + JSON.stringify(newDlg2).slice(0, 140));
+
+// 9) 审核成功后：应**自动**在页面下方内嵌 iframe 显示该项目的「审批完结检测结果报告单」PDF
+//    （原「查看…报告单」按钮已移除；mock PDF 路由与 window.open 劫持已在上面注册）
+const openedUrls = await page.evaluate(() => window.__openedUrls || []);
+const newDlg3 = newDlg2;  // 审核段的弹窗
+const pdfBoxVisible = await page.isVisible("#report-pdf-box");
+const pdfIframeSrc = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
+const rstatAuditEnd = rstat3;
+check("审核成功后自动在页面下方内嵌 iframe 显示 PDF（不新开标签页）",
+  pdfBoxVisible && pdfIframeSrc.startsWith("blob:") && openedUrls.length === 0
+    && /已在下方显示.*检测结果报告单/.test(rstatAuditEnd) && !newDlg3.some((m) => /失败/.test(m)),
+  "boxVisible=" + pdfBoxVisible + " iframeSrc=" + String(pdfIframeSrc).slice(0, 24)
+    + " opened=" + JSON.stringify(openedUrls) + " ／ status=" + rstatAuditEnd.slice(0, 70));
+
+// 10) 打开 PDF 后：整个页面（PDF 之外）应可纵向滚动，且能把 PDF 顶部一路滚到浏览器顶部
+const scrollInfo = await page.evaluate(() => {
+  const box = document.getElementById("report-pdf-box");
+  const before = box ? Math.round(box.getBoundingClientRect().top) : null;
+  window.scrollTo(0, document.documentElement.scrollHeight);
+  const after = box ? Math.round(box.getBoundingClientRect().top) : null;
+  window.scrollTo(0, 0);
+  return {
+    hasClass: document.body.classList.contains("pdf-open"),
+    bodyOverflowY: getComputedStyle(document.body).overflowY,
+    scrollable: document.documentElement.scrollHeight > window.innerHeight,
+    topBefore: before,
+    topAfter: after,
+    docH: document.documentElement.scrollHeight,
+    winH: window.innerHeight,
+  };
+});
+check("打开 PDF 后整页可纵向滚动（body.pdf-open + 文档高于视口）",
+  scrollInfo.hasClass && scrollInfo.scrollable,
+  JSON.stringify(scrollInfo));
+// 滚动到底后，PDF 预览框顶部应能到达（或越过）浏览器视口顶部
+check("滚动条足够长：滚到底能把 PDF 顶部带到浏览器顶部",
+  scrollInfo.topAfter !== null && scrollInfo.topAfter <= 4,
+  "滚动前top=" + scrollInfo.topBefore + " 滚动到底top=" + scrollInfo.topAfter);
 
 await page.screenshot({ path: path.join(SHOT_DIR, "report-tab.png") });
 check("无控制台错误", errors.length === 0, errors.slice(0, 2).join(" ; "));

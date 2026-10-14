@@ -305,13 +305,16 @@
     <div class="grid-toolbar">
       <div class="left">
         <button id="report-reset" class="btn small danger" title="以 btc-gxz 身份重置「检测结果报告单」、再以 btc-wcy 身份重置「检测底稿」（两步顺序执行，需先运行 captcha-ocr/bridge.py 提供账号令牌）；回退前会先在该项目的「已完结」记录中定位（回退只对已完结项目有效）">数据报告回退</button>
-        <button id="report-audit" class="btn small" title="对「数据上传」中选中的项目执行「数据报告审核」：按顺序跑 4 步跨账号审批链——① btc-jyg 提交审复核（一次同时提交检测底稿+检测报告单，会等两条流程都生成待审记录）→ ② btc-wcy 检测底稿·理化复核通过 → ③ btc-zhj 检测结果报告单·理化审核通过 → ④ btc-gxz 检测结果报告单·理化签发通过；每步用各自账号的令牌（本地服务自动拉起账号桥 / 云端 Worker 提供），节点号由 getAffix 实时读取">数据报告审核</button>
+        <button id="report-audit" class="btn small" title="对「数据上传」中选中的项目执行「数据报告审核」：按顺序跑 4 步跨账号审批链——① btc-jyg 提交审复核（一次同时提交检测底稿+检测报告单，会等两条流程都生成待审记录）→ ② btc-wcy 检测底稿·理化复核通过 → ③ btc-zhj 检测结果报告单·理化审核通过 → ④ btc-gxz 检测结果报告单·理化签发通过；每步用各自账号的令牌（本地服务自动拉起账号桥 / 云端 Worker 提供），节点号由 getAffix 实时读取。审核成功后会自动在下方显示该项目的「审批完结检测结果报告单」PDF">数据报告审核</button>
         <span id="report-status" class="status"></span>
       </div>
     </div>
     <div class="report-wrap">
       <div id="report-empty" class="noise-empty">尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再进行数据报告处理。</div>
       <div id="report-info" class="report-info hidden"></div>
+    </div>
+    <div id="report-pdf-box" class="report-pdf-box hidden">
+      <div id="report-pdf-frame-wrap" class="report-pdf-frame-wrap"></div>
     </div>
   </section>
 
