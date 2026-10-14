@@ -1848,11 +1848,11 @@
       { kind: 'auditJcbg', account: 'btc-gxz', label: '检测结果报告单 审批通过（2/2）' },
     ];
 
-    // 审批列表接口：读「当前 status」用 list，提交通过用 audit（与平台 jcbg 的 list/audit 命名规律一致）
+    // 审批列表接口：读「当前 status」用 list，提交通过用 audit
     function auditPaths(kind) {
       return kind === 'auditJcdg'
-        ? { list: '/api/projectJcdgLastAffix', audit: '/api/projectJcdgLastAffixNew/auditAll' }
-        : { list: '/api/projectJcbgLastAffix', audit: '/api/projectJcbgLastAffixNew/auditAll' };
+        ? { list: '/api/projectJcdgLastAffixNew', audit: '/api/projectJcdgLastAffixNew/auditAll' }
+        : { list: '/api/projectJcbgLastAffixNew', audit: '/api/projectJcbgLastAffixNew/auditAll' };
     }
 
     // 按项目编号在审批列表里读该项目的**当前**行（含 status / id）
