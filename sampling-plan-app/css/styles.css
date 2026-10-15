@@ -140,11 +140,11 @@ body {
 /* PDF 打开时：让整个页面可纵向滚动（可把 PDF 区域继续往上滚看下方内容） */
 body.pdf-open { height: auto; min-height: 100%; display: block; overflow-y: auto; }
 body.pdf-open .tab-panel.active { min-height: auto; }
-/* PDF 打开时给预览区一个「接近满视口」的高度 + 顶部/底部留白，
-   保证有足够滚动距离把 PDF 顶部一路滚到浏览器顶部 */
+/* PDF 打开时给预览区一个「接近满视口」的高度；
+   底部只留一点点留白，使滚动条下拉区域仅比 PDF 内嵌窗口略长（避免多出一整屏空白） */
 body.pdf-open .report-pdf-box { height: calc(100vh - 24px); }
 body.pdf-open .report-pdf-frame-wrap { min-height: 0; }
-body.pdf-open #tab-report { padding-top: 4px; padding-bottom: calc(100vh - 80px); }
+body.pdf-open #tab-report { padding-top: 4px; padding-bottom: 12px; }
 .report-pdf-box.hidden { display: none; }
 .report-pdf-frame-wrap { flex: 1; min-height: 480px; }
 .report-pdf-frame-wrap iframe, .report-pdf-frame-wrap embed { width: 100%; height: 100%; min-height: 480px; border: 0; display: block; }

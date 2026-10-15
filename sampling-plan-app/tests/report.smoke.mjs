@@ -408,19 +408,25 @@ check("审核成功后自动在页面下方内嵌 iframe 显示当下流程中�
   "boxVisible=" + pdfBoxVisible + " iframeSrc=" + String(pdfIframeSrc).slice(0, 24)
     + " opened=" + JSON.stringify(openedUrls) + " ／ status=" + rstatAuditEnd.slice(0, 70));
 
-// 10) 打开 PDF 后：整个页面（PDF 之外）应可纵向滚动，且能把 PDF 顶部一路滚到浏览器顶部
+// 10) 打开 PDF 后：整个页面（PDF 之外）应可纵向滚动，且滚动条下拉区域只比 PDF 内嵌窗口略长
+//     （用户反馈：「主页面的滚动条下拉区域太长，只要超过 pdf 浏览的内嵌窗口一点就行」）
 const scrollInfo = await page.evaluate(() => {
   const box = document.getElementById("report-pdf-box");
   const before = box ? Math.round(box.getBoundingClientRect().top) : null;
   window.scrollTo(0, document.documentElement.scrollHeight);
   const after = box ? Math.round(box.getBoundingClientRect().top) : null;
+  const over = box ? Math.round(box.getBoundingClientRect().bottom) : null;
   window.scrollTo(0, 0);
   return {
     hasClass: document.body.classList.contains("pdf-open"),
     bodyOverflowY: getComputedStyle(document.body).overflowY,
     scrollable: document.documentElement.scrollHeight > window.innerHeight,
+    maxScroll: document.documentElement.scrollHeight - window.innerHeight,
     topBefore: before,
     topAfter: after,
+    // 滚到底时 PDF 框底部相对视口的偏移：正值表示框底部已进入视口（未被滚出），
+    // 反过来说 maxScroll 只比「框高」略大 → 下拉区域仅超出预览窗口一点点
+    boxBottomAfter: over,
     docH: document.documentElement.scrollHeight,
     winH: window.innerHeight,
   };
@@ -428,10 +434,11 @@ const scrollInfo = await page.evaluate(() => {
 check("打开 PDF 后整页可纵向滚动（body.pdf-open + 文档高于视口）",
   scrollInfo.hasClass && scrollInfo.scrollable,
   JSON.stringify(scrollInfo));
-// 滚动到底后，PDF 预览框顶部应能到达（或越过）浏览器视口顶部
-check("滚动条足够长：滚到底能把 PDF 顶部带到浏览器顶部",
-  scrollInfo.topAfter !== null && scrollInfo.topAfter <= 4,
-  "滚动前top=" + scrollInfo.topBefore + " 滚动到底top=" + scrollInfo.topAfter);
+// 滚到底时 PDF 框底部仍留在视口内（未被完全滚出）→ 下拉区域只比内嵌窗口略长
+check("滚动条下拉区域仅略超出 PDF 内嵌窗口（滚到底 PDF 框底仍在视口内，多余空白 < 120px）",
+  scrollInfo.boxBottomAfter !== null && scrollInfo.boxBottomAfter > -120 && scrollInfo.maxScroll < scrollInfo.winH,
+  "maxScroll=" + scrollInfo.maxScroll + " winH=" + scrollInfo.winH
+    + " 滚到底框底top=" + scrollInfo.boxBottomAfter);
 
 // 11) 「数据报告回退」成功后：与「数据报告审核」同一套界面/逻辑，自动在下方内嵌显示「检测结果报告单」PDF
 //     ★ 关键：回退会**清空 jcbg 审批链记录**（getAffix 变空），此时报告只能从「检测结果报告单本体」
