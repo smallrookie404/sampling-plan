@@ -408,6 +408,69 @@ check("审核成功后自动在页面下方内嵌 iframe 显示当下流程中�
   "boxVisible=" + pdfBoxVisible + " iframeSrc=" + String(pdfIframeSrc).slice(0, 24)
     + " opened=" + JSON.stringify(openedUrls) + " ／ status=" + rstatAuditEnd.slice(0, 70));
 
+// 9.5) ★ 断点续审（planAuditSteps 纯函数）：按两个流程的当下节点快照算出「还需执行哪些步骤」
+//   节点语义：jcdg 只有 "0"（理化复核）；jcbg 有 "2"（理化审核）→"6"（理化签发）。
+//   AUDIT_STEPS 下标：0=提交 1=jcdg理化复核 2=jcbg理化审核 3=jcbg理化签发。
+const planCases = await page.evaluate(() => {
+  const f = window.SamplingUpload && window.SamplingUpload.planAuditSteps;
+  if (typeof f !== "function") return null;
+  const n = (t) => (t === null ? null : { type: t, isOver: "0" });
+  return {
+    fresh: f({ jcdg: null, jcbg: null }),                        // 未提交 → 全 4 步
+    midJcbg6: f({ jcdg: null, jcbg: n("6") }),                   // 底稿已走完，报告单待签发 → 只 3
+    midJcdg0: f({ jcdg: n("0"), jcbg: n("2") }),                 // 底稿待复核 + 报告单待审核 → 1,2
+    half: f({ jcdg: null, jcbg: n("2") }),                       // 底稿已走完，报告单待审核 → 只 2
+    unknownJcdg: f({ jcdg: n("4"), jcbg: n("2") }),              // 底稿在「职卫复核」（链外）→ 中止
+    unknownJcbg: f({ jcdg: n("0"), jcbg: n("9") }),              // 报告单在「第三方审核」（链外）→ 中止
+  };
+});
+check("断点续审规划：仅在链路内推进，跳过已完成步骤；链外节点中止",
+  planCases
+    && JSON.stringify(planCases.fresh.indices) === "[0,1,2,3]" && planCases.fresh.unknowns.length === 0
+    && JSON.stringify(planCases.midJcbg6.indices) === "[3]" && planCases.midJcbg6.unknowns.length === 0
+    && JSON.stringify(planCases.midJcdg0.indices) === "[1,2]" && planCases.midJcdg0.unknowns.length === 0
+    && JSON.stringify(planCases.half.indices) === "[2]" && planCases.half.unknowns.length === 0
+    && planCases.unknownJcdg.indices.length === 0 && planCases.unknownJcdg.unknowns.length === 1
+    && planCases.unknownJcbg.indices.length === 0 && planCases.unknownJcbg.unknowns.length === 1,
+  JSON.stringify(planCases));
+
+// 9.6) ★ 断点续审（端到端）：项目**已在链路中途**（底稿待理化复核 / 报告单待理化签发），
+//   点「数据报告审核」应**只执行未完成的步骤**（② jcdg 理化复核 + ④ jcbg 理化签发），
+//   **不重复调提交接口、不调已完成节点的审批**。
+const dlgBeforeResume = dialogs.length;
+const callsResume = [];
+page.on("request", (r) => {
+  const u = r.url();
+  if (/submitJcdgReview|reportFile\/submitJcbgReview|projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u))
+    callsResume.push(u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]);
+});
+// 造出「项目已在链中途」的平台状态：底稿停在理化复核(0)、报告单停在理化签发(6)
+affixState.jcdg = "0";
+affixState.jcbg = "6";
+affixState.jcbgOver = false;
+await page.click("#report-audit");
+await page.waitForTimeout(6000);
+const newDlgResume = dialogs.slice(dlgBeforeResume);
+const expectResume = [
+  "/api/projectJcdgLastAffixNew/audit",   // ② 底稿 理化复核（仅此一步，且不重复提交）
+  "/api/projectJcbgLastAffixNew/audit",   // ④ 报告单 理化签发
+];
+check("断点续审端到端：链中途只执行未完成步骤（不重复提交、不重审已完成节点）",
+  JSON.stringify(callsResume) === JSON.stringify(expectResume),
+  JSON.stringify(callsResume));
+check("断点续审完成弹窗标注「跳过已完成」且无失败",
+  newDlgResume.some((m) => /数据报告审核完成/.test(m) && /跳过/.test(m))
+    && !newDlgResume.some((m) => /失败/.test(m)),
+  JSON.stringify(newDlgResume).slice(0, 200));
+// 复位：后续不受影响
+affixState.jcdg = null;
+affixState.jcbg = null;
+affixState.jcbgOver = false;
+await page.waitForFunction(() => {
+  const b = document.getElementById("report-audit");
+  return b && !b.disabled;
+}, null, { timeout: 20000 });
+
 // 10) 打开 PDF 后：整个页面（PDF 之外）应可纵向滚动，且滚动条下拉区域只比 PDF 内嵌窗口略长
 //     （用户反馈：「主页面的滚动条下拉区域太长，只要超过 pdf 浏览的内嵌窗口一点就行」）
 const scrollInfo = await page.evaluate(() => {

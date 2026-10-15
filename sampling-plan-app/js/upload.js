@@ -1870,6 +1870,61 @@
       { kind: 'auditJcbg', account: 'btc-gxz', label: '检测结果报告单 理化签发通过' },
     ];
 
+    // ★★ 断点续审：**只审预设链路内的节点**，且**跳过已经走完的步骤**。
+    //   平台里两个流程的节点序列（GET /api/ohitBusinessProcess）：
+    //     · 检测底稿   type=8 → "0"      （唯一节点：理化复核）
+    //     · 检测报告单 type=3 → "2,6"    （理化审核 → 理化签发）
+    //   把「节点号」映射回本工具的步骤索引（AUDIT_STEPS 的下标）：
+    //     0 = 提交审复核（该步无节点号，靠「两条流程是否已有待审记录」判断）
+    //     1 = jcdg 节点 0（理化复核）
+    //     2 = jcbg 节点 2（理化审核）
+    //     3 = jcbg 节点 6（理化签发）
+    //   作用：如果项目**已经在链路中途**（别人/上次已把前面几步走完，或本工具上次只跑到一半），
+    //   点「数据报告审核」时不再从头执行，也不再因「该流程已无待审的检测记录」直接失败。
+    //   ⚠ 若某流程的当前节点号**不在**上面的映射里（如职卫复核 4 / 第三方审核 9 / 签章 10），
+    //     说明项目走的是本工具未覆盖的分支 → **停下并提示**，绝不乱动平台状态。
+    const JCDG_NODE_STEP = { '0': 1 };
+    const JCBG_NODE_STEP = { '2': 2, '6': 3 };
+    const STEP_LABELS = AUDIT_STEPS.map(function (s) { return s.label; });
+
+    // 依据两个流程的**当下节点快照**，算出「还需执行哪些步骤」（返回 AUDIT_STEPS 下标数组）。
+    //   nodes = { jcdg: {type}|null, jcbg: {type}|null }（null = 该流程无待审记录 = 未提交/已完结）
+    //   返回 { indices:[…], unknowns:[…] }：
+    //     · indices  —— 按升序排列、尚未完成的步骤下标；
+    //     · unknowns —— 落在预设链路之外的节点描述（非空时应中止，不执行 indices）。
+    //   判定规则：
+    //     · 两条流程**都没有**待审记录 → 项目未提交（或已彻底完结）→ 需从 ① 提交开始（indices=[0,1,2,3]）。
+    //       注：已完结（isOver=1）由调用方先行拦截，此处不会把已完结项目当作「未提交」重跑。
+    //     · jcdg 无记录但 jcbg 有 → 底稿流程已走完，只需处理 jcbg 剩下的节点（不重复提交）。
+    //     · jcdg 有记录 → 节点 0 待办（step 1），节点 1（复核）及之后不属于本工具链路 → unknowns。
+    function planAuditSteps(nodes) {
+      nodes = nodes || {};
+      const jn = nodes.jcdg, bn = nodes.jcbg;
+      const unknowns = [];
+      const jcdgStep = jn ? JCDG_NODE_STEP[String(jn.type)] : undefined;
+      const jcbgStep = bn ? JCBG_NODE_STEP[String(bn.type)] : undefined;
+      // 两条都无记录 → 未提交，从头走
+      if (!jn && !bn) return { indices: AUDIT_STEPS.map(function (_, i) { return i; }), unknowns: [] };
+      // 链路外的节点 → 记入 unknowns（调用方据此中止）
+      if (jn && jcdgStep === undefined) {
+        unknowns.push('检测底稿 停在「' + nodeName(jn.type) + '」节点，不在本工具可审范围内');
+      }
+      if (bn && jcbgStep === undefined) {
+        unknowns.push('检测结果报告单 停在「' + nodeName(bn.type) + '」节点，不在本工具可审范围内');
+      }
+      if (unknowns.length) return { indices: [], unknowns: unknowns };
+      // 走到这里说明 jn/bn 至少有一个存在（「都无记录」已在上方 return），
+      // 即项目**已经提交过** → 不再重复执行 ① 提交步骤。
+      const idx = [];
+      if (jcdgStep !== undefined) idx.push(jcdgStep);
+      if (jcbgStep !== undefined) idx.push(jcbgStep);
+      // 去重 + 升序（jcdg=1 恒早于 jcbg=2/3，但保持通用性）
+      const uniq = [];
+      idx.forEach(function (i) { if (uniq.indexOf(i) === -1) uniq.push(i); });
+      uniq.sort(function (a, b) { return a - b; });
+      return { indices: uniq, unknowns: [] };
+    }
+
     // 节点号 → 中文名（来自前端 statusFn，见 AUDIT_STEPS 注释）
     const NODE_NAMES = { '0': '理化复核', '1': '复核', '2': '理化审核', '3': '审核', '4': '职卫复核',
       '5': '职卫审核', '6': '理化签发', '7': '职卫签发', '8': '签发', '9': '第三方审核',
@@ -1910,6 +1965,19 @@
       const rows = (r.data && r.data.body) || [];
       if (!rows.length) return null;
       return { type: rows[0].type, isOver: rows[0].isOver, id: rows[0].id };
+    }
+
+    // 读节点但**不抛错**（断点续审规划阶段用：读不到就当作「无待审记录」，交由 planAuditSteps 判定）
+    async function safeReadAffixNode(bearer, org, affixPath, projectId) {
+      try { return await readAffixNode(bearer, org, affixPath, projectId); } catch (e) { return null; }
+    }
+
+    // 人类可读描述两个流程的当下节点（用于确认框/提示），如「检测底稿：理化复核 ／ 检测结果报告单：理化审核」
+    function describeNodes(jcdgNode, jcbgNode) {
+      function one(name, n) {
+        return name + '：' + (n ? (nodeName(n.type) + (String(n.isOver) === '1' ? '（已完结）' : '')) : '无待审记录');
+      }
+      return one('检测底稿', jcdgNode) + ' ／ ' + one('检测结果报告单', jcbgNode);
     }
 
     // ★ 提交审复核后，**检测底稿(jcdg) 与 检测报告单(jcbg) 是「一起提交」的**
@@ -2373,7 +2441,9 @@
       }
     }
 
-    // 审核 = 4 步跨账号审批链（见 AUDIT_STEPS 注释）。每步都用**各自账号**的令牌（经账号桥获取）。
+    // 审核 = 跨账号审批链（见 AUDIT_STEPS 注释）。每步都用**各自账号**的令牌（经账号桥获取）。
+    // ★ 支持**断点续审**：执行前先读两个流程的当下节点快照，只执行「尚未完成」的步骤
+    //   （项目已在链路中途时跳过已走完的部分；见 planAuditSteps 注释）。
     async function auditReport() {
       const el = reportEls();
       if (!token) { showLogin(); return; }
@@ -2381,9 +2451,6 @@
         alert('尚未在「数据上传」中选择项目。\n请先到「数据上传」查询并选中项目，再进行数据报告处理。');
         return;
       }
-      const chain = AUDIT_STEPS.map(function (s, i) { return (i + 1) + '. ' + s.account + ' → ' + s.label; }).join('\n');
-      if (!window.confirm('确认对以下项目执行「数据报告审核」？\n\n' + reportProjectLabel()
-        + '\n\n将按顺序执行 ' + AUDIT_STEPS.length + ' 步（各步用各自账号）：\n' + chain)) return;
       const btn = document.getElementById('report-audit');
       const old = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; }
@@ -2391,10 +2458,49 @@
       // 测试可通过 window.__AUDIT_POLL_OPTS__ 覆盖轮询参数（避免 mock 固定响应导致超时）
       const pollOpts = (typeof window !== 'undefined' && window.__AUDIT_POLL_OPTS__) || {};
       try {
+        // ── 第一步：读「两个流程的当下节点快照」→ 规划本次需要执行的步骤（断点续审的核心）──
+        if (el.status) el.status.textContent = '正在读取当前审批节点…';
+        const jcdgNode = await safeReadAffixNode(token, orgId, auditPaths('jcdg').affix, selectedProject.id);
+        const jcbgNode = await safeReadAffixNode(token, orgId, auditPaths('jcbg').affix, selectedProject.id);
+        const plan = planAuditSteps({ jcdg: jcdgNode, jcbg: jcbgNode });
+        if (plan.unknowns.length) {
+          const msg = '该项目当前审批节点不在本工具可审范围内：\n\n· ' + plan.unknowns.join('\n· ')
+            + '\n\n为避免污染平台状态，已中止（未执行任何审批操作）。';
+          if (el.status) el.status.textContent = '⏹ ' + plan.unknowns.join('；');
+          alert(msg);
+          return;
+        }
+        if (!plan.indices.length) {
+          const msg = '该项目在当前节点已无可执行的审核步骤（可能已完结）。\n\n' + reportProjectLabel();
+          if (el.status) el.status.textContent = '⏹ 已无可执行的审核步骤';
+          alert(msg);
+          return;
+        }
+        // 断点续审提示：若存在被跳过的步骤，明确告知用户
+        const skipped = AUDIT_STEPS.map(function (s, i) { return i; })
+          .filter(function (i) { return plan.indices.indexOf(i) === -1; });
+        const heading = skipped.length
+          ? '（断点续审：已跳过 ' + skipped.length + ' 步已完成项）'
+          : '';
+        const chain = plan.indices.map(function (i, n) {
+          return (n + 1) + '. ' + AUDIT_STEPS[i].account + ' → ' + AUDIT_STEPS[i].label;
+        }).join('\n');
+        const skipNote = skipped.length
+          ? '\n\n当前节点：' + describeNodes(jcdgNode, jcbgNode)
+            + '\n\n已跳过（视为已完成/无需重复）：\n'
+            + skipped.map(function (i) { return '· ' + STEP_LABELS[i]; }).join('\n')
+          : '';
+        if (!window.confirm('确认对以下项目执行「数据报告审核」？\n\n' + reportProjectLabel()
+          + (heading ? '\n' + heading : '')
+          + skipNote
+          + '\n\n本次将按顺序执行 ' + plan.indices.length + ' 步（各步用各自账号）：\n' + chain)) return;
+
         let done = 0;
-        for (let i = 0; i < AUDIT_STEPS.length; i++) {
+        const total = plan.indices.length;
+        for (let n = 0; n < plan.indices.length; n++) {
+          const i = plan.indices[n];
           const step = AUDIT_STEPS[i];
-          const tag = '（' + (i + 1) + '/' + AUDIT_STEPS.length + '）';
+          const tag = '（' + (n + 1) + '/' + total + '）';
           if (btn) btn.textContent = '审核中…' + tag + ' ' + step.account;
           if (el.status) el.status.textContent = '正在以 ' + step.account + ' 执行「' + step.label + '」' + tag + '…';
           const tk = await fetchBridgeToken(step.account);
@@ -2463,9 +2569,16 @@
               }
             }
             if (!node) {
-              // 该流程已无待审记录：若这是链尾，视为已完成；否则报错
-              if (i === AUDIT_STEPS.length - 1) {
+              // 该流程已无待审记录：说明本步已无需再审。
+              // ★ 断点续审下不再看「是否链尾」，而是看**本批规划里还有没有同流程的后续步骤**：
+              //   · 后面没有该流程的步骤 → 视为已完成，正常结束本批；
+              //   · 后面还有（如 jcbg 还有签发）→ 说明状态异常，报错中止。
+              const laterSameKind = plan.indices.slice(n + 1).some(function (k) {
+                return auditPaths(AUDIT_STEPS[k].kind).affix === ap.affix;
+              });
+              if (!laterSameKind) {
                 msgs.push(step.label + '：该流程已无待审记录（视为已完成）');
+                done++;
                 break;
               }
               const hint = step.kind === 'auditJcbg'
@@ -2502,13 +2615,15 @@
             }
           }
           done++;
-          if (el.status) el.status.textContent = '✅ 第 ' + done + '/' + AUDIT_STEPS.length
+          if (el.status) el.status.textContent = '✅ 第 ' + done + '/' + total
             + ' 步完成（' + step.account + ' · ' + step.label + '）';
         }
         const tail = msgs.length ? ' · ' + msgs.join('；') : '';
-        if (el.status) el.status.textContent = '✅ 审核链全部完成（' + AUDIT_STEPS.length + ' 步）· ' + reportProjectLabel() + tail;
-        alert('数据报告审核完成（已依次执行 ' + AUDIT_STEPS.length + ' 步：'
-          + AUDIT_STEPS.map(function (s) { return s.account; }).join(' → ') + '）。\n'
+        const ranAccounts = plan.indices.map(function (k) { return AUDIT_STEPS[k].account; }).join(' → ');
+        if (el.status) el.status.textContent = '✅ 审核链全部完成（本次 ' + total + ' 步'
+          + (skipped.length ? '，跳过已完成 ' + skipped.length + ' 步' : '') + '）· ' + reportProjectLabel() + tail;
+        alert('数据报告审核完成（本次依次执行 ' + total + ' 步：' + ranAccounts + '）。\n'
+          + (skipped.length ? '（断点续审，已跳过 ' + skipped.length + ' 步完成项）\n' : '')
           + reportProjectLabel() + (tail ? '\n' + tail : ''));
         // ★ 审核成功后：与「回退成功后」「进页签自动浏览」共用同一套「当下流程中的数据报告」逻辑
         if (el.status) el.status.textContent = '✅ 审核链全部完成，正在加载当前流程中的数据报告…';
@@ -2775,6 +2890,9 @@
       loadReportStatus: loadReportStatus,
       fetchReportStatus: fetchReportStatus,
       projectStatusText: projectStatusText,
+      // 断点续审规划：按两个流程的当下节点快照算出「还需执行哪些步骤」（供测试/复用）
+      planAuditSteps: planAuditSteps,
+      nodeName: nodeName,
       // 解析**检评报告** docx 中「噪声检测结果分析与评价」标题下的表（供测试/复用）
       parseNoiseTable: parsePjbgNoiseTableFromDocx,
       // 渲染噪声表（供测试/复用）
