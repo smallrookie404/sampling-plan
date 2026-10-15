@@ -2105,7 +2105,96 @@
         status: document.getElementById('report-status'),
         empty: document.getElementById('report-empty'),
         info: document.getElementById('report-info'),
+        state: document.getElementById('report-state'),
+        badge: document.getElementById('report-state-badge'),
+        detail: document.getElementById('report-state-detail'),
       };
+    }
+
+    // ★★ 「项目状态」文案映射——**照搬平台前端 statusFn(status, isDel)**（权威）。
+    //   来源：chunks2/chunk-882c4b1e.js（检测结果报告单列表页模板）
+    //     "statusFn",(function(e,t){ return "1"===t ? "已完结" : "0"===e?"待理化复核": … "9"===e?"待第三方审核":"10"===e?"待签章":void 0 })
+    //     → 即 statusFn(row.status, row.isDel)；表格「项目状态」列就是它的返回值。
+    //   ⚠ 注意两套 statusFn 含义不同，别混：
+    //     · 本函数（列表页）：入参是**列表行的 status + isDel**，输出「待理化复核/…/已完结」；
+    //     · nodeName()（审批节点）：入参是 **getAffix 的 type**，输出「理化复核/…/批准」。
+    //   判定优先级：isDel==='1' 直接「已完结」；否则按 status 查表；查不到时回落到 status 原文。
+    const PROJECT_STATUS_TEXT = {
+      '0': '待理化复核', '1': '待复核', '2': '待理化审核', '3': '待审核', '4': '待职卫复核',
+      '5': '待职卫审核', '6': '待理化签发', '7': '待职卫签发', '8': '待签发', '9': '待第三方审核',
+      '10': '待签章',
+    };
+    function projectStatusText(status, isDel) {
+      if (String(isDel) === '1') return '已完结';
+      if (status === null || status === undefined || status === '') return '未开始';
+      return PROJECT_STATUS_TEXT[String(status)] || ('节点' + status);
+    }
+
+    // 查「选中项目」在**检测结果报告单**（数据报告）里的项目状态。
+    //   数据源 = 平台「流程审批 → 检测结果报告单」的列表接口
+    //     GET /api/projectJcbgLastAffix?pageNumber=1&pageSize=50&isDel=<1|0>&code=<项目编号>
+    //   —— 这正是平台该列表页的数据源，行里的 status/isDel 就是 statusFn 的入参。
+    //   ⚠「已完结」的项目查 isDel=1，未完结的查 isDel=0（与本文件 findFinishedProject 同一约定）。
+    //   返回 { status, isDel, row } 或 null（两个都查不到 = 该编号在报告流程里无记录）。
+    async function fetchReportStatus(project) {
+      const kw = String((project && project.code) || '').trim();
+      if (!kw) return null;
+      const q = '?pageNumber=1&pageSize=50&code=' + encodeURIComponent(kw) + '&isDel=';
+      // ① 先查未完结（isDel=0），② 再查已完结（isDel=1）
+      for (const isDel of ['0', '1']) {
+        const r = await apiRequest('GET',
+          '/api/projectJcbgLastAffix' + q + isDel,
+          { token: token, orgId: orgId, timeout: 60000 });
+        if (r.status !== 200) throw new Error('查询项目状态失败(HTTP ' + r.status + ')');
+        const rows = (r.data && r.data.body && r.data.body.records) || [];
+        const up = kw.toUpperCase();
+        for (let i = 0; i < rows.length; i++) {
+          if (String(rows[i].code || '').trim().toUpperCase() === up) {
+            return { status: rows[i].status, isDel: rows[i].isDel, row: rows[i] };
+          }
+        }
+      }
+      return null;
+    }
+
+    // 把状态渲染进「数据报告状态」徽标。phase ∈ busy|done|pending|none|err
+    function renderReportState(phase, text, detail) {
+      const el = reportEls();
+      if (!el.state) return;
+      el.state.classList.remove('hidden');
+      if (el.badge) {
+        el.badge.className = 'report-state-badge ' + (phase || '');
+        el.badge.textContent = text;
+      }
+      if (el.detail) el.detail.textContent = detail || '';
+    }
+    function hideReportState() {
+      const el = reportEls();
+      if (el.state) el.state.classList.add('hidden');
+    }
+
+    // 拉取并渲染「选中项目」的数据报告状态（异步；失败只写徽标，不打断其它逻辑）
+    let reportStateSeq = 0;
+    async function loadReportStatus() {
+      if (!selectedProject || !selectedProject.id) { hideReportState(); return; }
+      const seq = ++reportStateSeq;
+      renderReportState('busy', '查询中…', '');
+      try {
+        const st = await fetchReportStatus(selectedProject);
+        if (seq !== reportStateSeq) return; // 期间已切换项目 → 丢弃过期结果
+        if (!st) {
+          renderReportState('none', '无报告流程记录',
+            '该项目在「检测结果报告单」流程中尚无记录（可能未提交审复核）');
+          return;
+        }
+        const txt = projectStatusText(st.status, st.isDel);
+        const done = String(st.isDel) === '1';
+        renderReportState(done ? 'done' : 'pending', txt,
+          '检测结果报告单流程 · status=' + String(st.status) + '，isDel=' + String(st.isDel));
+      } catch (e) {
+        if (seq !== reportStateSeq) return;
+        renderReportState('err', '状态查询失败', (e && e.message) ? e.message : String(e));
+      }
     }
 
     function reportProjectLabel() {
@@ -2124,6 +2213,7 @@
         el.empty.classList.remove('hidden');
         if (el.info) el.info.classList.add('hidden');
         if (el.status) el.status.textContent = '';
+        hideReportState();
         return;
       }
       el.empty.classList.add('hidden');
@@ -2133,6 +2223,8 @@
         el.info.classList.add('hidden');
       }
       if (el.status) el.status.textContent = '';
+      // 选中项目 → 异步查询并显示「数据报告项目状态」
+      loadReportStatus();
     }
 
     function esc(s) {
@@ -2248,6 +2340,7 @@
         } catch (e) {
           if (el.status) el.status.textContent = '✅ 两步回退全部完成，但检测结果报告单加载失败：' + (e && e.message ? e.message : e);
         }
+        await loadReportStatus(); // 回退改变了状态 → 同步刷新「数据报告状态」
       } catch (e) {
         if (el.status) el.status.textContent = '❌ 回退失败：' + e.message;
         alert('数据报告回退失败：' + e.message);
@@ -2400,6 +2493,7 @@
         } catch (e) {
           if (el.status) el.status.textContent = '✅ 审核链全部完成，但项目数据报告加载失败：' + (e && e.message ? e.message : e);
         }
+        await loadReportStatus(); // 审核完结改变了状态 → 同步刷新「数据报告状态」
       } catch (e) {
         if (el.status) el.status.textContent = '❌ 审核失败（已完成 ' + msgs.length + ' 步）：' + e.message;
         alert('数据报告审核失败：' + e.message);
@@ -2623,6 +2717,10 @@
       auditReport: auditReport,
       showFinalReportPdf: showFinalReportPdf,
       hideReportPdf: hideReportPdf,
+      // 「数据报告状态」查询/映射（供测试/复用）
+      loadReportStatus: loadReportStatus,
+      fetchReportStatus: fetchReportStatus,
+      projectStatusText: projectStatusText,
       // 解析**检评报告** docx 中「噪声检测结果分析与评价」标题下的表（供测试/复用）
       parseNoiseTable: parsePjbgNoiseTableFromDocx,
       // 渲染噪声表（供测试/复用）

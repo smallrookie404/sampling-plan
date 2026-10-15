@@ -54,10 +54,27 @@ await page.route("**/api/reportData/findList*", (route) => {
   return route.fulfill(j({ code: "200", body: { total: 1, records: [
     { id: 6205, code: "BTC26-SZJC0959", belongInspectName: "浙江永贵电器股份有限公司", status: "6" }] } }));
 });
+// ★ 列表接口 projectJcbgLastAffix = 平台「流程审批 → 检测结果报告单」列表的数据源。
+//   它同时被两处使用：
+//     a) 回退前的「在已完结项目中定位」（isDel=1）
+//     b) 「数据报告状态」查询（先 isDel=0 未完结，再 isDel=1 已完结）
+//   所以 mock 必须**按 isDel 分派**，否则状态查询会拿到错误分支。
+//   listState 由测试流程推动：
+//     · 初始 {isDel:'1', status:'6'} → 项目「已完结」（回退只对已完结项目有效）
+//     · 点「回退」成功后 → {isDel:'0', status:'0'} → 变「待理化复核」（回退把它打回初始节点）
+//     · 点「审核」成功后 → {isDel:'1', status:'6'} → 重新「已完结」
+//   （状态展示断言在步骤 6.1，那时项目已是「已完结」，故断言的是「已完结」徽标。）
+const listState = { isDel: "1", status: "6" };
 await page.route("**/api/projectJcbgLastAffix*", (route) => {
-  seen.jcbg = route.request().url();
-  return route.fulfill(j({ code: "200", body: { total: 1, records: [
-    { id: 6205, code: "BTC26-SZJC0959", belongInspectName: "浙江永贵电器股份有限公司", status: "6", isDel: "1" }] } }));
+  const u = route.request().url();
+  // getAffix 是同前缀的不同路径，交给后注册的专属路由处理（Playwright 后注册优先），这里只兜列表
+  if (/\/getAffix/.test(u)) return route.fallback();
+  seen.jcbg = u;
+  const isDel = /[?&]isDel=1(&|$)/.test(u) ? "1" : "0";
+  const hit = isDel === listState.isDel;
+  return route.fulfill(j({ code: "200", body: { total: hit ? 1 : 0, records: hit ? [
+    { id: 6205, code: "BTC26-SZJC0959", belongInspectName: "浙江永贵电器股份有限公司",
+      status: listState.status, isDel: listState.isDel, jcdgFlag: "1" }] : [] } }));
 });
 // 选中项目后会连带请求这几个接口；不 mock 就会 401 → 同样清掉会话
 await page.route("**/api/users*", (route) => route.fulfill(j({ code: "200", body: { content: [] } })));
@@ -111,6 +128,14 @@ page.on("request", (r) => {
 await page.route("**/projectXccyLastAffix/resetProjectApprovalProcess*", (route) =>
   route.fulfill(j({ code: "200", message: "重置成功！", body: false })));
 page.on("request", (r) => { if (/resetProjectApprovalProcess/.test(r.url())) seen.reset.push(r.url()); });
+// 回退成功 → 项目被打回未完结（isDel=0，节点回到 '0' 待理化复核）；供后续「数据报告状态」断言
+page.on("request", (r) => {
+  if (r.method() === "POST" && /resetProjectApprovalProcess/.test(r.url())) { listState.isDel = "0"; listState.status = "0"; }
+});
+// 审核链走完（jcbg 签发通过）→ 项目重新变已完结
+page.on("request", (r) => {
+  if (r.method() === "POST" && /projectJcbgLastAffixNew\/audit$/.test(r.url())) { listState.isDel = "1"; listState.status = "6"; }
+});
 // ★ 检测结果报告单**本体**接口（平台「检测结果报告单」页用的就是它）：
 //   GET /api/jcbgReport/jcbgYl?projectId=&organizationId= → body = 相对路径
 //   ⚠ 数据报告回退会清空 jcbg 审批链记录（getAffix 变空），此时报告只能从这里取 —— 回退后预览的来源。
@@ -181,10 +206,45 @@ const projInfo = await page.$eval("#projectInfo", (e) => e.textContent.trim());
 check("「数据上传」搜索能列出并选中项目", items.length > 0 && /BTC26-SZJC0959/.test(projInfo),
   items.join(" | ") + " ／ 已选=" + projInfo);
 
-// 关掉上传遮罩（它会拦截页签点击）→ 切「数据报告处理」→ 点回退
+// 6.1) ★ 选中项目后，「数据报告处理」页应显示该项目的**数据报告项目状态**
+//   数据源 = GET /api/projectJcbgLastAffix?isDel=<0|1>&code=<编号>（平台「检测结果报告单」列表的数据源）
+//   文案 = 平台 statusFn(status, isDel)：isDel='1' → 「已完结」；否则按 status 映射
+//   此时 listState 为 {isDel:'1', status:'6'}（项目已审核完结）→ 徽标应为「已完结」。
 await page.evaluate(() => { document.getElementById("xcdc-upload").classList.add("hidden"); });
 await page.click('nav.tabs .tab[data-tab="report"]');
 await page.waitForTimeout(200);
+await page.waitForFunction(() => {
+  const b = document.getElementById("report-state-badge");
+  return b && b.textContent.trim() && b.textContent.trim() !== "查询中…";
+}, null, { timeout: 15000 }).catch(() => {});
+const stateVisible = await page.isVisible("#report-state");
+const stateBadge = await page.$eval("#report-state-badge", (e) => e.textContent.trim()).catch(() => "");
+const stateBadgeCls = await page.$eval("#report-state-badge", (e) => e.className).catch(() => "");
+const stateDetail = await page.$eval("#report-state-detail", (e) => e.textContent.trim()).catch(() => "");
+check("选中项目后显示「数据报告状态」（已完结 → 已完结徽标）",
+  stateVisible && stateBadge === "已完结" && /done/.test(stateBadgeCls)
+    && /status=6/.test(stateDetail) && /isDel=1/.test(stateDetail),
+  "badge=" + stateBadge + " cls=" + stateBadgeCls + " detail=" + stateDetail);
+// 状态文案映射（纯函数）：已完结优先、各节点、未知回落
+const mapCases = await page.evaluate(() => {
+  const f = window.SamplingUpload && window.SamplingUpload.projectStatusText;
+  if (typeof f !== "function") return null;
+  return {
+    done: f("6", "1"),        // isDel=1 → 已完结（优先于 status）
+    s0: f("0", "0"), s2: f("2", "0"), s6: f("6", "0"), s9: f("9", "0"), s10: f("10", "0"),
+    nil: f(null, "0"),        // 无 status → 未开始
+    unknown: f("99", "0"),    // 未知节点 → 回落「节点99」
+  };
+});
+check("项目状态映射与平台 statusFn 一致（isDel=1 优先 → 已完结）",
+  mapCases && mapCases.done === "已完结" && mapCases.s0 === "待理化复核" && mapCases.s2 === "待理化审核"
+    && mapCases.s6 === "待理化签发" && mapCases.s9 === "待第三方审核" && mapCases.s10 === "待签章"
+    && mapCases.nil === "未开始" && mapCases.unknown === "节点99",
+  JSON.stringify(mapCases));
+
+// 6.2) 选中项目后点「回退」→ 必须**先在「已完结」项目里定位**
+//      （GET /api/projectJcbgLastAffix?isDel=1；回退只对已完结项目有效，用 findList 搜出来的会「找不到」）
+//      接口 mock 已在 goto 之前注册（见上）。
 await page.click("#report-reset");
 await page.waitForTimeout(1500);
 const rstat = await page.$eval("#report-status", (e) => e.textContent.trim());
