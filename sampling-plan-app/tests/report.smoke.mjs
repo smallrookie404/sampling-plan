@@ -411,15 +411,21 @@ check("审核成功后自动在页面下方内嵌 iframe 显示当下流程中�
 // 9.5) ★ 断点续审（planAuditSteps 纯函数）：按两个流程的当下节点快照算出「还需执行哪些步骤」
 //   节点语义：jcdg 只有 "0"（理化复核）；jcbg 有 "2"（理化审核）→"6"（理化签发）。
 //   AUDIT_STEPS 下标：0=提交 1=jcdg理化复核 2=jcbg理化审核 3=jcbg理化签发。
+//   ⚠ isOver='1' = 该流程已完结（实测 1009：jcdg type=0,isOver=1 表示理化复核已审完）→ 不产生步骤。
 const planCases = await page.evaluate(() => {
   const f = window.SamplingUpload && window.SamplingUpload.planAuditSteps;
   if (typeof f !== "function") return null;
   const n = (t) => (t === null ? null : { type: t, isOver: "0" });
+  const over = (t) => ({ type: t, isOver: "1" });
   return {
     fresh: f({ jcdg: null, jcbg: null }),                        // 未提交 → 全 4 步
     midJcbg6: f({ jcdg: null, jcbg: n("6") }),                   // 底稿已走完，报告单待签发 → 只 3
     midJcdg0: f({ jcdg: n("0"), jcbg: n("2") }),                 // 底稿待复核 + 报告单待审核 → 1,2
     half: f({ jcdg: null, jcbg: n("2") }),                       // 底稿已走完，报告单待审核 → 只 2
+    // ★ 1009 现场：jcdg 已完结(isOver=1)、jcbg 待理化审核(2) → 只审报告单理化审核(2)，不重审底稿
+    jcdgOver: f({ jcdg: over("0"), jcbg: n("2") }),
+    // 两条都已完结 → completed=true，不重跑整链
+    allOver: f({ jcdg: over("0"), jcbg: over("6") }),
     unknownJcdg: f({ jcdg: n("4"), jcbg: n("2") }),              // 底稿在「职卫复核」（链外）→ 中止
     unknownJcbg: f({ jcdg: n("0"), jcbg: n("9") }),              // 报告单在「第三方审核」（链外）→ 中止
   };
@@ -433,6 +439,13 @@ check("断点续审规划：仅在链路内推进，跳过已完成步骤；链�
     && planCases.unknownJcdg.indices.length === 0 && planCases.unknownJcdg.unknowns.length === 1
     && planCases.unknownJcbg.indices.length === 0 && planCases.unknownJcbg.unknowns.length === 1,
   JSON.stringify(planCases));
+// ★ 单独断言：已完结流程（isOver=1）不产生待审步骤（修复「人员不可重复」的根因）
+check("断点续审：isOver=1 的已完结流程不产生步骤（1009 现场：底稿已完结→只审报告单理化审核）",
+  planCases
+    && JSON.stringify(planCases.jcdgOver.indices) === "[2]" && planCases.jcdgOver.unknowns.length === 0
+    && planCases.jcdgOver.completed === false
+    && JSON.stringify(planCases.allOver.indices) === "[]" && planCases.allOver.completed === true,
+  JSON.stringify({ jcdgOver: planCases && planCases.jcdgOver, allOver: planCases && planCases.allOver }));
 
 // 9.6) ★ 断点续审（端到端）：项目**已在链路中途**（底稿待理化复核 / 报告单待理化签发），
 //   点「数据报告审核」应**只执行未完成的步骤**（② jcdg 理化复核 + ④ jcbg 理化签发），

@@ -1888,23 +1888,35 @@
     const STEP_LABELS = AUDIT_STEPS.map(function (s) { return s.label; });
 
     // 依据两个流程的**当下节点快照**，算出「还需执行哪些步骤」（返回 AUDIT_STEPS 下标数组）。
-    //   nodes = { jcdg: {type}|null, jcbg: {type}|null }（null = 该流程无待审记录 = 未提交/已完结）
-    //   返回 { indices:[…], unknowns:[…] }：
+    //   nodes = { jcdg: {type,isOver}|null, jcbg: {type,isOver}|null }
+    //     null = 该流程无待审记录（未提交 / 已完结被清）
+    //   返回 { indices:[…], unknowns:[…], completed:bool }：
     //     · indices  —— 按升序排列、尚未完成的步骤下标；
-    //     · unknowns —— 落在预设链路之外的节点描述（非空时应中止，不执行 indices）。
+    //     · unknowns —— 落在预设链路之外的节点描述（非空时应中止，不执行 indices）；
+    //     · completed —— 两条流程都**已完结**（isOver=1）⇒ 整条链已走完，无需再审。
     //   判定规则：
-    //     · 两条流程**都没有**待审记录 → 项目未提交（或已彻底完结）→ 需从 ① 提交开始（indices=[0,1,2,3]）。
-    //       注：已完结（isOver=1）由调用方先行拦截，此处不会把已完结项目当作「未提交」重跑。
-    //     · jcdg 无记录但 jcbg 有 → 底稿流程已走完，只需处理 jcbg 剩下的节点（不重复提交）。
-    //     · jcdg 有记录 → 节点 0 待办（step 1），节点 1（复核）及之后不属于本工具链路 → unknowns。
+    //     · 两条流程**都无**待审记录且**都未完结** → 项目未提交 → 从 ① 提交开始（indices=[0,1,2,3]）。
+    //     · **`isOver='1'` 的节点 = 该流程已完结**（实测 1009：jcdg `type=0,isOver=1` 表示理化复核已审完，
+    //       列表已进 `isDel=1`）→ **不产生任何步骤**。⚠ 若忽略 isOver 会重复审已完成的节点，
+    //       平台报「审批流程中的人员不可重复！」（同一个人不能连审两个节点）。
+    //     · jcdg 已完结而 jcbg 仍在 `2`/`6` → 只审 jcbg 剩余节点（不重复提交）。
+    //     · 两条**都已完结** → `completed:true`、`indices=[]`（调用方提示「已完结」而非重跑）。
     function planAuditSteps(nodes) {
       nodes = nodes || {};
-      const jn = nodes.jcdg, bn = nodes.jcbg;
+      function over(n) { return !!n && String(n.isOver) === '1'; }
+      // 该流程是否存在**待审节点**（有记录且未完结）
+      function live(n) { return n && !over(n) ? n : null; }
+      const jn = live(nodes.jcdg), bn = live(nodes.jcbg);
       const unknowns = [];
       const jcdgStep = jn ? JCDG_NODE_STEP[String(jn.type)] : undefined;
       const jcbgStep = bn ? JCBG_NODE_STEP[String(bn.type)] : undefined;
-      // 两条都无记录 → 未提交，从头走
-      if (!jn && !bn) return { indices: AUDIT_STEPS.map(function (_, i) { return i; }), unknowns: [] };
+      // 两条都无待审节点：
+      const anyOver = over(nodes.jcdg) || over(nodes.jcbg);
+      if (!jn && !bn) {
+        // 有任一流程已完结 ⇒ 整条链已走完（不做任何事）；否则项目从未提交 ⇒ 从头走
+        if (anyOver) return { indices: [], unknowns: [], completed: true };
+        return { indices: AUDIT_STEPS.map(function (_, i) { return i; }), unknowns: [], completed: false };
+      }
       // 链路外的节点 → 记入 unknowns（调用方据此中止）
       if (jn && jcdgStep === undefined) {
         unknowns.push('检测底稿 停在「' + nodeName(jn.type) + '」节点，不在本工具可审范围内');
@@ -1912,9 +1924,9 @@
       if (bn && jcbgStep === undefined) {
         unknowns.push('检测结果报告单 停在「' + nodeName(bn.type) + '」节点，不在本工具可审范围内');
       }
-      if (unknowns.length) return { indices: [], unknowns: unknowns };
-      // 走到这里说明 jn/bn 至少有一个存在（「都无记录」已在上方 return），
-      // 即项目**已经提交过** → 不再重复执行 ① 提交步骤。
+      if (unknowns.length) return { indices: [], unknowns: unknowns, completed: false };
+      // 走到这里说明至少有一个流程仍**有待审节点**（未完结）
+      // ⇒ 项目已经提交过 → 不再重复执行 ① 提交步骤。
       const idx = [];
       if (jcdgStep !== undefined) idx.push(jcdgStep);
       if (jcbgStep !== undefined) idx.push(jcbgStep);
@@ -1922,7 +1934,7 @@
       const uniq = [];
       idx.forEach(function (i) { if (uniq.indexOf(i) === -1) uniq.push(i); });
       uniq.sort(function (a, b) { return a - b; });
-      return { indices: uniq, unknowns: [] };
+      return { indices: uniq, unknowns: [], completed: false };
     }
 
     // 节点号 → 中文名（来自前端 statusFn，见 AUDIT_STEPS 注释）
@@ -2131,6 +2143,12 @@
       } catch (e) {
         if (!poolAuthFailed(e)) return entry; // 非鉴权错误：按原令牌继续
         probe = { status: 0, message: e.message };
+      }
+      // 顺手记录该账号的平台用户 id（用于「同一人不可连审两节点」的前置校验）
+      if (probe && probe.status === 200) {
+        const u = (probe.data && probe.data.user) || {};
+        if (u.id !== undefined && u.id !== null) entry.userId = String(u.id);
+        if (u.userName) entry.userName = u.userName;
       }
       if (!poolAuthFailed(probe)) return entry;
       log('「' + account + '」令牌已失效，账号桥重新登录…');
@@ -2471,8 +2489,11 @@
           return;
         }
         if (!plan.indices.length) {
-          const msg = '该项目在当前节点已无可执行的审核步骤（可能已完结）。\n\n' + reportProjectLabel();
-          if (el.status) el.status.textContent = '⏹ 已无可执行的审核步骤';
+          const msg = plan.completed
+            ? '该项目的「检测底稿 + 检测报告单」审批链**已全部完结**，无需再审。\n\n' + reportProjectLabel()
+            : '该项目在当前节点已无可执行的审核步骤。\n\n' + reportProjectLabel();
+          if (el.status) el.status.textContent = plan.completed
+            ? '⏹ 审批链已全部完结' : '⏹ 已无可执行的审核步骤';
           alert(msg);
           return;
         }
@@ -2587,6 +2608,15 @@
               throw new Error('「' + step.label + '」（' + step.account + '）：该流程已无待审的检测记录' + hint);
             }
             const oldType = node.type;
+            // ★ 前置校验：平台不允许**同一人连续审批两个相邻节点**（报「审批流程中的人员不可重复！」）。
+            //   节点的 createBy/updateBy = 上一步经手人；若本次审批账号与上一步是同一人 → 提前中止，不发请求。
+            const prevBy = node.updateBy !== undefined && node.updateBy !== null ? node.updateBy : node.createBy;
+            const acctId = tk.userId !== undefined && tk.userId !== null ? String(tk.userId) : null;
+            if (acctId && prevBy !== undefined && prevBy !== null && String(prevBy) === acctId) {
+              throw new Error('「' + step.label + '」（' + step.account + '）无法执行：平台不允许同一人连续审批两个相邻节点。'
+                + '\n上一步（' + nodeName(oldType) + '）已由该账号（用户ID ' + acctId + '）经手，'
+                + '本步需换其他人审批。\n当前节点：' + describeNodes(jcdgNode, jcbgNode));
+            }
             const r = await apiRequest('POST', ap.audit, {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
               // ⚠ 单个对象（不是数组）；jcbg 的 type 必须为数字
@@ -2600,8 +2630,17 @@
               },
             });
             if (!(r.status === 200 && r.data && String(r.data.code) === '200')) {
-              throw new Error('「' + step.label + '」（' + step.account + '）失败：'
-                + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120))));
+              const raw = (r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status + ' ' + String(r.text || '').slice(0, 120));
+              // ★ 翻译平台「审批流程中的人员不可重复！」：同一人不能连审两个相邻节点。
+              //   本工具链路的账号本应各不相同（jyg→wcy→zhj→gxz），正常不该出现；
+              //   若出现，多半是该节点已被 profile 里某账号审过、或账号池令牌错配 → 给出可操作提示。
+              if (/人员不可重复|不可重复/.test(String(raw))) {
+                throw new Error('「' + step.label + '」（' + step.account + '）失败：' + raw
+                  + '\n\n原因：平台不允许同一人连续审批两个相邻节点。'
+                  + '该节点可能已由 ' + step.account + '（或同一人）审过，请刷新后用「数据报告审核」重新读取当前节点。'
+                  + '当前节点：' + describeNodes(jcdgNode, jcbgNode));
+              }
+              throw new Error('「' + step.label + '」（' + step.account + '）失败：' + raw);
             }
             msgs.push(step.label + '：' + ((r.data && r.data.message) || '审批成功') + '（节点 ' + nodeName(oldType) + '）');
             // 轮询等待节点推进
