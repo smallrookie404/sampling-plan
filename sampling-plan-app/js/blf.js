@@ -465,6 +465,63 @@
     return { xml: out, changed: changed };
   }
 
+  // ---------------- 报告后处理②b：表4-1 职业病危害因素列「氮氧化物」措辞精简 ----------------
+  // 用户要求（2026-10-16）：表4-1「职业病危害因素」列里若出现
+  //   氮氧化物(一氧化氮和二氧化氮):氮氧化物(以二氧化氮计)
+  // 则替换为
+  //   氮氧化物(一氧化氮和二氧化氮)
+  // （即去掉冒号及其后的「氮氧化物(以二氧化氮计)」补充说明）。
+  // ⚠ 该短语可能① 独占整个单元格首段，也可能② 混在「…,氮氧化物(一氧化氮和二氧化氮):氮氧化物(以二氧化氮计),电焊烟尘,…」
+  //    这种逗号分隔的清单里（真实 1009 报告即如此），故按**子串替换**处理，不做整格覆盖。
+  // ⚠ 平台模板可能用**半角**「():」或**全角**「（）：」；两种都替换。
+  const NOX_FROM_HALF = '氮氧化物(一氧化氮和二氧化氮):氮氧化物(以二氧化氮计)';
+  const NOX_TO = '氮氧化物(一氧化氮和二氧化氮)';
+  const NOX_FROM_FULL = '氮氧化物（一氧化氮和二氧化氮）：氮氧化物（以二氧化氮计）';
+  const NOX_TO_FULL = '氮氧化物（一氧化氮和二氧化氮）';
+  const NOX_FIXES = [
+    { from: NOX_FROM_HALF, to: NOX_TO },
+    { from: NOX_FROM_FULL, to: NOX_TO_FULL },
+  ];
+
+  // 针对表4-1 的「职业病危害因素」列（定位方式同 fixNonNoiseHazards：表头含该列名），
+  // 对每个数据行的该列单元格做措辞替换（支持跨 run）。返回 { xml, changed }。
+  function fixNitrogenOxide(xml) {
+    if (xml.indexOf('氮氧化物') < 0) return { xml: xml, changed: 0 };
+    let changed = 0;
+    const out = xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return tbl;
+      const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+      let hIdx = -1;
+      for (let i = 0; i < headCells.length; i++) {
+        if (cellText(headCells[i]).indexOf(HAZARD_COL_HEAD) >= 0) { hIdx = i; break; }
+      }
+      if (hIdx < 0) return tbl;   // 不是表4-1
+      let newTbl = tbl;
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+        if (cells.length < 3) continue;
+        const ci = hIdx + (cells.length - headCells.length);   // 合并单元格导致的列号平移
+        if (ci < 0 || ci >= cells.length) continue;
+        const cell = cells[ci];
+        const text = cellText(cell);
+        if (text.indexOf('氮氧化物') < 0) continue;            // 兜底：列对不上就不动
+        let newCell = cell;
+        for (const f of NOX_FIXES) {
+          // 先试单元格内跨 run 替换（保留格式）；再退化为直接对该单元格 XML 做替换
+          const np = replaceAcrossRuns(newCell, f.from, f.to);
+          if (np !== null) { newCell = np; changed++; continue; }
+          if (newCell.indexOf(f.from) >= 0) { newCell = newCell.split(f.from).join(f.to); changed++; }
+        }
+        if (newCell === cell) continue;
+        const newRow = rows[ri].replace(cell, newCell);
+        newTbl = newTbl.replace(rows[ri], newRow);
+      }
+      return newTbl;
+    });
+    return { xml: out, changed: changed };
+  }
+
   // ---------------- 报告后处理③：正文措辞替换 ----------------
   // 平台模板里的几处说法要改成规范表述（用户要求，2026-10-12）。
   // ⚠ 目标文字常被拆到多个 run（如「7.2物理有害因素检测结果分析与评价」= ['7.2','物理','有害因素…']），
@@ -926,6 +983,10 @@
           try { nonNoiseText = await u.noiseNonNoiseTextFromBuf(buf); } catch (e) { nonNoiseText = ''; }
         }
       }
+      // ②b 表4-1「职业病危害因素」列：氮氧化物(一氧化氮和二氧化氮):氮氧化物(以二氧化氮计) → 氮氧化物(一氧化氮和二氧化氮)
+      const r2b = fixNitrogenOxide(xml);
+      xml = r2b.xml; changed += r2b.changed;
+      if (r2b.changed) console.info('[检评报告] 表4-1 氮氧化物措辞精简，共修正 ' + r2b.changed + ' 处');
       // ③ 正文措辞替换（1.4 章节的接触限值说法、7.2 标题）
       const r3 = fixReportText(xml);
       xml = r3.xml; changed += r3.changed;
@@ -1311,7 +1372,7 @@
     }
   }
 
-  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout, generatePjbgReport, genPjbgDocx, fixHighToxColumn, fixNonNoiseHazards, fixReportText, fixHazardNote, collectHazardMarks, trimNote3, patchPjbgDocx };
+  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout, generatePjbgReport, genPjbgDocx, fixHighToxColumn, fixNonNoiseHazards, fixNitrogenOxide, fixReportText, fixHazardNote, collectHazardMarks, trimNote3, patchPjbgDocx };
 
   // 绑定按钮（主工具栏 + 全屏工具栏）与弹窗内交互
   function bind() {
@@ -1364,6 +1425,11 @@
     sumExposedWorkers: sumExposedWorkers,
     readBasicInfoTable: readBasicInfoTable,
     fixNoteParagraph: fixNoteParagraph,
+    fixNitrogenOxide: fixNitrogenOxide,
+    NOX_FROM_HALF: NOX_FROM_HALF,
+    NOX_TO: NOX_TO,
+    NOX_FROM_FULL: NOX_FROM_FULL,
+    NOX_TO_FULL: NOX_TO_FULL,
     NOTE_TPL: NOTE_TPL,
     NOTE_PARA_A: NOTE_PARA_A,
     NOTE_PARA_B_TPL: NOTE_PARA_B_TPL,

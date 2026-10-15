@@ -81,5 +81,19 @@ check("A 段只出现 1 次（无重复插入）", cnt === 1, String(cnt));
 // 整段没消失：A 段结尾句必须在
 check("重打包后含 A 段结尾「12:30～17:00。」", xml2.includes("12:30～17:00。"));
 
+// ---- 表4-1 危害列「氮氧化物」措辞精简（真实 1009 报告本来就含旧形态）----
+console.log("[1009] 表4-1 氮氧化物措辞精简");
+const NOX_OLD = "氮氧化物(一氧化氮和二氧化氮):氮氧化物(以二氧化氮计)";
+const NOX_NEW = "氮氧化物(一氧化氮和二氧化氮)";
+check("原始报告含旧形态", xml.includes(NOX_OLD), String((xml.match(/氮氧化物\(一氧化氮和二氧化氮\):氮氧化物\(以二氧化氮计\)/g) || []).length));
+const rn = blf.fixNitrogenOxide(xml);
+check("fixNitrogenOxide 有改动", rn.changed === 1, String(rn.changed));
+check("旧形态已消失", !rn.xml.includes(NOX_OLD));
+check("新形态已出现", rn.xml.includes(NOX_NEW + ",电焊烟尘"));
+check("整链路重打包后无旧形态", !xml2.includes(NOX_OLD));
+// 其余危害项仍在（同一格里逗号清单的后续项）
+check("清单后续项保留（电焊烟尘/锰及其无机化合物/一氧化碳/噪声/紫外辐射）",
+  xml2.includes(NOX_NEW + ",电焊烟尘,锰及其无机化合物(按MnO2计),一氧化碳,噪声,紫外辐射"));
+
 console.log("\n结果：" + pass + " 通过 / " + fail + " 失败");
 process.exit(fail ? 1 : 0);

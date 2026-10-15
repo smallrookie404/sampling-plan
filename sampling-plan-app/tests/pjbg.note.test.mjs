@@ -154,5 +154,50 @@ check("重打包后仍含「职工总数410人」", xml2.includes("职工总数4
 check("重打包后仍含「接触职业病危害人数91人」", xml2.includes("接触职业病危害人数91人"));
 check("其它文件仍在（styles.xml）", !!z2.file("word/styles.xml"));
 
+// ---- [5] fixNitrogenOxide：表4-1 职业病危害因素列 氮氧化物措辞精简 ----
+console.log("\n[5] fixNitrogenOxide（表4-1 危害列「氮氧化物」精简）");
+const NOX_OLD = "氮氧化物(一氧化氮和二氧化氮):氮氧化物(以二氧化氮计)";
+const NOX_NEW = "氮氧化物(一氧化氮和二氧化氮)";
+// 5a 混在逗号清单里（真实 1009 报告形态，单 run）
+const mkTbl = (cellXml) =>
+  "<w:tbl><w:tr>"
+  + "<w:tc><w:p><w:r><w:t>单元/工作场所</w:t></w:r></w:p></w:tc>"
+  + "<w:tc><w:p><w:r><w:t>岗位（工种）</w:t></w:r></w:p></w:tc>"
+  + "<w:tc><w:p><w:r><w:t>职业病危害因素</w:t></w:r></w:p></w:tc>"
+  + "</w:tr><w:tr>"
+  + "<w:tc><w:p><w:r><w:t>喷漆车间</w:t></w:r></w:p></w:tc>"
+  + "<w:tc><w:p><w:r><w:t>喷漆岗位</w:t></w:r></w:p></w:tc>"
+  + "<w:tc>" + cellXml + "</w:tc>"
+  + "</w:tr></w:tbl>";
+const cellSingle = "<w:p><w:r><w:t>" + NOX_OLD + ",电焊烟尘,一氧化碳,噪声</w:t></w:r></w:p>";
+const r5a = blf.fixNitrogenOxide(mkTbl(cellSingle));
+check("单 run 清单：有改动", r5a.changed === 1, String(r5a.changed));
+check("旧短语已消失", !r5a.xml.includes(NOX_OLD));
+check("新短语已出现", r5a.xml.includes(NOX_NEW));
+check("清单其余项保留（电焊烟尘/一氧化碳/噪声）",
+  r5a.xml.includes(NOX_NEW + ",电焊烟尘,一氧化碳,噪声"), r5a.xml.slice(r5a.xml.indexOf("氮氧化物"), r5a.xml.indexOf("氮氧化物") + 60));
+// 5b 独占整格
+const r5b = blf.fixNitrogenOxide(mkTbl("<w:p><w:r><w:t>" + NOX_OLD + "</w:t></w:r></w:p>"));
+check("独占整格：替换为纯新短语", r5b.xml.includes("<w:t>" + NOX_NEW + "</w:t>"), String(r5b.changed));
+// 5c 跨 run 拆分
+const cellSplit = "<w:p><w:r><w:t>氮氧化物(一氧化氮</w:t></w:r><w:r><w:t>和二氧化氮):氮氧化物(以</w:t></w:r><w:r><w:t>二氧化氮计),紫外辐射</w:t></w:r></w:p>";
+const r5c = blf.fixNitrogenOxide(mkTbl(cellSplit));
+check("跨 run 拆分：有改动", r5c.changed === 1, String(r5c.changed));
+check("跨 run 拆分：旧短语消失", !r5c.xml.includes(NOX_OLD));
+check("跨 run 拆分：新短语出现", r5c.xml.includes(NOX_NEW));
+// 5d 全角括号/冒号变体
+const FULL_OLD = "氮氧化物（一氧化氮和二氧化氮）：氮氧化物（以二氧化氮计）";
+const FULL_NEW = "氮氧化物（一氧化氮和二氧化氮）";
+const r5d = blf.fixNitrogenOxide(mkTbl("<w:p><w:r><w:t>" + FULL_OLD + ",噪声</w:t></w:r></w:p>"));
+check("全角变体：有改动", r5d.changed === 1, String(r5d.changed));
+check("全角变体：换为全角新短语", r5d.xml.includes(FULL_NEW + ",噪声"));
+// 5e 无命中 → 不改
+const r5e = blf.fixNitrogenOxide(mkTbl("<w:p><w:r><w:t>电焊烟尘,一氧化碳</w:t></w:r></w:p>"));
+check("无命中：changed=0", r5e.changed === 0, String(r5e.changed));
+
+// ---- [6] 真实样例整链路：氮氧化物短语不应残留旧形态 ----
+console.log("\n[6] 整链路：氮氧化物旧形态不残留");
+check("重打包后无旧氮氧化物短语", !xml2.includes(NOX_OLD), String((xml2.match(new RegExp(NOX_OLD.replace(/[()]/g, "\\$&"), "g")) || []).length));
+
 console.log("\n结果：" + pass + " 通过 / " + fail + " 失败");
 process.exit(fail ? 1 : 0);
