@@ -1620,6 +1620,26 @@
       }
     }
 
+    // 同上，但返回「按车间合并」的分组（供注段落拼接文本用）：[{ unit, jobs:[...] }]；
+    // 解析失败或无内容时返回 []（不返回 null，便于直接判空）。
+    async function noiseNonNoiseGroupsFromBuf(buf) {
+      try {
+        const data = await parsePjbgNoiseTableFromDocx(buf);
+        const s = buildNoiseSummary(buildNoiseDisplay(data.rows));
+        return (s && s.nonNoise) || [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    // 「非噪声车间岗位」文本：车间岗位、岗位；车间岗位、岗位（与页签「筛选结果」显示一致）；
+    // 空列表返回 ''（供「生成检评报告」判断是否整段删除）。
+    async function noiseNonNoiseTextFromBuf(buf) {
+      const groups = await noiseNonNoiseGroupsFromBuf(buf);
+      if (!groups.length) return '';
+      return groups.map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
+    }
+
     // 把「按车间合并」的结果拼成文本：车间岗位、岗位；车间岗位、岗位
     function noiseSummaryText(list) {      return (list || []).map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
     }
@@ -3149,6 +3169,9 @@
       syncNonNoise: syncNonNoiseJobs,
       // 从检评报告 docx 算出「非噪声车间岗位」清单 [{unit, job}]（供「生成检评报告」删除噪声危害）
       noiseNonNoiseFromBuf: noiseNonNoiseFromBuf,
+      // 从检评报告 docx 算出「非噪声车间岗位」分组/文本（供注段落拼接；空返回 ''）
+      noiseNonNoiseGroupsFromBuf: noiseNonNoiseGroupsFromBuf,
+      noiseNonNoiseTextFromBuf: noiseNonNoiseTextFromBuf,
       // 复用噪声页签已生成并下载的检评报告（供「生成检评报告」缩短时间）：
       // 命中同一项目时返回 { buf, fileName, modName }，否则 null
       getPjbgCache: function (projectId) {

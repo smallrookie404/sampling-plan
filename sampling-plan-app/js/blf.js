@@ -632,6 +632,274 @@
     return { xml: out, changed: changed };
   }
 
+  // ---------------- 报告后处理⑤：表4-1 下方的「注：」段落 + 表3-1 人数联动 ----------------
+  // 需求（用户 2026-10-16，已二次细化）：
+  //   ① 表4-1（岗位（工种）设置、劳动者作业情况及职业病危害因素识别情况表）下方**相邻**的
+  //      含「注：」的段落，整段替换为固定文本（两处人数为变量）：
+  //        注：用人单位职工总数<在册职工人数>，接触职业病危害人数<接触人数>。打磨岗位实行两班制，
+  //        上班时间为白班8:00～20:00、晚班20:00～8:00（次日），其余各岗位均实行白班制，
+  //        上班时间为8:00～11:30、12:30～17:00。M车间A岗位、N车间B岗位接触的噪声经过验证性检测，
+  //        当天工况噪声检测结果小于80dB(A)，根据《职业卫生名词术语》（GBZ/T224-2010）定义属于
+  //        非噪声作业岗位（仅代表当天工况），故噪声不作为上述岗位的主要职业病危害因素。
+  //   ② 「接触人数」=「表8-1 检测结果与评价结论」作业人数列**按单元+岗位去重**后的合计；
+  //      同时把该合计回填到表3-1「接触职业病危害人数」右边单元格（保留「人」后缀）。
+  //   ③ 「在册职工人数」取表3-1「在册职工人数」右边单元格的值（如「410人」）。
+  //   ④（2026-10-16 追加）注段落拆成**两段**：「M车间A岗位」前另起一段；
+  //      「M车间A岗位、N车间B岗位」替换为「噪声数据结果」页签下「非噪声车间岗位」筛选结果
+  //      （格式：车间岗位、岗位；车间岗位）；
+  //      若该筛选结果为空 → **整段（第二段）删除**（不再输出）。
+  // 结果：两段（第二段可能不存在）：
+  //   A: 注：用人单位职工总数{STAFF}，接触职业病危害人数{CONTACT}。打磨岗位实行两班制…12:30～17:00。
+  //   B: {NON_NOISE_TEXT}接触的噪声经过验证性检测…故噪声不作为上述岗位的主要职业病危害因素。
+
+  const NOTE_PARA_A =
+    '注：用人单位职工总数{STAFF}，接触职业病危害人数{CONTACT}。打磨岗位实行两班制，'
+    + '上班时间为白班8:00～20:00、晚班20:00～8:00（次日），其余各岗位均实行白班制，'
+    + '上班时间为8:00～11:30、12:30～17:00。';
+  const NOTE_PARA_B_TPL =
+    '{JOBS}接触的噪声经过验证性检测，当天工况噪声检测结果小于80dB(A)，'
+    + '根据《职业卫生名词术语》（GBZ/T224-2010）定义属于非噪声作业岗位（仅代表当天工况），'
+    + '故噪声不作为上述岗位的主要职业病危害因素。';
+  // 兼容旧名（单段模板，保留供外部/测试参考，不再直接使用）
+  const NOTE_TPL = NOTE_PARA_A + NOTE_PARA_B_TPL;
+
+  // 取一行里的单元格 XML 数组（保持书写顺序）
+  function rowCells(trXml) {
+    return trXml.match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+  }
+  function tableRows(tblXml) {
+    return tblXml.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+  }
+  // XML 文本转义（写入 <w:t> 前必须转义 & < >）
+  function xmlEsc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  // 把值补成「N人」（若原值已含「人」则不再叠加；取不到数字则原样返回）
+  function withPersonUnit(v) {
+    const s = String(v === null || v === undefined ? '' : v).trim();
+    if (!s) return s;
+    if (/人\s*$/.test(s)) return s;
+    return s + '人';
+  }
+  function pickNumber(s) {
+    const m = String(s === null || s === undefined ? '' : s).match(/\d+(?:\.\d+)?/);
+    return m ? m[0] : '';
+  }
+
+  // 在 document.xml 里找**表头含指定列名**的表，返回其行/表头单元格等信息（找不到返回 null）
+  function findTableByHead(xml, predicate) {
+    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+    for (const tbl of tables) {
+      const rows = tableRows(tbl);
+      if (rows.length < 2) continue;
+      const head = rowCells(rows[0]);
+      const heads = head.map(cellText);
+      if (predicate(heads, tbl, rows)) return { tbl: tbl, rows: rows, head: head, heads: heads };
+    }
+    return null;
+  }
+
+  // 找表头（可能两行合并）里某列的下标；先精确、再包含
+  function headIndexOf(heads, name) {
+    const want = normKey(name);
+    for (let i = 0; i < heads.length; i++) if (normKey(heads[i]) === want) return i;
+    for (let i = 0; i < heads.length; i++) if (normKey(heads[i]).indexOf(want) >= 0) return i;
+    return -1;
+  }
+
+  // 表3-1 用人单位基本情况表：该表**不是**「表头 + 数据行」结构，而是「标签 | 值 | 标签 | 值」
+  // 的键值对表格。因此不按表头定位，而是**逐行扫所有单元格**找标签，取同行右邻单元格作为值。
+  // 返回 { staffText, contactText, staffLabelCell, contactLabelCell, tbl, rows }（找不到返回 null）
+  function readBasicInfoTable(xml) {
+    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+    for (const tbl of tables) {
+      const rows = tableRows(tbl);
+      if (rows.length < 2) continue;
+      let staffText = null, contactText = null, staffCi = -1, contactCi = -1, staffRow = -1, contactRow = -1;
+      for (let ri = 0; ri < rows.length; ri++) {
+        const texts = rowCells(rows[ri]).map(cellText);
+        for (let ci = 0; ci < texts.length; ci++) {
+          const k = normKey(texts[ci]);
+          if (staffText === null && k === normKey('在册职工人数')) {
+            staffText = texts[ci + 1] || ''; staffCi = ci; staffRow = ri;
+          } else if (contactText === null && k === normKey('接触职业病危害人数')) {
+            contactText = texts[ci + 1] || ''; contactCi = ci; contactRow = ri;
+          }
+        }
+        if (staffText !== null && contactText !== null) break;
+      }
+      if (staffText !== null && contactText !== null) {
+        return {
+          tbl: tbl, rows: rows,
+          staffCi: staffCi, contactCi: contactCi,
+          staffRow: staffRow, contactRow: contactRow,
+          staffText: staffText, contactText: contactText,
+        };
+      }
+    }
+    return null;
+  }
+
+  // 表8-1：作业人数列按「单元/工作场所 + 岗位/工种」去重后求和；返回 { total, groups } 或 null
+  function sumExposedWorkers(xml) {
+    const t = findTableByHead(xml, function (heads) {
+      return heads.some(function (h) { return normKey(h).indexOf('作业人数') >= 0; })
+        && heads.some(function (h) { return normKey(h).indexOf('评价结论') >= 0; });
+    });
+    if (!t) return null;
+    const cUnit = headIndexOf(t.heads, '单元/工作场所');
+    const cJob = headIndexOf(t.heads, '岗位/工种');
+    const cNum = headIndexOf(t.heads, '作业人数');
+    if (cUnit < 0 || cJob < 0 || cNum < 0) return null;
+    // 表头可能因合并单元格比数据行少若干格，按差值平移
+    const shift = function (cells, ci) { return ci + (cells.length - t.head.length); };
+    const seen = Object.create(null);
+    for (let ri = 1; ri < t.rows.length; ri++) {
+      const cs = rowCells(t.rows[ri]);
+      if (cs.length < 3) continue;
+      const ui = shift(cs, cUnit), ji = shift(cs, cJob), ni = shift(cs, cNum);
+      if (ui < 0 || ji < 0 || ni < 0 || ui >= cs.length || ji >= cs.length || ni >= cs.length) continue;
+      const unit = cellText(cs[ui]);
+      const job = cellText(cs[ji]);
+      if (!unit && !job) continue;                       // 表头续行
+      if (normKey(unit).indexOf('合计') >= 0 || normKey(job).indexOf('合计') >= 0) continue;
+      const num = parseFloat(pickNumber(cellText(cs[ni])));
+      if (!isFinite(num)) continue;
+      const key = normKey(unit) + '\u0001' + normKey(job);
+      if (!(key in seen)) seen[key] = num;               // 首次出现记录（去重：同岗位多检测项目只算一次）
+    }
+    const groups = Object.keys(seen);
+    const total = groups.reduce(function (n, k) { return n + seen[k]; }, 0);
+    return { total: total, groups: groups.length };
+  }
+
+  // 找「表4-1 岗位（工种）设置…」下方**相邻**的含「注：」的段落，用段落数组 texts 整体替换。
+  // texts.length === 1 → 原地替换该段落；texts.length === 2 → 用第 1 段替换原段落，克隆其
+  // <w:pPr> 生成第 2 段紧随其后；texts.length === 0 → 删除该段落（**仅在 opts.allowDelete=true 时**）。
+  // 返回 { xml, changed }。identify：表头同时含「岗位（工种）」与「职业病危害因素」。
+  //
+  // ⚠ 关键：只看**顶层** <w:p>（不在 <w:tbl> 里的），否则会误匹配到表格单元格里的「注：」段落，
+  //    导致替换/删除到错误位置（曾出现「表4-1 下方注段落被整段删掉」的实测现象）。
+  // 做法：把 xml 按「表格」切成块，只保留每块里**表格之外**的文本，再在其中找「注：」段落。
+  //
+  // ⚠ 安全兜底：默认**绝不删除**段落（arr 为空时原样返回）。删除目标注段落本身属于误操作，
+  //    我们只允许「替换成内容更少的段落」，永远不允许把这段整体抹掉。
+  function fixNoteParagraph(xml, texts, opts) {
+    const allowDelete = !!(opts && opts.allowDelete === true);
+    const arr = Array.isArray(texts) ? texts.filter(function (t) { return t !== null && t !== undefined && t !== ''; })
+      : [texts];
+    // 空数组 = 删除整段；默认禁止（防误删），只有显式 allowDelete 才放行
+    if (arr.length === 0 && !allowDelete) return { xml: xml, changed: 0 };
+    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+    let target = null;
+    for (const tbl of tables) {
+      const rows = tableRows(tbl);
+      if (!rows.length) continue;
+      const heads = rowCells(rows[0]).map(cellText).map(normKey);
+      const has = function (kw) { return heads.some(function (h) { return h.indexOf(kw) >= 0; }); };
+      if (has('岗位（工种）') && has('职业病危害因素')) { target = tbl; break; }
+    }
+    if (!target) return { xml: xml, changed: 0 };
+    // 表结束位置之后的文本；逐段扫描，且**跳过表格内部**的 <w:p>（表内段落不参与）
+    const idx = xml.indexOf(target) + target.length;
+    // 取表之后到「下一个 <w:tbl> 之前」的**非表格区**；若其间没有目标注段落，再继续往后找
+    function findNotePara(startPos) {
+      let pos = startPos;
+      while (pos < xml.length) {
+        const nextTbl = xml.indexOf('<w:tbl', pos);
+        const segEnd = nextTbl < 0 ? xml.length : nextTbl;
+        const seg = xml.slice(pos, segEnd);
+        const re = /<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g;
+        let m;
+        while ((m = re.exec(seg))) {
+          const t = cellText(m[0]);
+          if (t && t.indexOf('注：') >= 0) return { absIndex: pos + m.index, para: m[0] };
+          // 段落后遇到数字标题（如「5检测项目确定」）→ 该表后无注段落，停止
+          if (t && /^\s*\d/.test(t)) return null;
+        }
+        if (nextTbl < 0) return null;
+        // 跳过这张表，继续往后（注段落可能在别处，但仅限相邻几张）
+        const closeTbl = xml.indexOf('</w:tbl>', nextTbl);
+        if (closeTbl < 0) return null;
+        pos = closeTbl + '</w:tbl>'.length;
+      }
+      return null;
+    }
+    const found = findNotePara(idx);
+    if (!found) return { xml: xml, changed: 0 };
+    const { absIndex, para: oldP } = found;
+    // 安全约束：arr 为空时已在函数入口拦截（除非 allowDelete），此处 arr 必非空 → 一定会写出 A 段
+    let repl;
+    if (arr.length === 0) {
+      repl = '';                                        // 仅在 allowDelete=true 时到达
+    } else {
+      // 克隆原段落的 <w:pPr>（保留字体/缩进/行距等格式），第 2 段紧随其后
+      const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(oldP);
+      const pPr = pPrM ? pPrM[0] : '';
+      repl = setCellText(oldP, xmlEsc(arr[0]));
+      for (let i = 1; i < arr.length; i++) {
+        // 用同一 pPr，但去掉 paraId（避免 Word 里两段共用同一 paraId）
+        const pPrClean = pPr.replace(/\sw14:paraId="[^"]*"/g, '');
+        repl += '<w:p>' + pPrClean + '<w:r><w:t xml:space="preserve">' + xmlEsc(arr[i]) + '</w:t></w:r></w:p>';
+      }
+    }
+    // 兜底自检：替换结果里若连 A 段首句都不见了，说明定位/替换异常 → 放弃本次改动（保原样）
+    if (arr.length > 0 && repl.indexOf(xmlEsc(arr[0].slice(0, 6))) < 0) {
+      console.warn('[检评报告] 注段落替换自检未通过，放弃本步（原段落保持不动）');
+      return { xml: xml, changed: 0 };
+    }
+    const out = xml.slice(0, absIndex) + repl + xml.slice(absIndex + oldP.length);
+    return { xml: out, changed: 1 };
+  }
+
+  // 把表3-1「接触职业病危害人数」右邻单元格改成 newText（保留格式，只改首段文本）
+  function setBasicInfoContact(xml, basic, newText) {
+    if (!basic || basic.contactRow < 0) return { xml: xml, changed: 0 };
+    const r = basic.rows[basic.contactRow];
+    const cs = rowCells(r);
+    const label = cs[basic.contactCi];
+    const target = cs[basic.contactCi + 1];
+    if (label === undefined || target === undefined) return { xml: xml, changed: 0 };
+    if (normKey(cellText(label)).indexOf('接触职业病危害人数') < 0) return { xml: xml, changed: 0 };
+    const oldVal = cellText(target);
+    if (oldVal === newText) return { xml: xml, changed: 0 };
+    const newCell = setCellText(target, xmlEsc(newText));
+    return { xml: xml.replace(target, newCell), changed: 1 };
+  }
+
+  // 整合：注段落替换（含拆两段/整段删除）+ 接触职业病危害人数联动（不依赖网络）
+  // nonNoiseText：「非噪声车间岗位」筛选结果文本（车间岗位、岗位；车间岗位）；
+  //   空串 → 第二段（M车间A岗位那段）整段删除。
+  function fixNoteAndContactCount(xml, nonNoiseText) {
+    const basic = readBasicInfoTable(xml);
+    const sum = sumExposedWorkers(xml);
+    if (!basic && !sum) return { xml: xml, changed: 0 };
+    let changed = 0;
+    let out = xml;
+    // ① 表3-1「接触职业病危害人数」右邻 = 表8-1 去重合计
+    if (sum && basic && basic.contactText !== '') {
+      const contactVal = withPersonUnit(String(sum.total));
+      const r = setBasicInfoContact(out, basic, contactVal);
+      if (r.changed) { out = r.xml; changed++; }
+    }
+    // ② 注段落替换（第 1 段两处人数用实时值；第 2 段用非噪声岗位文本，为空则**只删第 2 段**）
+    //    ★ A 段始终保留：texts 至少为 [paraA]，永远不传空数组（否则会整段删除）。
+    const staffVal = basic && basic.staffText ? withPersonUnit(basic.staffText) : '';
+    const contactVal2 = sum ? withPersonUnit(String(sum.total)) : '';
+    const paraA = NOTE_PARA_A
+      .replace('{STAFF}', staffVal || '0人')
+      .replace('{CONTACT}', contactVal2 || '0人');
+    const jobs = String(nonNoiseText === null || nonNoiseText === undefined ? '' : nonNoiseText).trim();
+    const texts = jobs ? [paraA, NOTE_PARA_B_TPL.replace('{JOBS}', jobs)] : [paraA];
+    const rn = fixNoteParagraph(out, texts);
+    if (rn.changed) { out = rn.xml; changed++; }
+    return {
+      xml: out, changed: changed, staffVal: staffVal, contactVal: contactVal2,
+      total: sum ? sum.total : null, jobs: jobs, noteTexts: texts,
+    };
+  }
+
   // 对下载到的检评报告 docx 做全部后处理（读一次 document.xml，改完统一重打包）；
   // 任何一步失败都不影响出报告（回退到上一步结果 / 原始文件）。
   async function patchPjbgDocx(buf) {
@@ -646,13 +914,17 @@
       const r1 = fixHighToxColumn(xml);
       xml = r1.xml; changed += r1.changed;
       if (r1.changed) console.info('[检评报告] 「存在高毒物品」列 0/1 → 否/是，共修正 ' + r1.changed + ' 处');
-      // ② 非噪声岗位（LEX 最大值 < 80 dB）删掉「噪声」危害
+      // ② 非噪声岗位（LEX 最大值 < 80 dB）删掉「噪声」危害；同时取「非噪声车间岗位」文本供⑤用
       const u = root.SamplingUpload;
+      let nonNoiseText = '';
       if (u && typeof u.noiseNonNoiseFromBuf === 'function') {
         const pairs = await u.noiseNonNoiseFromBuf(buf);
         const r2 = fixNonNoiseHazards(xml, pairs);
         xml = r2.xml; changed += r2.changed;
         if (r2.changed) console.info('[检评报告] 非噪声岗位删除「噪声」危害，共修正 ' + r2.changed + ' 处');
+        if (u && typeof u.noiseNonNoiseTextFromBuf === 'function') {
+          try { nonNoiseText = await u.noiseNonNoiseTextFromBuf(buf); } catch (e) { nonNoiseText = ''; }
+        }
       }
       // ③ 正文措辞替换（1.4 章节的接触限值说法、7.2 标题）
       const r3 = fixReportText(xml);
@@ -662,6 +934,17 @@
       const r4 = fixHazardNote(xml);
       xml = r4.xml; changed += r4.changed;
       if (r4.changed) console.info('[检评报告] 表1-1 注3 按备注列标记裁剪，共修正 ' + r4.changed + ' 处');
+      // ⑤ 表4-1 下方「注：」段落替换（拆两段/可整段删除）+ 表3-1「接触职业病危害人数」联动表8-1 去重合计
+      const r5 = fixNoteAndContactCount(xml, nonNoiseText);
+      xml = r5.xml; changed += r5.changed;
+      if (r5.changed) {
+        console.info('[检评报告] 注段落/接触人数联动，共修正 ' + r5.changed + ' 处'
+          + '（在册职工人数=' + r5.staffVal + '，接触职业病危害人数=' + r5.contactVal
+          + (r5.total != null ? '，表8-1 作业人数去重合计=' + r5.total : '')
+          + '，非噪声岗位文本=' + (r5.jobs ? '有(' + r5.jobs.length + '字)' : '空→仅保留注段A') + '）');
+        console.info('[检评报告] 注段落文本：' + (r5.noteTexts || []).length + ' 段 → '
+          + (r5.noteTexts || []).map(function (t) { return '「' + String(t).slice(0, 20) + '…」'; }).join(' + '));
+      }
       if (!changed) return buf;
       zip.file('word/document.xml', xml);
       return await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
@@ -1073,4 +1356,16 @@
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
+
+  // 测试/复用钩子：后处理相关纯函数（供 Node 测试直接调用，不依赖 DOM）
+  root.SamplingBlf = {
+    patchPjbgDocx: patchPjbgDocx,
+    fixNoteAndContactCount: fixNoteAndContactCount,
+    sumExposedWorkers: sumExposedWorkers,
+    readBasicInfoTable: readBasicInfoTable,
+    fixNoteParagraph: fixNoteParagraph,
+    NOTE_TPL: NOTE_TPL,
+    NOTE_PARA_A: NOTE_PARA_A,
+    NOTE_PARA_B_TPL: NOTE_PARA_B_TPL,
+  };
 })(typeof self !== 'undefined' ? self : this);

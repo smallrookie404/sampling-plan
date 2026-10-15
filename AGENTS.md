@@ -113,8 +113,12 @@ sampling-plan/
   node tests/survey.smoke.mjs    # 调查表冒烟（Playwright）
   node tests/survey.edit.mjs     # 调查表编辑交互（Playwright）
   node tests/cloudflare.test.mjs # Cloudflare Functions 接口
+  node tests/pjbg.note.test.mjs  # 检评报告后处理⑤：注段落替换 + 表3-1 接触人数联动（需样例 docx，见下）
+  node tests/pjbg.note1009.test.mjs # 后处理⑤回归：非噪声筛选为空时 A 段必须保留（需 1009 报告样例，见下）
   ```
 - 测试注意：应用会自动把参考库写回 `data/library.json`；跑会改动参考库的测试前先备份，测试后 `git checkout -- sampling-plan-app/data/library.json` 恢复。
+- `tests/pjbg.note.test.mjs` 需要一份真实检评报告 docx 作样例，默认读 `%TEMP%/sampling-plan-login/pjbg.docx`，可用 `node tests/pjbg.note.test.mjs <path.docx>` 或环境变量 `PJBG_SAMPLE` 指定。纯 Node（`vm` 沙箱加载 `js/blf.js` + `JSZip`），不依赖浏览器。
+- `tests/pjbg.note1009.test.mjs` 针对「非噪声车间岗位筛选为空 → A 段被误删」的回归，默认读 `%TEMP%/sampling-plan-login/pjbg-1009.docx`（可用 `PJBG_1009` 环境变量或 argv 覆盖）；样例缺失时自动跳过。
 - 环境注意：本机系统 PATH 中可能没有 `node`（`启动采样计划软件.bat` 会按顺序回退到内置运行时）。可先取内置 Node 绝对路径再执行，例如 `C:\Users\<用户>\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`；`sampling-plan-app/node_modules` 已含 jszip 与 playwright-core。
 - 快速自检：对改动文件跑 `node --check`（对全部 js/mjs 跑一遍也能一次性发现语法问题）。
 
