@@ -47,6 +47,9 @@ page.on("pageerror", (e) => { if (!IGNORE.test(e.message)) errors.push("pageerro
 // 否则启动期的 /auth/info 401 会触发「登录失效」把会话清掉（token=null），
 // 后面点「回退」只会走 showLogin() 而不会发出任何请求。
 const seen = { findList: "", jcbg: "", jcbgYl: "", reset: [], getAffixJcbg: "" };
+// 全局 getAffix 计数器：供「面板缓存命中 → 不重新联网」断言使用（早于各分段的局部数组声明）。
+let getAffixJcbgCount = 0;
+page.on("request", (r) => { if (/projectJcbgLastAffix\/getAffix/.test(r.url())) getAffixJcbgCount++; });
 const j = (body) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
 await page.route("**/auth/info*", (route) => route.fulfill(j({ user: { userName: "测试账号" } })));
 await page.route("**/api/reportData/findList*", (route) => {
@@ -170,33 +173,32 @@ const tabLabels = await page.$$eval("nav.tabs .tab", (els) => els.map((e) => e.t
 check("页签顺序含「数据报告处理」且在噪声之后",
   tabLabels.indexOf("数据报告处理") === tabLabels.indexOf("噪声数据结果") + 1, tabLabels.join(" | "));
 
-// 2) 点击页签 → 面板切换
+// 2) ★ 未选项目时点击页签 → **不允许进入**（拦截 app.js 的页签切换 + 提示）
+//    新需求：「当没有选中项目时，数据报告处理点击不能进入」。
+const beforeTab = await page.$eval("nav.tabs .tab.active", (el) => el.dataset.tab).catch(() => null);
+dialogs.length = 0;
 await page.click('nav.tabs .tab[data-tab="report"]');
 await page.waitForTimeout(300);
-const panelActive = await page.$eval("#tab-report", (el) => el.classList.contains("active"));
-check("点击后 #tab-report 激活", panelActive);
+const panelActiveWhenNoProject = await page.$eval("#tab-report", (el) => el.classList.contains("active"));
+const afterTab = await page.$eval("nav.tabs .tab.active", (el) => el.dataset.tab).catch(() => null);
+check("未选项目时点「数据报告处理」不能进入（面板不激活）", panelActiveWhenNoProject === false);
+check("未选项目时点「数据报告处理」停留在原页签", afterTab === beforeTab, "before=" + beforeTab + " after=" + afterTab);
+check("未选项目时点「数据报告处理」会弹提示", dialogs.length > 0);
 
-// 3) 只剩「数据报告回退」「数据报告审核」两个按钮；「查看…报告单」按钮已移除
-const resetVisible = await page.isVisible("#report-reset");
-const auditVisible = await page.isVisible("#report-audit");
-const viewFinalExists = await page.$("#report-view-final");
-check("「数据报告回退」按钮可见", resetVisible);
-check("「数据报告审核」按钮可见", auditVisible);
-check("「查看…报告单」按钮已移除（审核成功自动显示）", viewFinalExists === null);
-
-// 4) 未选项目时显示空态提示
-const emptyText = await page.$eval("#report-empty", (el) => el.textContent.trim());
-check("未选项目时显示空态提示", /尚未在「数据上传」中选择项目/.test(emptyText), emptyText.slice(0, 40));
-
-// 5) 未选项目时点「回退」→ 弹提示且不发请求
+// 3) 未选项目时点击「数据报告回退」→ 弹提示且不发请求
 let requested = false;
 page.on("request", (r) => { if (/resetProjectApprovalProcess|\/audit$|submitJcdgReview/.test(r.url())) requested = true; });
-await page.click("#report-reset");
+// 按钮在未进入的页签内不可见 → 直接调 API（等价于程序化触发）验证其守卫
+await page.evaluate(() => window.SamplingUpload.resetReportApproval());
 await page.waitForTimeout(400);
 check("未选项目点回退会提示且不请求接口", dialogs.length > 0 && !requested,
   "dialogs=" + dialogs.length + " requested=" + requested);
 
-// 6) 选中项目后点「回退」→ 必须**先在「已完结」项目里定位**
+// 4) 未选项目时显示空态提示（面板内容由 refreshReportPanel 维护，与是否进入无关）
+const emptyText = await page.$eval("#report-empty", (el) => el.textContent.trim());
+check("未选项目时显示空态提示", /尚未在「数据上传」中选择项目/.test(emptyText), emptyText.slice(0, 40));
+
+// 5) 选中项目后点「回退」→ 必须**先在「已完结」项目里定位**
 //    （GET /api/projectJcbgLastAffix?isDel=1；回退只对已完结项目有效，用 findList 搜出来的会「找不到」）
 //    接口 mock 已在 goto 之前注册（见上）。
 await page.evaluate(() => {
@@ -212,6 +214,23 @@ await page.waitForTimeout(400);
 const projInfo = await page.$eval("#projectInfo", (e) => e.textContent.trim());
 check("「数据上传」搜索能列出并选中项目", items.length > 0 && /BTC26-SZJC0959/.test(projInfo),
   items.join(" | ") + " ／ 已选=" + projInfo);
+
+// 5.1) ★ 选中项目后点「数据报告处理」页签 → 正常进入
+//     ⚠ 先把「数据上传」浮层收起来（它会拦截页签点击）
+await page.evaluate(() => document.getElementById("xcdc-upload").classList.add("hidden"));
+await page.waitForTimeout(100);
+await page.click('nav.tabs .tab[data-tab="report"]');
+await page.waitForTimeout(300);
+const panelActiveAfterSelect = await page.$eval("#tab-report", (el) => el.classList.contains("active"));
+check("选中项目后点「数据报告处理」可正常进入", panelActiveAfterSelect === true);
+
+// 5.2) 只剩「数据报告回退」「数据报告审核」两个按钮；「查看…报告单」按钮已移除
+const resetVisible = await page.isVisible("#report-reset");
+const auditVisible = await page.isVisible("#report-audit");
+const viewFinalExists = await page.$("#report-view-final");
+check("「数据报告回退」按钮可见", resetVisible);
+check("「数据报告审核」按钮可见", auditVisible);
+check("「查看…报告单」按钮已移除（审核成功自动显示）", viewFinalExists === null);
 
 // 6.1) ★ 选中项目后，「数据报告处理」页应显示该项目的**数据报告项目状态**
 //   数据源 = GET /api/projectJcbgLastAffix?isDel=<0|1>&code=<编号>（平台「检测结果报告单」列表的数据源）
@@ -257,6 +276,8 @@ check("项目状态映射与平台 statusFn 一致（isDel=1 优先 → 已完�
 seen.getAffixJcbg = "";
 affixState.jcbg = "2";
 affixState.jcbgOver = false;
+// 下一段需观察「首次进入自动浏览」的真实网络行为 → 先作废面板缓存（模拟状态变化），否则会命中缓存秒开、不发请求
+await page.evaluate(() => window.SamplingUpload.invalidateReportCache());
 await page.click('nav.tabs .tab[data-tab="report"]');
 await page.waitForFunction(() => {
   const box = document.getElementById("report-pdf-box");
@@ -284,6 +305,45 @@ check("自动浏览当前状态报告时不滚动主页面（滚动条不突跳�
 // 复位：后续步骤 8 依赖「jcbg 初始无记录，只有调 submitJcbgReview 才出现待审记录」来锁定第①步修复
 affixState.jcbg = null;
 affixState.jcbgOver = false;
+
+// 6.1c) ★★ 面板缓存：项目与数据报告状态都未变化时，来回切换页签应**命中缓存、不重新联网**
+//     —— 需求「显示的数据报告在没有切换项目及切换数据报告的项目状态时，缓存一下，来回切换页签时可以加快加载速度」。
+//     前置：上一步自动浏览已完成 → 缓存应已写入（键 = projectId|status|isDel）。
+const cache1 = await page.evaluate(() => {
+  const c = window.SamplingUpload.getReportPanelCache();
+  return c ? { key: c.key, hasPdf: !!(c.pdf && c.pdf.objUrl), badgeText: c.badgeText, statusText: c.statusText } : null;
+});
+check("自动浏览完成后写入面板缓存（含内嵌 PDF blob）",
+  cache1 && /^\d+\|/.test(cache1.key) && cache1.hasPdf === true
+    && /已完结|待|无报告/.test(cache1.badgeText || "") && /已显示该项目当下流程中的数据报告/.test(cache1.statusText || ""),
+  JSON.stringify(cache1).slice(0, 180));
+
+// 切到别的页签、再切回来：命中缓存 → 不应再发 getAffix / 状态查询请求
+const pdfBlobBefore = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
+await page.click('nav.tabs .tab[data-tab="main"]');
+await page.waitForTimeout(200);
+seen.getAffixJcbg = "";
+seen.jcbg = "";
+const getAffixBefore = getAffixJcbgCount;
+await page.click('nav.tabs .tab[data-tab="report"]');
+await page.waitForTimeout(800);
+const cacheHitBoxVisible = await page.isVisible("#report-pdf-box");
+const cacheHitIframeSrc = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
+const cacheHitStatus = await page.$eval("#report-status", (e) => e.textContent.trim()).catch(() => "");
+check("切走再切回命中缓存：不重新请求 getAffix / 项目状态",
+  getAffixJcbgCount === getAffixBefore && !seen.jcbg,
+  "getAffixBefore=" + getAffixBefore + " after=" + getAffixJcbgCount + " seen.jcbg=" + (seen.jcbg || ""));
+check("切走再切回复原面板：内嵌 PDF 复用同一 blob URL（不重新下载）",
+  cacheHitBoxVisible && cacheHitIframeSrc.startsWith("blob:") && cacheHitIframeSrc === pdfBlobBefore
+    && /已显示该项目当下流程中的数据报告/.test(cacheHitStatus),
+  "visible=" + cacheHitBoxVisible + " sameBlob=" + (cacheHitIframeSrc === pdfBlobBefore)
+    + " blob=" + String(cacheHitIframeSrc).slice(0, 30) + " ／ status=" + cacheHitStatus.slice(0, 60));
+
+// 6.1d) ★ 状态变化（模拟：审核/回退后）→ 缓存键随之变化 → 应重新拉取
+await page.evaluate(() => window.SamplingUpload.invalidateReportCache());
+const cacheAfterInvalidate = await page.evaluate(() => window.SamplingUpload.getReportPanelCache());
+check("作废缓存后 getReportPanelCache() 为空", cacheAfterInvalidate === null,
+  JSON.stringify(cacheAfterInvalidate));
 
 // 6.2) 选中项目后点「回退」→ 必须**先在「已完结」项目里定位**
 //      （GET /api/projectJcbgLastAffix?isDel=1；回退只对已完结项目有效，用 findList 搜出来的会「找不到」）

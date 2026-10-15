@@ -2296,6 +2296,9 @@
 
     // 拉取并渲染「选中项目」的数据报告状态（异步；失败只写徽标，不打断其它逻辑）
     let reportStateSeq = 0;
+    // 最近一次成功取到的「数据报告状态」令牌（status|isDel）——用于面板缓存键判定。
+    //   · null/undefined = 尚无结果；'none' = 平台无该编号的报告流程记录；'err' = 查询失败。
+    let reportStateToken = null;
     async function loadReportStatus() {
       if (!selectedProject || !selectedProject.id) { hideReportState(); return; }
       const seq = ++reportStateSeq;
@@ -2304,18 +2307,39 @@
         const st = await fetchReportStatus(selectedProject);
         if (seq !== reportStateSeq) return; // 期间已切换项目 → 丢弃过期结果
         if (!st) {
+          reportStateToken = 'none';
           renderReportState('none', '无报告流程记录',
             '该项目在「检测结果报告单」流程中尚无记录（可能未提交审复核）');
+          maybeCacheReportPanel();
           return;
         }
         const txt = projectStatusText(st.status, st.isDel);
         const done = String(st.isDel) === '1';
+        reportStateToken = String(st.status) + '|' + String(st.isDel);
         // 明细不再暴露 status/isDel 等技术字段，只保留对用户有意义的信息
         renderReportState(done ? 'done' : 'pending', txt, '');
+        maybeCacheReportPanel();
       } catch (e) {
         if (seq !== reportStateSeq) return;
+        reportStateToken = 'err';
         renderReportState('err', '状态查询失败', (e && e.message) ? e.message : String(e));
       }
+    }
+
+    // 状态与报告 PDF 都就绪后，把面板写入缓存（供页签来回切换时秒开）。
+    //   用一个「待缓存」标记协调两条异步链（loadReportStatus / autoShowCurrentReport 谁后到谁触发）。
+    let reportPdfCacheInfo = null;   // { fname, isOver, node } —— 最近一次自动浏览成功的报告信息
+    let reportPdfPending = false;    // 自动浏览是否仍在进行
+    function maybeCacheReportPanel() {
+      if (!selectedProject || !selectedProject.id) return;
+      if (reportStateToken === null || reportStateToken === 'err') return; // 状态未就绪/失败 → 不缓存
+      if (reportPdfPending) return;    // PDF 仍在加载 → 等它结束再统一缓存（避免缓存到半成品）
+      const el = reportEls();
+      const badge = document.getElementById('report-state-badge');
+      // 状态徽标仍停在「查询中…」→ 还没出结果，不缓存
+      if (el.state && !el.state.classList.contains('hidden') && badge &&
+          /查询中/.test(badge.textContent || '')) return;
+      cacheReportPanel(reportStateToken, reportPdfCacheInfo);
     }
 
     function reportProjectLabel() {
@@ -2324,12 +2348,35 @@
       return '项目 ' + (p.code || '') + (p.belongInspectName ? '（' + p.belongInspectName + '）' : '');
     }
 
+    // ★★ 「数据报告处理」面板缓存（2026-10-16）
+    //   目的：在**项目未切换**且**数据报告状态未变化**时，来回切换页签无需重复联网，
+    //         直接复原上一次已经渲染好的面板（状态徽标 + 报告 PDF 内嵌框）→ 秒开。
+    //   · 缓存键 = projectId + '|' + 数据报告状态（status/isDel，未取到则用 'none'）。
+    //   · 项目切换 / 状态变化 → 键变化 → 自动失效并重新拉取。
+    //   · 状态在**审核/回退**后必然变化，故结算后主动清缓存（invalidateReportCache）。
+    //   · 缓存里保存 PDF 的 blob 对象 URL：切回时直接复用 iframe，不再重新下载整份 PDF（最大耗时点）。
+    //   ⚠ blob URL 只能被一个 iframe 复用；页面内只保留一个 #report-pdf-frame-wrap，故安全。
+    let reportPanelCache = null; // { key, badgePhase, badgeText, detail, statusText, pdf: { objUrl, fname, isOver, node } | null }
+
+    function reportCacheKey() {
+      if (!selectedProject || !selectedProject.id) return '';
+      return String(selectedProject.id) + '|' + (reportPanelCache && reportPanelCache.stateToken ? reportPanelCache.stateToken : '');
+    }
+    // 清空「数据报告处理」的面板缓存；若连带释放 PDF blob URL，避免内存泄漏。
+    function invalidateReportCache() {
+      if (reportPanelCache && reportPanelCache.pdf && reportPanelCache.pdf.objUrl) {
+        try { URL.revokeObjectURL(reportPanelCache.pdf.objUrl); } catch (e) {}
+      }
+      reportPanelCache = null;
+    }
+
     function refreshReportPanel() {
       const el = reportEls();
       if (!el.empty) return;
-      // 切换项目 / 清空选择时，隐藏并释放上一次的报告 PDF 预览
-      try { if (typeof hideReportPdf === 'function') hideReportPdf(); } catch (e) {}
       if (!selectedProject || !selectedProject.id) {
+        // 切换项目 / 清空选择时，隐藏并释放上一次的报告 PDF 预览 + 缓存
+        try { if (typeof hideReportPdf === 'function') hideReportPdf(); } catch (e) {}
+        invalidateReportCache();
         el.empty.textContent = '尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再进行数据报告处理。';
         el.empty.classList.remove('hidden');
         if (el.info) el.info.classList.add('hidden');
@@ -2337,6 +2384,13 @@
         hideReportState();
         return;
       }
+      // ★ 命中缓存（同一项目 + 同一数据报告状态）→ 直接复原，无需联网
+      if (reportPanelCache && reportPanelCache.key === reportCacheKey()) {
+        restoreReportPanelFromCache(el);
+        return;
+      }
+      // 未命中 → 隐藏并释放上一次的报告 PDF 预览（也释放其内存）
+      try { if (typeof hideReportPdf === 'function') hideReportPdf(); } catch (e) {}
       el.empty.classList.add('hidden');
       if (el.info) {
         // 已按要求去除面板内的文字说明，仅保留工具栏与状态栏
@@ -2344,12 +2398,72 @@
         el.info.classList.add('hidden');
       }
       if (el.status) el.status.textContent = '';
+      // ★ 新项目/新状态 → 先重置状态令牌与 PDF 信息，避免用上一次项目的残留值错写缓存键
+      reportStateToken = null;
+      reportPdfCacheInfo = null;
       // 选中项目 → 异步查询并显示「数据报告项目状态」
       loadReportStatus();
       // ★ 默认自动弹出「当前状态下的检测结果报告单」浏览
       //   —— 项目在「检测结果报告单」流程里的审批记录附件（getAffix.jcbgAffix）就是该状态下的数据报告，
       //      与人工在平台「流程审批 → 检测结果报告单 → 附件」看到的完全一致（可能未完结，如「已提交审复核」）。
       autoShowCurrentReport();
+    }
+
+    // 从缓存复原面板：状态徽标 + 状态栏文案 + 内嵌 PDF（复用已下载的 blob URL，不重新联网）。
+    function restoreReportPanelFromCache(el) {
+      const c = reportPanelCache;
+      el.empty.classList.add('hidden');
+      if (el.info) { el.info.innerHTML = ''; el.info.classList.add('hidden'); }
+      if (c.badgePhase) renderReportState(c.badgePhase, c.badgeText, c.detail);
+      else hideReportState();
+      if (el.status) el.status.textContent = c.statusText || '';
+      // 复原内嵌 PDF：blob URL 仍在缓存中 → 直接重建 iframe（不重新下载）。
+      //   ⚠ 所有权始终归缓存，这里只是把「当前显示指针」指向它；缓存条目保留该 URL 不被清空。
+      const box = document.getElementById('report-pdf-box');
+      const wrap = document.getElementById('report-pdf-frame-wrap');
+      const pdf = c.pdf;
+      if (pdf && pdf.objUrl && wrap && box) {
+        reportPdfObjUrl = pdf.objUrl;   // 显示指针指向缓存持有的 blob（缓存条目仍保留 objUrl）
+        wrap.innerHTML = '';
+        const fr = document.createElement('iframe');
+        fr.src = reportPdfObjUrl;
+        fr.title = '当下流程中的数据报告';
+        wrap.appendChild(fr);
+        box.classList.remove('hidden');
+        try { document.body.classList.add('pdf-open'); } catch (e) {}
+      } else {
+        if (box) box.classList.add('hidden');
+        if (wrap) wrap.innerHTML = '';
+      }
+    }
+
+    // 把当前面板状态写入缓存（在状态与 PDF 都就绪后调用）。pdfInfo 为 { fname, isOver, node } 或 null。
+    function cacheReportPanel(stateToken, pdfInfo) {
+      if (!selectedProject || !selectedProject.id) return;
+      const el = reportEls();
+      const badge = document.getElementById('report-state-badge');
+      const detail = document.getElementById('report-state-detail');
+      const visible = el.state && !el.state.classList.contains('hidden');
+      let phase = '', text = '';
+      if (badge) {
+        const cls = String(badge.className || '').replace('report-state-badge', '').trim();
+        phase = cls.split(/\s+/)[0] || '';
+        text = badge.textContent || '';
+      }
+      // PDF 只要当前已内嵌（reportPdfObjUrl 非空）就缓存——不依赖 pdfInfo 是否由自动浏览链路写入
+      const hasPdf = !!reportPdfObjUrl;
+      reportPanelCache = {
+        key: String(selectedProject.id) + '|' + (stateToken || 'none'),
+        stateToken: stateToken || 'none',
+        badgePhase: visible ? phase : '',
+        badgeText: text,
+        detail: detail ? detail.textContent : '',
+        statusText: el.status ? el.status.textContent : '',
+        // ★ 缓存**当前**的 reportPdfObjUrl —— 切回时复用，避免重新下载整份 PDF（最大耗时点）
+        pdf: hasPdf
+          ? { objUrl: reportPdfObjUrl, fname: (pdfInfo && pdfInfo.fname) || '', isOver: !!(pdfInfo && pdfInfo.isOver), node: pdfInfo ? pdfInfo.node : undefined }
+          : null,
+      };
     }
 
     // 进入「数据报告处理」页签 / 切换项目时，默认自动加载并内嵌显示**当下流程中**的检测结果报告单。
@@ -2359,9 +2473,13 @@
     async function autoShowCurrentReport() {
       if (!selectedProject || !selectedProject.id) return;
       const seq = ++reportPdfSeq;
+      reportPdfPending = true;
+      reportPdfCacheInfo = null;
       try {
         const r = await showFinalReportPdf({ auto: true });
         if (seq !== reportPdfSeq) return; // 期间已切换项目 → 该 PDF 已由新项目覆盖/释放
+        // 自动浏览成功 → 记录信息，等待与状态查询一起写入缓存
+        reportPdfCacheInfo = { fname: (r && r.fname) || '', isOver: !!(r && r.isOver) };
         return r;
       } catch (e) {
         if (seq !== reportPdfSeq) return;
@@ -2369,6 +2487,11 @@
         const el = reportEls();
         if (el.status) el.status.textContent = '未能加载当下流程中的数据报告：' + ((e && e.message) ? e.message : String(e));
         try { if (typeof hideReportPdf === 'function') hideReportPdf(); } catch (e2) {}
+      } finally {
+        if (seq === reportPdfSeq) {
+          reportPdfPending = false;
+          maybeCacheReportPanel();   // ★ 两条链都结束 → 尝试写缓存
+        }
       }
     }
 
@@ -2479,6 +2602,7 @@
         alert('数据报告回退成功（已依次重置：' + RESET_STEPS.map(function (s) { return s.label; }).join(' → ') + '）。'
           + (changedAny ? '' : '\n注：两步都无需变更，该项目原本已是初始状态。') + '\n' + reportProjectLabel());
         // ★ 回退成功后：与「审核成功后」「进页签自动浏览」共用同一套「当下流程中的数据报告」逻辑
+        invalidateReportCache();   // 审批状态已变 → 作废面板缓存，强制重新拉取
         if (el.status) el.status.textContent = '✅ 两步回退全部完成，正在加载当前流程中的数据报告…';
         try {
           await showFinalReportPdf({});
@@ -2715,6 +2839,7 @@
           + (skipped.length ? '（断点续审：从当前节点续跑至链路终点）\n' : '')
           + reportProjectLabel() + (tail ? '\n' + tail : ''));
         // ★ 审核成功后：与「回退成功后」「进页签自动浏览」共用同一套「当下流程中的数据报告」逻辑
+        invalidateReportCache();   // 审批状态已变 → 作废面板缓存，强制重新拉取
         if (el.status) el.status.textContent = '✅ 审核链全部完成，正在加载当前流程中的数据报告…';
         try {
           await showFinalReportPdf({});
@@ -2744,13 +2869,21 @@
     //      ⚠ 回退会**清空 jcbg 审批链记录**（getAffix 变空），但报告文件本体仍在 → 只能从 ② 取。
     //   用当前会话令牌直连平台取路径；展示方式：**当前页面下方内嵌 iframe**（不新开标签页）。
     let reportPdfObjUrl = null;
-    function hideReportPdf() {
+    // opts.keepBlob=true → 只隐藏 iframe、**不释放** blob URL，供面板缓存复用（页签来回切换秒开）。
+    //   默认（无参）= 完全释放（切项目 / 改状态 / 主动关闭时用）。
+    function hideReportPdf(opts) {
+      const keepBlob = !!(opts && opts.keepBlob);
       const box = document.getElementById('report-pdf-box');
       const wrap = document.getElementById('report-pdf-frame-wrap');
       if (wrap) wrap.innerHTML = '';
       if (box) box.classList.add('hidden');
       try { document.body.classList.remove('pdf-open'); } catch (e) {}
-      if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} reportPdfObjUrl = null; }
+      if (reportPdfObjUrl) {
+        // 缓存仍持有该 blob（cachedObjUrl 指向它）→ 不释放，仅断开当前引用；复原时再接管
+        const owned = reportPanelCache && reportPanelCache.pdf && reportPanelCache.pdf.objUrl === reportPdfObjUrl;
+        if (!keepBlob && !owned) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} }
+        reportPdfObjUrl = null;
+      }
     }
     // 解析报告来源路径（不下载，只拿路径）。返回 { path, isOver, node, src } 或抛错。
     async function resolveFinalReportPath(opts) {
@@ -2823,8 +2956,11 @@
       const resp = await fetch(url, { headers: token ? { Authorization: token } : {} });
       if (!resp.ok) throw new Error('下载报告失败(HTTP ' + resp.status + ')');
       const blob = await resp.blob();
-      // 释放上一次的 blob URL
-      if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} }
+      // 释放上一次的 blob URL（⚠ 若该 URL 仍被面板缓存持有，则不释放——所有权归缓存）
+      if (reportPdfObjUrl) {
+        const owned = reportPanelCache && reportPanelCache.pdf && reportPanelCache.pdf.objUrl === reportPdfObjUrl;
+        if (!owned) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} }
+      }
       reportPdfObjUrl = URL.createObjectURL(blob);
       // 内嵌显示在「数据报告处理」页签下方
       const box = document.getElementById('report-pdf-box');
@@ -2855,8 +2991,24 @@
       return { ok: true, fname: fname, isOver: isOver };
     }
 
+    // 进入「数据报告处理」页签的策略（与「噪声数据结果」页签一致）：
+    //   · 未选中项目 → **不允许进入**（拦下 app.js 的页签切换，只提示用户先去「数据上传」选项目）
+    //   · 已选项目   → 正常进入；面板内容由 refreshReportPanel() 负责（命中缓存则秒开）
+    // 做法：捕获阶段拦截 app.js 的 click；未选项目才拦下；已选项目放行后于微任务里刷新面板
+    //        （下一 tick 再刷新，确保 app.js 已把 #tab-report 切为 active，避免在隐藏面板上操作）。
     const reportTabBtn = document.querySelector('.tab[data-tab="report"]');
-    if (reportTabBtn) reportTabBtn.addEventListener('click', function () { refreshReportPanel(); });
+    if (reportTabBtn) {
+      reportTabBtn.addEventListener('click', function (e) {
+        if (!selectedProject || !selectedProject.id) {
+          e.preventDefault();
+          e.stopImmediatePropagation();   // 拦下 app.js 的页签切换 → 不进入该页签
+          alert('尚未在「数据上传」中选择项目。\n请先到「数据上传」查询并选中项目，再进行数据报告处理。');
+          return;
+        }
+        // 已选项目 → 放行，交给 app.js 切换；随后刷新面板（缓存命中则直接复原）
+        setTimeout(function () { refreshReportPanel(); }, 0);
+      }, true);
+    }
     const reportResetBtn = document.getElementById('report-reset');
     if (reportResetBtn) reportResetBtn.addEventListener('click', resetReportApproval);
     const reportAuditBtn = document.getElementById('report-audit');
@@ -2975,6 +3127,9 @@
       auditReport: auditReport,
       showFinalReportPdf: showFinalReportPdf,
       hideReportPdf: hideReportPdf,
+      // 面板缓存（供测试/复用）：命中缓存则页签来回切换不联网
+      invalidateReportCache: invalidateReportCache,
+      getReportPanelCache: function () { return reportPanelCache; },
       // 「数据报告状态」查询/映射（供测试/复用）
       loadReportStatus: loadReportStatus,
       fetchReportStatus: fetchReportStatus,
