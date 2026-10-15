@@ -471,11 +471,51 @@ const expectResume = [
 check("断点续审端到端：链中途只执行未完成步骤（不重复提交、不重审已完成节点）",
   JSON.stringify(callsResume) === JSON.stringify(expectResume),
   JSON.stringify(callsResume));
-check("断点续审完成弹窗标注「跳过已完成」且无失败",
-  newDlgResume.some((m) => /数据报告审核完成/.test(m) && /跳过/.test(m))
+check("断点续审完成弹窗标注「从当前节点续跑至链路终点」且无失败",
+  newDlgResume.some((m) => /数据报告审核完成/.test(m) && /续跑至链路终点/.test(m))
     && !newDlgResume.some((m) => /失败/.test(m)),
   JSON.stringify(newDlgResume).slice(0, 200));
+// ★ 关键：链中途起点（底稿待理化复核 + 报告单待理化签发）也必须**一路审到底**——
+//   跑完 jcdg 复核后要接着跑 jcbg 签发，最后走到 isOver=1（jcbgOver），不能执行一步就退。
+check("链中途起点也能一路审到链路终点（跑完 2 步后 jcbg 达 isOver=1 完结）",
+  affixState.jcbgOver === true && callsResume.length === 2,
+  "jcbgOver=" + affixState.jcbgOver + " calls=" + JSON.stringify(callsResume));
 // 复位：后续不受影响
+affixState.jcdg = null;
+affixState.jcbg = null;
+affixState.jcbgOver = false;
+await page.waitForFunction(() => {
+  const b = document.getElementById("report-audit");
+  return b && !b.disabled;
+}, null, { timeout: 20000 });
+
+// 9.7) ★★ 一路审到底（本次修复的核心）：从「报告单待理化审核(2)」起步，
+//   必须**连续跑 ③报告单理化审核 → ④报告单理化签发** 直到 jcbg isOver=1 完结，
+//   绝不能执行一步就退（用户反馈的 bug）。
+const dlgBeforeDrive = dialogs.length;
+const callsDrive = [];
+page.on("request", (r) => {
+  const u = r.url();
+  if (/submitJcdgReview|reportFile\/submitJcbgReview|projectJcdgLastAffixNew\/audit$|projectJcbgLastAffixNew\/audit$/.test(u))
+    callsDrive.push(u.replace(/^https?:\/\/[^/]+/, "").split("?")[0]);
+});
+// 底稿已走完（无记录），报告单停在理化审核(2) —— 典型「中途进入」场景
+affixState.jcdg = null;
+affixState.jcbg = "2";
+affixState.jcbgOver = false;
+await page.click("#report-audit");
+await page.waitForTimeout(8000);
+const newDlgDrive = dialogs.slice(dlgBeforeDrive);
+const expectDrive = [
+  "/api/projectJcbgLastAffixNew/audit",   // ③ 报告单理化审核
+  "/api/projectJcbgLastAffixNew/audit",   // ④ 报告单理化签发（动态推进出的下一步）
+];
+check("★★ 一路审到底：从报告单理化审核起步，连续跑到签发完结（不止执行一步）",
+  JSON.stringify(callsDrive) === JSON.stringify(expectDrive) && affixState.jcbgOver === true
+    && newDlgDrive.some((m) => /数据报告审核完成/.test(m)) && !newDlgDrive.some((m) => /失败/.test(m)),
+  "calls=" + JSON.stringify(callsDrive) + " jcbgOver=" + affixState.jcbgOver
+    + " 弹窗=" + JSON.stringify(newDlgDrive).slice(0, 160));
+// 复位
 affixState.jcdg = null;
 affixState.jcbg = null;
 affixState.jcbgOver = false;
