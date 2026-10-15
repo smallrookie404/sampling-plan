@@ -117,7 +117,8 @@
       let data = null;
       try { data = JSON.parse(text); } catch (e) { data = text; }
       // 登录失效：平台对过期会话返回 401（"找不到当前登录的信息"）→ 提示并引导重新登录
-      if (resp.status === 401 && opts.token && typeof authExpiredHandler === 'function') authExpiredHandler();
+      // （opts.skipAuthExpired：账号池令牌探针等内部调用使用，避免误伤主会话）
+      if (resp.status === 401 && opts.token && !opts.skipAuthExpired && typeof authExpiredHandler === 'function') authExpiredHandler();
       return { status: resp.status, data: data, text: text };
     } finally {
       clearTimeout(timer);
@@ -759,8 +760,14 @@
         syncUserMenu();
         enterApp();
         log('登录成功：' + userInfo.userName + '（' + userInfo.userCode + '），上传主体为当前账号');
+        // 登录账号是池成员时：本会话令牌直接入池共享（回退/审核用该账号不再经桥重复登录）
+        if (userInfo && POOL_ACCOUNTS.indexOf(userInfo.userCode) !== -1) {
+          poolTokens[userInfo.userCode] = { token: token, orgId: orgId };
+          log('「' + userInfo.userCode + '」为本会话登录账号，令牌已入池共享');
+        }
         prefetchYear();
         loadUserList();
+        warmAccountPool(); // 后台补齐池内其余账号（已有缓存的跳过，不重复登录）
       } catch (e) {
         loginMsg.textContent = '登录失败：' + e.message;
         refreshCaptcha();
@@ -1982,31 +1989,115 @@
       return bridgeBasePromise;
     }
 
-    async function fetchBridgeToken(account) {
-      const base = await bridgeBase();
-      // 同源路由（本地服务 / Cloudflare）带上本会话令牌：
-      // 云端版靠它校验调用方是已登录平台的用户（本地版忽略该头）
-      const headers = {};
-      if (base.charAt(0) === '/') {
-        if (token) headers.Authorization = token;
-        if (orgId) headers.organizationId = String(orgId);
+    // ---------- 账号池共享令牌缓存 ----------
+    // 池内账号共用一份令牌缓存：桥预热、主界面登录（登录账号是池成员时）、
+    // 回退/审核调用都读写同一份，同一账号不重复登录；
+    // 调用时鉴权失效 → 只作废该账号缓存 → 桥重登刷新 → 重试一次。
+    const POOL_ACCOUNTS = ['btc-gxz', 'btc-wcy', 'btc-jyg', 'btc-zhj'];
+    const poolTokens = {};   // account -> { token, orgId }
+    const poolFetching = {}; // account -> Promise（并发去重：冷启动/预热只触发一次桥登录）
+
+    async function fetchBridgeToken(account, opts) {
+      opts = opts || {};
+      // 缓存命中直接用（可能刚被主界面登录或预热填好）
+      if (!opts.force && poolTokens[account]) return poolTokens[account];
+      if (!opts.force && poolFetching[account]) return poolFetching[account];
+      const p = (async function () {
+        const base = await bridgeBase();
+        // 同源路由（本地服务 / Cloudflare）带上本会话令牌：
+        // 云端版靠它校验调用方是已登录平台的用户（本地版忽略该头）
+        const headers = {};
+        if (base.charAt(0) === '/') {
+          if (token) headers.Authorization = token;
+          if (orgId) headers.organizationId = String(orgId);
+        }
+        let resp;
+        try {
+          resp = await fetch(base + '/' + encodeURIComponent(account), { cache: 'no-store', headers: headers });
+        } catch (e) {
+          // fetch 只会抛 TypeError: Failed to fetch，这里换成可操作的提示
+          throw new Error('连不上账号桥 ' + base
+            + '（若用本地服务打开，请确认 Python 3 可用；也可双击 captcha-ocr/start-bridge.bat 手动启动）');
+        }
+        if (!resp.ok) {
+          let msg = '账号桥返回 HTTP ' + resp.status;
+          try { const d = await resp.json(); if (d && d.message) msg = d.message; } catch (e) {}
+          throw new Error(msg);
+        }
+        const d = await resp.json();
+        if (!d || !d.token) throw new Error('账号桥未返回 token：' + account);
+        const entry = { token: d.token, orgId: d.orgId };
+        poolTokens[account] = entry;
+        return entry;
+      })();
+      if (!opts.force) {
+        poolFetching[account] = p;
+        const clear = function () { delete poolFetching[account]; };
+        p.then(clear, clear);
       }
-      let resp;
+      return p;
+    }
+
+    // 平台响应/异常是否像「鉴权失败」（令牌过期、未认证）
+    function poolAuthFailed(x) {
+      if (!x) return false;
+      if (typeof x.status === 'number') {
+        if (x.status === 401 || x.status === 403) return true;
+        const d = x.data;
+        const code = d && d.code != null ? String(d.code) : '';
+        if (code === '401' || code === '403') return true;
+        const txt = (d && (d.message || d.msg)) || '';
+        return /未登录|登录失效|登录已过期|令牌|token|未认证|认证失败/i.test(txt);
+      }
+      return /未登录|登录失效|登录已过期|令牌|token|未认证|认证失败/i.test(String(x.message || ''));
+    }
+
+    // 调用前校验池令牌：用轻量已鉴权 GET（auth/info）探测；失效（401/403/登录
+    // 失效文案）→ 作废该账号缓存 → 账号桥重登 → 就地刷新 entry（共享缓存同步
+    // 更新）。网络抖动等非鉴权错误不触发重登，按原令牌继续。
+    async function ensurePoolTokenFresh(account, entry) {
+      if (!entry || !entry.token) return entry;
+      let probe = null;
       try {
-        resp = await fetch(base + '/' + encodeURIComponent(account), { cache: 'no-store', headers: headers });
+        probe = await apiRequest('GET', '/auth/info', { token: entry.token, orgId: entry.orgId, timeout: 15000, skipAuthExpired: true });
       } catch (e) {
-        // fetch 只会抛 TypeError: Failed to fetch，这里换成可操作的提示
-        throw new Error('连不上账号桥 ' + base
-          + '（若用本地服务打开，请确认 Python 3 可用；也可双击 captcha-ocr/start-bridge.bat 手动启动）');
+        if (!poolAuthFailed(e)) return entry; // 非鉴权错误：按原令牌继续
+        probe = { status: 0, message: e.message };
       }
-      if (!resp.ok) {
-        let msg = '账号桥返回 HTTP ' + resp.status;
-        try { const d = await resp.json(); if (d && d.message) msg = d.message; } catch (e) {}
-        throw new Error(msg);
-      }
-      const d = await resp.json();
-      if (!d || !d.token) throw new Error('账号桥未返回 token：' + account);
-      return { token: d.token, orgId: d.orgId };
+      if (!poolAuthFailed(probe)) return entry;
+      log('「' + account + '」令牌已失效，账号桥重新登录…');
+      const ne = await fetchBridgeToken(account, { force: true });
+      entry.token = ne.token;
+      entry.orgId = ne.orgId;
+      return entry;
+    }
+
+    // 账号池后台预热：进入软件后静默补齐池内账号令牌。
+    // 只补缓存里还没有的账号——主界面登录是池成员时已直接入池（不重复登录），
+    // 其余走桥（桥自身也有缓存，命中不耗验证码）。预热后「数据报告回退/审核」
+    // 用池内账号即取即用。任何失败（无桥/离线/验证码识别失败）都静默跳过，
+    // 不影响主账号的任何功能——调用失效时会再按需重登。
+    function warmAccountPool() {
+      (async function () {
+        for (const acc of POOL_ACCOUNTS) {
+          try {
+            if (poolTokens[acc]) continue; // 已有共享令牌（登录入池/上轮预热），不重复登录
+            await fetchBridgeToken(acc);
+            log('账号池后台登录就绪：' + acc);
+          } catch (e) {
+            log('账号池后台登录跳过（' + acc + '）：' + e.message);
+          }
+        }
+      })();
+    }
+
+    // 测试钩子（同 window.__AUDIT_POLL_OPTS__ 模式）：供自动化测试检查/驱动账号池
+    if (typeof window !== 'undefined') {
+      window.__POOL_TEST__ = {
+        poolTokens: poolTokens,
+        fetchBridgeToken: fetchBridgeToken,
+        ensurePoolTokenFresh: ensurePoolTokenFresh,
+      };
     }
 
     function reportEls() {
@@ -2127,6 +2218,7 @@
           if (btn) btn.textContent = '回退中…（' + (i + 1) + '/' + RESET_STEPS.length + ' ' + step.account + '·' + step.label + '）';
           if (el.status) el.status.textContent = '正在以 ' + step.account + ' 身份重置「' + step.label + '」（' + (i + 1) + '/' + RESET_STEPS.length + '）…';
           const tk = await fetchBridgeToken(step.account);
+          await ensurePoolTokenFresh(step.account, tk); // 调用前校验：失效即经桥重登刷新
           const r = await apiRequest('POST', '/api/projectXccyLastAffix/resetProjectApprovalProcess', {
             token: tk.token, orgId: tk.orgId, timeout: 60000,
             json: { belongProject: target.id, projectProcess: step.process },
@@ -2189,6 +2281,7 @@
           if (btn) btn.textContent = '审核中…' + tag + ' ' + step.account;
           if (el.status) el.status.textContent = '正在以 ' + step.account + ' 执行「' + step.label + '」' + tag + '…';
           const tk = await fetchBridgeToken(step.account);
+          await ensurePoolTokenFresh(step.account, tk); // 调用前校验：失效即经桥重登刷新
 
           if (step.kind === 'submitJcdg') {
             // ★ 平台里「检测底稿」与「检测报告单」是**两个独立页面、两个独立的提交接口**：
@@ -2595,7 +2688,7 @@
         syncGhButton();
         syncUserMenu();
         // 会话恢复期间若因登录失效被登出（token 已被清空），保持登录遮罩，不要再进入软件
-        if (token) enterApp();
+        if (token) { enterApp(); warmAccountPool(); }
         else showLogin();
       } else {
         showLogin();

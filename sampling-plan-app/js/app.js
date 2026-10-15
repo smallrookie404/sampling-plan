@@ -691,13 +691,16 @@
   }
 
   gridWrap.addEventListener("scroll", () => {
-    removeArm(); // 滚动后单元格位置变化，固定定位的布防框立即失效
+    // ⚠ 不要在滚动时 removeArm()：布防框持有焦点，移除会导致焦点丢失 →
+    //   拖选后滚动再按 Delete/直接打字全部失效（见 syncArmPosition 注释）。
+    //   改为在下一帧渲染完成后把它重定位到当前格。
     if (scrollRenderQueued) return;
     scrollRenderQueued = true;
     requestAnimationFrame(() => {
       scrollRenderQueued = false;
       // 增量渲染：仅在窗口变化时追加/裁剪行，快速滚动不整体重建、不出现空白
       ensureWindow();
+      syncArmPosition(); // 渲染窗口已更新 → 布防框跟随当前格重新定位
     });
   });
 
@@ -1112,6 +1115,27 @@
       if (arm && !arm.composing) armReveal(); // 非组合的真实输入：显形进入编辑
     });
     arm = { r, c, ta, composing: false };
+  }
+
+  // 滚动后布防框**跟随当前格重新定位**，而不是直接移除。
+  // ★ 原实现在 scroll 里 removeArm()：布防框正是「持有焦点」的元素，移除后焦点掉到 body，
+  //   而 Delete 只在「焦点在布防框」或「焦点在格内 td」两处被处理 → 拖选过程中滚动鼠标
+  //   再松开、按 Delete 会静默失效。这里改为重定位，焦点与「选中未编辑」态都保住。
+  // 当前格已滚出渲染窗口或可视区时仍移除（此时没有正确位置可放）。
+  function syncArmPosition() {
+    if (!arm) return;
+    const td = findTd(arm.r, arm.c);
+    if (!td) { removeArm(); return; }
+    const r = td.getBoundingClientRect();
+    const w = gridWrap.getBoundingClientRect();
+    if (r.bottom <= w.top || r.top >= w.bottom || r.right <= w.left || r.left >= w.right) {
+      removeArm();
+      return;
+    }
+    arm.ta.style.left = r.left + "px";
+    arm.ta.style.top = r.top + "px";
+    arm.ta.style.width = r.width + "px";
+    arm.ta.style.height = r.height + "px";
   }
 
   // 布防框显形：转入正式编辑框（进入编辑态，已输入文本置于原值之前，光标跟在其后）
@@ -1712,6 +1736,29 @@
       return;
     }
     // 可打印字符/退格：不 preventDefault，交给布防框 input 事件显形（文本由 armReveal 带入编辑框）
+  });
+
+  // Delete/Backspace 兜底路由（与焦点无关）。
+  // ★ 场景：拖选过程中滚动鼠标 → 布防框被移除（或拖选起点是不可编辑格，根本没布防框）→
+  //   焦点掉到 body，上面两个键盘处理器都收不到 → Delete 静默失效。
+  //   这里只要「主表页签激活 + 存在含可编辑内容的选区 + 焦点不在真实输入控件里」就清空选区。
+  //   已被上面处理器处理过的按键通过 defaultPrevented 跳过，不会重复执行。
+  document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;
+    if (!$("tab-main").classList.contains("active")) return;
+    if (e.isComposing || e.key === "Process") return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key !== "Delete" && e.key !== "Backspace") return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+    const rect = selRect();
+    if (!rect || !hasEditableInRect(rect)) return;
+    e.preventDefault();
+    pushUndo(); // 清空前存快照，Ctrl+Z 可复原
+    clearRange(rect);
+    editing = false;
+    editOriginal = null;
+    recomputeAndRefresh();
   });
 
   // 点击表格区域之外（含表格行下方的容器空白）退出编辑（Excel/WPS 语义）。
