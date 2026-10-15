@@ -2834,10 +2834,9 @@
         const acctChain = ranAccounts.join(' → ');
         if (el.status) el.status.textContent = '✅ 审核链全部完成（本次 ' + done + ' 步'
           + (skipped.length ? '，跳过已完成 ' + skipped.length + ' 步' : '') + '）· ' + reportProjectLabel() + tail;
-        alert('数据报告审核完成（本次依次执行 ' + done + ' 步'
-          + (acctChain ? '：' + acctChain : '') + '）。\n'
-          + (skipped.length ? '（断点续审：从当前节点续跑至链路终点）\n' : '')
-          + reportProjectLabel() + (tail ? '\n' + tail : ''));
+        // ★ 弹窗只保留**极简摘要**（用户反馈：弹窗文字太多）——项目 + 步数 + 账号链，明细走状态栏。
+        alert('数据报告审核完成。\n' + reportProjectLabel()
+          + '\n本次执行 ' + done + ' 步' + (acctChain ? '：' + acctChain : '') + '。');
         // ★ 审核成功后：与「回退成功后」「进页签自动浏览」共用同一套「当下流程中的数据报告」逻辑
         invalidateReportCache();   // 审批状态已变 → 作废面板缓存，强制重新拉取
         if (el.status) el.status.textContent = '✅ 审核链全部完成，正在加载当前流程中的数据报告…';

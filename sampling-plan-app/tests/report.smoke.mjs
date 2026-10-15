@@ -531,10 +531,18 @@ const expectResume = [
 check("断点续审端到端：链中途只执行未完成步骤（不重复提交、不重审已完成节点）",
   JSON.stringify(callsResume) === JSON.stringify(expectResume),
   JSON.stringify(callsResume));
-check("断点续审完成弹窗标注「从当前节点续跑至链路终点」且无失败",
-  newDlgResume.some((m) => /数据报告审核完成/.test(m) && /续跑至链路终点/.test(m))
+check("断点续审完成弹窗精简（项目 + 本次步数 + 账号链）且无失败",
+  newDlgResume.some((m) => /数据报告审核完成/.test(m) && /本次执行 2 步/.test(m) && /btc-wcy/.test(m))
+    && newDlgResume.some((m) => !/续跑至链路终点/.test(m))   // ★ 精简后不再带断点续审长句
     && !newDlgResume.some((m) => /失败/.test(m)),
   JSON.stringify(newDlgResume).slice(0, 200));
+// ★ 弹窗文字精简（用户需求「缩减数据报告审批完成后弹窗内的文字数量」）：
+//   只保留 3 行以内（标题 / 项目 / 本次执行N步），不再罗列每步 msg 明细（明细走状态栏）。
+const auditDoneDlg = newDlgResume.find((m) => /数据报告审核完成/.test(m)) || "";
+check("审批完成弹窗文字精简（≤4 行、不含逐步明细）",
+  auditDoneDlg.split("\n").length <= 4
+    && !/提交成功|状态流转|审批成功|跳过已完成/.test(auditDoneDlg),
+  "lines=" + auditDoneDlg.split("\n").length + " dlg=" + JSON.stringify(auditDoneDlg).slice(0, 200));
 // ★ 关键：链中途起点（底稿待理化复核 + 报告单待理化签发）也必须**一路审到底**——
 //   跑完 jcdg 复核后要接着跑 jcbg 签发，最后走到 isOver=1（jcbgOver），不能执行一步就退。
 check("链中途起点也能一路审到链路终点（跑完 2 步后 jcbg 达 isOver=1 完结）",
