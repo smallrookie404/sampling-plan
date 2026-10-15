@@ -266,9 +266,14 @@ const idxFirstJcbgAudit = calls.indexOf("/api/projectJcbgLastAffixNew/audit");
 check("第①步补交了「检测报告单」（独立接口 reportFile/submitJcbgReview），且在任何 jcbg 审批之前",
   idxJcdgSubmit === 0 && idxJcbgSubmit === 1 && idxFirstJcbgAudit > idxJcbgSubmit,
   "idxJcdgSubmit=" + idxJcdgSubmit + " idxJcbgSubmit=" + idxJcbgSubmit + " idxFirstJcbgAudit=" + idxFirstJcbgAudit);
-check("4 步分别用各自账号取令牌（btc-jyg → btc-wcy → btc-zhj → btc-gxz）",
-  JSON.stringify(tokenCalls.slice(-4)) === JSON.stringify(["btc-jyg", "btc-wcy", "btc-zhj", "btc-gxz"]),
-  JSON.stringify(tokenCalls.slice(-4)));
+// ★ 账号池共享令牌缓存（远程 0c68166）：4 个池内账号的令牌统一从缓存取，
+//   冷启动由 warmAccountPool() 经桥补齐、业务调用前经 /auth/info 探针校验新鲜度。
+//   故不再"每步一次 /token"，改为断言「4 个池账号的令牌都已在共享缓存中就绪」。
+const poolTokens = await page.evaluate(() => window.__POOL_TEST__ && window.__POOL_TEST__.poolTokens ? Object.keys(window.__POOL_TEST__.poolTokens) : null);
+const needAccounts = ["btc-gxz", "btc-wcy", "btc-jyg", "btc-zhj"];
+check("4 个池内账号的令牌均在共享缓存中就绪（账号池共享令牌缓存）",
+  Array.isArray(poolTokens) && needAccounts.every((a) => poolTokens.indexOf(a) !== -1),
+  "poolTokens=" + JSON.stringify(poolTokens) + " bridgeCalls=" + JSON.stringify(tokenCalls.slice(0, 8)));
 // 通过类请求体：单个对象（非数组），且 jcbg 的 type 为**数字**（平台要求 int，字符串会 400）
 const auditBodies = auditReqBodies; // 见上方 request 监听收集
 const jcbgBody = auditBodies.find((b) => b && b.__url && /projectJcbgLastAffixNew\/audit$/.test(b.__url));
