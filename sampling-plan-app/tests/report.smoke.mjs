@@ -46,7 +46,7 @@ page.on("pageerror", (e) => { if (!IGNORE.test(e.message)) errors.push("pageerro
 // 平台接口 mock：必须在 goto 之前注册。
 // 否则启动期的 /auth/info 401 会触发「登录失效」把会话清掉（token=null），
 // 后面点「回退」只会走 showLogin() 而不会发出任何请求。
-const seen = { findList: "", jcbg: "", jcbgYl: "", reset: [] };
+const seen = { findList: "", jcbg: "", jcbgYl: "", reset: [], getAffixJcbg: "" };
 const j = (body) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
 await page.route("**/auth/info*", (route) => route.fulfill(j({ user: { userName: "测试账号" } })));
 await page.route("**/api/reportData/findList*", (route) => {
@@ -109,12 +109,14 @@ await page.route("**/api/projectJcdgLastAffix*", (route) =>
     { id: 6205, code: "BTC26-SZJC0959", status: "0", isDel: "0" }] } })));
 await page.route("**/api/projectJcdgLastAffixNew/getAffix*", (route) =>
   route.fulfill(j({ code: "200", body: affixState.jcdg == null ? [] : [{ id: 6255, type: affixState.jcdg, isOver: "0" }] })));
-await page.route("**/api/projectJcbgLastAffix/getAffix*", (route) =>
-  route.fulfill(j({ code: "200", body: affixState.jcbg == null ? [] : [{
+await page.route("**/api/projectJcbgLastAffix/getAffix*", (route) => {
+  seen.getAffixJcbg = route.request().url();
+  return route.fulfill(j({ code: "200", body: affixState.jcbg == null ? [] : [{
     id: 6198, type: affixState.jcbg, isOver: affixState.jcbgOver ? "1" : "0",
     // 「审批完结检测结果报告单」PDF 路径（签发版）——供「查看审批完结检测结果报告单」用
     jcbgAffix: "/src/ohit/jcbgReport/913310020555095418/jcbg/BTC26-SZJC0959-x/review/BTC26-SZJC0959_检测报告_签发.pdf",
-  }] })));
+  }] }));
+});
 // audit 被调用后推进 mock 节点状态（供下一次 getAffix 读到新节点）
 page.on("request", (r) => {
   const u = r.url();
@@ -144,6 +146,11 @@ await page.route("**/api/jcbgReport/jcbgYl*", (route) => {
   return route.fulfill(j({ code: "200", message: "success",
     body: "/src/ohit/jcbgReport/913310020555095418/jcbg/BTC26-SZJC0959-x/BTC26-SZJC0959_检测报告.pdf" }));
 });
+// ★ 报告 PDF 本体下载（路径形如 /src/ohit/**）：返回最小 PDF；
+//   内嵌 iframe 用的是 blob URL，故这里只需保证 fetch 成功。
+//   ⚠ 必须在 goto 之前注册 —— 「进页签自动浏览当前状态报告单」发生在很早的步骤，晚注册会 404。
+await page.route("**/src/ohit/**", (route) =>
+  route.fulfill({ status: 200, contentType: "application/pdf", body: "%PDF-1.4\n%mock\n" }));
 
 await page.goto(APP_URL, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(1200);
@@ -223,7 +230,7 @@ const stateBadgeCls = await page.$eval("#report-state-badge", (e) => e.className
 const stateDetail = await page.$eval("#report-state-detail", (e) => e.textContent.trim()).catch(() => "");
 check("选中项目后显示「数据报告状态」（已完结 → 已完结徽标）",
   stateVisible && stateBadge === "已完结" && /done/.test(stateBadgeCls)
-    && /status=6/.test(stateDetail) && /isDel=1/.test(stateDetail),
+    && stateDetail === "",   // ★ 明细不再暴露 status/isDel 等技术字段
   "badge=" + stateBadge + " cls=" + stateBadgeCls + " detail=" + stateDetail);
 // 状态文案映射（纯函数）：已完结优先、各节点、未知回落
 const mapCases = await page.evaluate(() => {
@@ -241,6 +248,42 @@ check("项目状态映射与平台 statusFn 一致（isDel=1 优先 → 已完�
     && mapCases.s6 === "待理化签发" && mapCases.s9 === "待第三方审核" && mapCases.s10 === "待签章"
     && mapCases.nil === "未开始" && mapCases.unknown === "节点99",
   JSON.stringify(mapCases));
+
+// 6.1b) ★ 选中项目进入「数据报告处理」页时，应**默认自动弹出当前状态下的检测结果报告单浏览**
+//     —— 来源优先取「审批记录的附件」= GET /api/projectJcbgLastAffix/getAffix 的 body[0].jcbgAffix
+//        （与人工在平台「流程审批 → 检测结果报告单 → 附件」看到的完全一致；**未完结也照样显示当前状态版**）。
+//     这里把 affixState.jcbg 置为未完结的「理化审核(2)」以模拟真实未完结项目（如 1009 已提交审复核），
+//     断言：① 自动发出了 getAffix 请求；② 页面下方内嵌 iframe 显示 PDF；③ 状态栏标注「当前状态」+节点名；④ 未弹「尚未审批完结」提示。
+seen.getAffixJcbg = "";
+affixState.jcbg = "2";
+affixState.jcbgOver = false;
+await page.click('nav.tabs .tab[data-tab="report"]');
+await page.waitForFunction(() => {
+  const box = document.getElementById("report-pdf-box");
+  return box && !box.classList.contains("hidden");
+}, null, { timeout: 15000 }).catch(() => {});
+await page.waitForTimeout(600);
+const autoBoxVisible = await page.isVisible("#report-pdf-box");
+const autoIframeSrc = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
+const autoStatus = await page.$eval("#report-status", (e) => e.textContent.trim()).catch(() => "");
+const autoPendingDlg = dialogs.some((m) => /尚未审批完结/.test(m));
+check("进「数据报告处理」默认自动显示当下流程中的数据报告（取审批记录附件，未完结也显示）",
+  autoBoxVisible && autoIframeSrc.startsWith("blob:")
+    && /getAffix/.test(seen.getAffixJcbg || "")
+    && /已显示该项目当下流程中的数据报告/.test(autoStatus)
+    && /节点 理化审核/.test(autoStatus) && /未完结/.test(autoStatus)
+    && !autoPendingDlg,
+  "box=" + autoBoxVisible + " src=" + String(autoIframeSrc).slice(0, 22)
+    + " ／ status=" + autoStatus.slice(0, 90));
+// ★ 自动浏览**不应**滚动主页面（用户反馈「进入数据报告浏览时滚动条突然下滑」）：
+//   自动浏览（_auto）不调 scrollIntoView；此处页面应仍停在顶部附近、且未发生明显滚动跳变。
+const autoScrollY = await page.evaluate(() => Math.round(window.scrollY));
+check("自动浏览当前状态报告时不滚动主页面（滚动条不突跳）",
+  autoScrollY <= 8,
+  "scrollY=" + autoScrollY);
+// 复位：后续步骤 8 依赖「jcbg 初始无记录，只有调 submitJcbgReview 才出现待审记录」来锁定第①步修复
+affixState.jcbg = null;
+affixState.jcbgOver = false;
 
 // 6.2) 选中项目后点「回退」→ 必须**先在「已完结」项目里定位**
 //      （GET /api/projectJcbgLastAffix?isDel=1；回退只对已完结项目有效，用 findList 搜出来的会「找不到」）
@@ -296,10 +339,8 @@ page.on("request", (r) => {
 const dlgBefore2 = dialogs.length;
 // 缩短轮询等待时间：mock 固定响应不会变，避免等满 30s
 await page.evaluate(() => { window.__AUDIT_POLL_OPTS__ = { maxWaitMs: 400, intervalMs: 100 }; });
-// ★ 审核成功后会自动加载「审批完结检测结果报告单」PDF：
-//   mock 报告 PDF 路径的下载请求返回一个最小 PDF；劫持 window.open 以确认**未被调用**（内嵌而非新开标签页）
-await page.route("**/src/ohit/**", (route) =>
-  route.fulfill({ status: 200, contentType: "application/pdf", body: "%PDF-1.4\n%mock\n" }));
+// ★ 审核成功后会自动加载「审批完结检测结果报告单」PDF（PDF 下载路由已在文件前部统一注册）。
+//   劫持 window.open 以确认**未被调用**（内嵌而非新开标签页）
 await page.evaluate(() => {
   window.__openedUrls = [];
   window.open = (u) => { window.__openedUrls.push(String(u)); return null; };
@@ -354,16 +395,16 @@ check("审核链全部完成且无失败弹窗",
   newDlg2.some((m) => /数据报告审核完成/.test(m)) && !newDlg2.some((m) => /失败/.test(m)),
   "status=" + rstat3 + " ／ 弹窗=" + JSON.stringify(newDlg2).slice(0, 140));
 
-// 9) 审核成功后：应**自动**在页面下方内嵌 iframe 显示该项目的「审批完结检测结果报告单」PDF
+// 9) 审核成功后：应**自动**在页面下方内嵌 iframe 显示该项目当下流程中的数据报告 PDF
 //    （原「查看…报告单」按钮已移除；mock PDF 路由与 window.open 劫持已在上面注册）
 const openedUrls = await page.evaluate(() => window.__openedUrls || []);
 const newDlg3 = newDlg2;  // 审核段的弹窗
 const pdfBoxVisible = await page.isVisible("#report-pdf-box");
 const pdfIframeSrc = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
 const rstatAuditEnd = rstat3;
-check("审核成功后自动在页面下方内嵌 iframe 显示 PDF（不新开标签页）",
+check("审核成功后自动在页面下方内嵌 iframe 显示当下流程中的数据报告（不新开标签页）",
   pdfBoxVisible && pdfIframeSrc.startsWith("blob:") && openedUrls.length === 0
-    && /已在下方显示.*检测结果报告单/.test(rstatAuditEnd) && !newDlg3.some((m) => /失败/.test(m)),
+    && /已显示该项目当下流程中的数据报告/.test(rstatAuditEnd) && !newDlg3.some((m) => /失败/.test(m)),
   "boxVisible=" + pdfBoxVisible + " iframeSrc=" + String(pdfIframeSrc).slice(0, 24)
     + " opened=" + JSON.stringify(openedUrls) + " ／ status=" + rstatAuditEnd.slice(0, 70));
 
@@ -421,10 +462,10 @@ const openedAfterReset = (await page.evaluate(() => window.__openedUrls || [])).
 check("回退后改从「检测结果报告单本体」接口取报告（getAffix 已空，仍能加载）",
   /jcbgReport\/jcbgYl\?[^#]*projectId=/.test(seen.jcbgYl || ""),
   seen.jcbgYl || "（未发出 jcbgYl 请求）");
-check("回退成功后自动在下方内嵌 iframe 显示检测结果报告单（界面/逻辑同审核）",
+check("回退成功后自动在下方内嵌 iframe 显示当下流程中的数据报告（界面/逻辑同审核）",
   resetBoxVisible && resetIframeSrc.startsWith("blob:")
     && openedAfterReset === openedBeforeReset
-    && /已在下方显示回退后检测结果报告单/.test(rstatReset)
+    && /已显示该项目当下流程中的数据报告/.test(rstatReset)
     && resetDlg.some((m) => /回退成功/.test(m)) && !resetDlg.some((m) => /失败/.test(m)),
   "boxVisible=" + resetBoxVisible + " iframeSrc=" + String(resetIframeSrc).slice(0, 24)
     + " openedDiff=" + (openedAfterReset - openedBeforeReset) + " ／ status=" + rstatReset.slice(0, 70));

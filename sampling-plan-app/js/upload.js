@@ -2189,8 +2189,8 @@
         }
         const txt = projectStatusText(st.status, st.isDel);
         const done = String(st.isDel) === '1';
-        renderReportState(done ? 'done' : 'pending', txt,
-          '检测结果报告单流程 · status=' + String(st.status) + '，isDel=' + String(st.isDel));
+        // 明细不再暴露 status/isDel 等技术字段，只保留对用户有意义的信息
+        renderReportState(done ? 'done' : 'pending', txt, '');
       } catch (e) {
         if (seq !== reportStateSeq) return;
         renderReportState('err', '状态查询失败', (e && e.message) ? e.message : String(e));
@@ -2225,6 +2225,30 @@
       if (el.status) el.status.textContent = '';
       // 选中项目 → 异步查询并显示「数据报告项目状态」
       loadReportStatus();
+      // ★ 默认自动弹出「当前状态下的检测结果报告单」浏览
+      //   —— 项目在「检测结果报告单」流程里的审批记录附件（getAffix.jcbgAffix）就是该状态下的数据报告，
+      //      与人工在平台「流程审批 → 检测结果报告单 → 附件」看到的完全一致（可能未完结，如「已提交审复核」）。
+      autoShowCurrentReport();
+    }
+
+    // 进入「数据报告处理」页签 / 切换项目时，默认自动加载并内嵌显示**当下流程中**的检测结果报告单。
+    //   与「审核成功后」「回退成功后」共用同一个 `showFinalReportPdf({auto:true})`——只是自动浏览不弹窗、不滚动、失败静默。
+    //   ⚠ 切换项目会通过 reportPdfSeq 丢弃过期响应。
+    let reportPdfSeq = 0;
+    async function autoShowCurrentReport() {
+      if (!selectedProject || !selectedProject.id) return;
+      const seq = ++reportPdfSeq;
+      try {
+        const r = await showFinalReportPdf({ auto: true });
+        if (seq !== reportPdfSeq) return; // 期间已切换项目 → 该 PDF 已由新项目覆盖/释放
+        return r;
+      } catch (e) {
+        if (seq !== reportPdfSeq) return;
+        // 静默失败：状态栏给出可操作提示（如「尚无报告文件」）
+        const el = reportEls();
+        if (el.status) el.status.textContent = '未能加载当下流程中的数据报告：' + ((e && e.message) ? e.message : String(e));
+        try { if (typeof hideReportPdf === 'function') hideReportPdf(); } catch (e2) {}
+      }
     }
 
     function esc(s) {
@@ -2333,12 +2357,12 @@
           + (changedAny ? '' : '（两步都无需变更，原本已是初始状态）');
         alert('数据报告回退成功（已依次重置：' + RESET_STEPS.map(function (s) { return s.label; }).join(' → ') + '）。'
           + (changedAny ? '' : '\n注：两步都无需变更，该项目原本已是初始状态。') + '\n' + reportProjectLabel());
-        // ★ 回退成功后，与「数据报告审核」同一套界面/逻辑：自动在下方内嵌显示该项目的「检测结果报告单」PDF
-        if (el.status) el.status.textContent = '✅ 两步回退全部完成，正在加载检测结果报告单…';
+        // ★ 回退成功后：与「审核成功后」「进页签自动浏览」共用同一套「当下流程中的数据报告」逻辑
+        if (el.status) el.status.textContent = '✅ 两步回退全部完成，正在加载当前流程中的数据报告…';
         try {
-          await showFinalReportPdf({ quiet: true, context: '回退后' });
+          await showFinalReportPdf({});
         } catch (e) {
-          if (el.status) el.status.textContent = '✅ 两步回退全部完成，但检测结果报告单加载失败：' + (e && e.message ? e.message : e);
+          if (el.status) el.status.textContent = '✅ 两步回退全部完成，但数据报告加载失败：' + (e && e.message ? e.message : e);
         }
         await loadReportStatus(); // 回退改变了状态 → 同步刷新「数据报告状态」
       } catch (e) {
@@ -2486,12 +2510,12 @@
         alert('数据报告审核完成（已依次执行 ' + AUDIT_STEPS.length + ' 步：'
           + AUDIT_STEPS.map(function (s) { return s.account; }).join(' → ') + '）。\n'
           + reportProjectLabel() + (tail ? '\n' + tail : ''));
-        // ★ 审核成功后，自动在下方显示该项目的「审批完结检测结果报告单」PDF（原「查看数据报告」按钮的功能）
-        if (el.status) el.status.textContent = '✅ 审核链全部完成，正在加载项目数据报告…';
+        // ★ 审核成功后：与「回退成功后」「进页签自动浏览」共用同一套「当下流程中的数据报告」逻辑
+        if (el.status) el.status.textContent = '✅ 审核链全部完成，正在加载当前流程中的数据报告…';
         try {
-          await showFinalReportPdf({ quiet: true });
+          await showFinalReportPdf({});
         } catch (e) {
-          if (el.status) el.status.textContent = '✅ 审核链全部完成，但项目数据报告加载失败：' + (e && e.message ? e.message : e);
+          if (el.status) el.status.textContent = '✅ 审核链全部完成，但数据报告加载失败：' + (e && e.message ? e.message : e);
         }
         await loadReportStatus(); // 审核完结改变了状态 → 同步刷新「数据报告状态」
       } catch (e) {
@@ -2502,19 +2526,19 @@
       }
     }
 
-    // ★ 显示「检测结果报告单」PDF（与平台「原始记录管理 → 检测结果报告单」页一致）。
-    //   两种来源（依次尝试，取到就停）：
-    //   ① 审批链记录（审核路径首选）：
+    // ★ 解析「当下流程中的数据报告」PDF 来源路径（**只拿路径、不下载**）。返回 { path, isOver, node, src } 或抛错。
+    //
+    //   设计要点：**不区分「回退后 / 审核后 / 自动浏览」**，一律按项目**当下的审批状态**取报告 —— 依次尝试、取到就停：
+    //   ① 审批链记录（**当下流程中的那份**，首选）：
     //      GET /api/projectJcbgLastAffix/getAffix?belongProject= → body[0].jcbgAffix
-    //      审批链走到「签发」完结后，该路径为 …/review/xxx_检测报告_签发.pdf（审批完结版）。
-    //   ② 检测结果报告单本体（回退路径首选）：
+    //      ★ 这就是平台「流程审批 → 检测结果报告单 → 附件」里那份数据报告：
+    //        未完结时形如 …_检测报告_<用户id>.pdf（如项目 1009 已提交审复核 → isOver=0、type="2"）；
+    //        审批链走到「签发」完结后，路径变为 …/review/xxx_检测报告_签发.pdf。
+    //   ② 检测结果报告单本体（**回退后**审批链被清空时的兜底）：
     //      GET /api/jcbgReport/jcbgYl?projectId=&organizationId= → body（相对路径，直接拼 API_BASE）
     //      ★ 平台「检测结果报告单」页（路由 /recordPageNew/pageReport 的 jcbg 标签）用的就是这个接口。
-    //      ⚠ 数据报告回退会**清空 jcbg 审批链记录**（getAffix 变空），但报告文件本体仍在，
-    //        只能从 ② 取 —— 这是「回退后加载失败：该项目的「检测结果报告单」流程无记录」的根因。
-    //   用当前会话令牌直连平台取路径。
-    //   ★ 展示方式：**在当前页面下方内嵌 iframe 显示**（不新开标签页）。
-    //   opts.quiet：静默模式——失败/未完结时只写状态栏、不弹 alert（供审核/回退成功后自动调用）。
+    //      ⚠ 回退会**清空 jcbg 审批链记录**（getAffix 变空），但报告文件本体仍在 → 只能从 ② 取。
+    //   用当前会话令牌直连平台取路径；展示方式：**当前页面下方内嵌 iframe**（不新开标签页）。
     let reportPdfObjUrl = null;
     function hideReportPdf() {
       const box = document.getElementById('report-pdf-box');
@@ -2524,12 +2548,12 @@
       try { document.body.classList.remove('pdf-open'); } catch (e) {}
       if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} reportPdfObjUrl = null; }
     }
-    // 解析「检测结果报告单」PDF 的来源路径（不下载，只拿路径）。返回 { path, fname, isOver } 或抛错。
+    // 解析报告来源路径（不下载，只拿路径）。返回 { path, isOver, node, src } 或抛错。
     async function resolveFinalReportPath(opts) {
       opts = opts || {};
       const pid = String(selectedProject.id);
       const el = reportEls();
-      // ① 审批链记录（审核完结版）
+      // ① 审批链记录（当下流程中的那份：未完结=<用户id> 版；完结=review/签发 版）
       try {
         const r = await apiRequest('GET',
           auditPaths('jcbg').affix + '?belongProject=' + encodeURIComponent(pid),
@@ -2544,7 +2568,7 @@
       } catch (e) { /* 落到 ② */ }
       // ② 检测结果报告单本体（回退后审批链已清空 → 走这里）。
       //   ⚠ 该接口是「生成并返回路径」类，**可能非常慢**（实测个别项目 >8min 仍不返回）→ 给状态提示。
-      if (el.status) el.status.textContent = '正在向平台请求「检测结果报告单」（审批链已重置，改从报告单本体取，可能较慢）…';
+      if (el.status) el.status.textContent = '正在向平台请求数据报告（审批链已重置，改从报告单本体取，可能较慢）…';
       const r2 = await apiRequest('GET',
         '/api/jcbgReport/jcbgYl?projectId=' + encodeURIComponent(pid) + '&organizationId=' + encodeURIComponent(String(orgId)),
         { token: token, orgId: orgId, timeout: 300000 });
@@ -2554,22 +2578,41 @@
       return { path: p, isOver: false, node: null, src: 'jcbgYl' };
     }
     // 取「检测结果报告单」PDF 并内嵌显示（与「数据报告审核」同一套界面/逻辑）。
-    //   opts.quiet   ：失败/未完结时只写状态栏、不弹 alert（供审核/回退成功后自动调用）
-    //   opts.context ：状态栏文案里的场景名（默认「审批完结」），如「回退后」
+    //   opts.quiet         ：失败/未完结时只写状态栏、不弹 alert（供审核/回退成功后、以及进页签自动浏览时调用）
+    //   opts.context       ：状态栏文案里的场景名（默认「审批完结」），如「回退后」「当前状态」
+    //   opts.silentPending ：未完结时**不弹**「尚未审批完结」提示（进页签自动浏览当前状态版时用）
+    //   返回 { ok, fname, isOver } 或抛错。
+    // ★★★ 统一的「当下流程中的数据报告」显示入口（2026-10-15 整合）
+    //
+    //   三个触发场景**共用这一套逻辑**，不再各写一份：
+    //     ① 进「数据报告处理」页签 / 切换项目 → 自动浏览（auto=true）
+    //     ② 「数据报告审核」4 步链成功后     → 自动显示（auto=false，滚动定位）
+    //     ③ 「数据报告回退」两步成功后       → 自动显示（auto=false，滚动定位）
+    //
+    //   取源由 `resolveFinalReportPath()` 按**当下状态**决定（依次尝试、取到就停）：
+    //     ① 审批记录附件 `getAffix.jcbgAffix`（**当下流程中的那份**：未完结 = …_检测报告_<用户id>.pdf；
+    //        签发完结 = …/review/…_检测报告_签发.pdf）—— 与平台「流程审批 → 检测结果报告单 → 附件」一致；
+    //     ② 回退后审批链被清空 → 落回「检测结果报告单本体」`jcbgReport/jcbgYl`。
+    //
+    //   opts.auto  ：true=进页签自动浏览（不弹窗、不滚动、失败静默）；false=用户主动操作后（滚动定位）
     //   返回 { ok, fname, isOver } 或抛错。
     async function showFinalReportPdf(opts) {
       opts = opts || {};
-      const ctxName = opts.context || '审批完结';
+      const isAuto = !!opts.auto;
+      // 主动操作（非自动浏览）→ 递增序号，取消可能仍在挂起的「自动浏览」请求，避免互相覆盖
+      if (!isAuto) { try { reportPdfSeq++; } catch (e) {} }
       const el = reportEls();
       const resolved = await resolveFinalReportPath(opts);
-      const row = { jcbgAffix: resolved.path, isOver: resolved.isOver, type: resolved.node };
       const isOver = resolved.isOver;
+      const type = resolved.node;
       // jcbgAffix 形如 /src/ohit/jcbgReport/.../xxx_检测报告_签发.pdf —— 逐段编码以兼容中文路径
-      const url = API_BASE + String(row.jcbgAffix).split('/').map(encodeURIComponent).join('/');
-      const fname = String(row.jcbgAffix).split('/').pop() || '检测结果报告单.pdf';
-      if (!isOver && !opts.quiet) {
-        alert('该项目「检测结果报告单」尚未审批完结' + (row.type ? '（当前节点：' + nodeName(row.type) + '）' : '') + '。\n'
-          + '仍将显示当前报告文件，如需「审批完结」版请先跑完审核链（或等待其余节点审批）。\n\n' + fname);
+      const url = API_BASE + String(resolved.path).split('/').map(encodeURIComponent).join('/');
+      const fname = String(resolved.path).split('/').pop() || '检测结果报告单.pdf';
+      // 未完结：仅**用户主动点击**（理论上不会触发，因两个按钮都会改变状态）时才提示；
+      // 自动浏览与流程执行后一律静默——显示的本来就是「当下流程中」的版本。
+      if (!isOver && !isAuto && opts.warnPending) {
+        alert('该项目「检测结果报告单」尚未审批完结' + (type ? '（当前节点：' + nodeName(type) + '）' : '') + '。\n'
+          + '仍将显示当下流程中的报告文件，如需「审批完结」版请先跑完审核链（或等待其余节点审批）。\n\n' + fname);
       }
       // 平台下载接口用 Authorization 头鉴权，iframe 直开带不了头 → 先 fetch 成 blob，再内嵌 blob URL
       if (el.status) el.status.textContent = '正在加载报告 PDF…' + fname;
@@ -2579,21 +2622,32 @@
       // 释放上一次的 blob URL
       if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} }
       reportPdfObjUrl = URL.createObjectURL(blob);
-      // 内嵌显示在「数据报告审核」页面下方
+      // 内嵌显示在「数据报告处理」页签下方
       const box = document.getElementById('report-pdf-box');
       const wrap = document.getElementById('report-pdf-frame-wrap');
       if (wrap) {
         wrap.innerHTML = '';
         const fr = document.createElement('iframe');
         fr.src = reportPdfObjUrl;
-        fr.title = '检测结果报告单';
+        fr.title = '当下流程中的数据报告';
         wrap.appendChild(fr);
       }
       if (box) { box.classList.remove('hidden'); }
       // 让整个页面可纵向滚动，方便把 PDF 区域继续往上滚查看
       try { document.body.classList.add('pdf-open'); } catch (e) {}
-      try { box && box.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
-      if (el.status) el.status.textContent = '✅ 已在下方显示' + ctxName + '检测结果报告单：' + fname;
+      // ⚠ 只有**用户主动操作**（审核/回退成功后）才滚动定位；
+      //    进页签/切项目的自动浏览**不滚动**，避免主页面滚动条突然下滑。
+      if (!isAuto) {
+        try {
+          const tab = document.getElementById('tab-report');
+          if (tab) tab.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (e) {}
+      }
+      if (el.status) {
+        // 统一文案：都描述为「当下流程中的数据报告」；未完结时附当前节点说明
+        const tail = (!isOver && type) ? '（当下流程：节点 ' + nodeName(type) + '，未完结）' : '';
+        el.status.textContent = '✅ 已显示该项目当下流程中的数据报告：' + fname + tail;
+      }
       return { ok: true, fname: fname, isOver: isOver };
     }
 
