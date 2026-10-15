@@ -2315,12 +2315,19 @@
       }
     }
 
-    // ★ 显示「审批完结检测结果报告单」：即平台「初版原始记录管理 → 检测结果报告单 → 审批完结」标签下
-    //   显示的那份 PDF。来源 = projectJcbgLastAffix/getAffix 的 body[0].jcbgAffix
-    //   （审批链走到「签发」完结后，该路径为 …/review/xxx_检测报告_签发.pdf）。
+    // ★ 显示「检测结果报告单」PDF（与平台「原始记录管理 → 检测结果报告单」页一致）。
+    //   两种来源（依次尝试，取到就停）：
+    //   ① 审批链记录（审核路径首选）：
+    //      GET /api/projectJcbgLastAffix/getAffix?belongProject= → body[0].jcbgAffix
+    //      审批链走到「签发」完结后，该路径为 …/review/xxx_检测报告_签发.pdf（审批完结版）。
+    //   ② 检测结果报告单本体（回退路径首选）：
+    //      GET /api/jcbgReport/jcbgYl?projectId=&organizationId= → body（相对路径，直接拼 API_BASE）
+    //      ★ 平台「检测结果报告单」页（路由 /recordPageNew/pageReport 的 jcbg 标签）用的就是这个接口。
+    //      ⚠ 数据报告回退会**清空 jcbg 审批链记录**（getAffix 变空），但报告文件本体仍在，
+    //        只能从 ② 取 —— 这是「回退后加载失败：该项目的「检测结果报告单」流程无记录」的根因。
     //   用当前会话令牌直连平台取路径。
     //   ★ 展示方式：**在当前页面下方内嵌 iframe 显示**（不新开标签页）。
-    //   opts.quiet：静默模式——失败/未完结时只写状态栏、不弹 alert（供审核成功后自动调用）。
+    //   opts.quiet：静默模式——失败/未完结时只写状态栏、不弹 alert（供审核/回退成功后自动调用）。
     let reportPdfObjUrl = null;
     function hideReportPdf() {
       const box = document.getElementById('report-pdf-box');
@@ -2330,6 +2337,35 @@
       try { document.body.classList.remove('pdf-open'); } catch (e) {}
       if (reportPdfObjUrl) { try { URL.revokeObjectURL(reportPdfObjUrl); } catch (e) {} reportPdfObjUrl = null; }
     }
+    // 解析「检测结果报告单」PDF 的来源路径（不下载，只拿路径）。返回 { path, fname, isOver } 或抛错。
+    async function resolveFinalReportPath(opts) {
+      opts = opts || {};
+      const pid = String(selectedProject.id);
+      const el = reportEls();
+      // ① 审批链记录（审核完结版）
+      try {
+        const r = await apiRequest('GET',
+          auditPaths('jcbg').affix + '?belongProject=' + encodeURIComponent(pid),
+          { token: token, orgId: orgId, timeout: 60000 });
+        if (r.status === 200) {
+          const rows = (r.data && r.data.body) || [];
+          if (rows.length && rows[0] && rows[0].jcbgAffix) {
+            return { path: String(rows[0].jcbgAffix), isOver: String(rows[0].isOver) === '1',
+              node: rows[0].type, src: 'affix' };
+          }
+        }
+      } catch (e) { /* 落到 ② */ }
+      // ② 检测结果报告单本体（回退后审批链已清空 → 走这里）。
+      //   ⚠ 该接口是「生成并返回路径」类，**可能非常慢**（实测个别项目 >8min 仍不返回）→ 给状态提示。
+      if (el.status) el.status.textContent = '正在向平台请求「检测结果报告单」（审批链已重置，改从报告单本体取，可能较慢）…';
+      const r2 = await apiRequest('GET',
+        '/api/jcbgReport/jcbgYl?projectId=' + encodeURIComponent(pid) + '&organizationId=' + encodeURIComponent(String(orgId)),
+        { token: token, orgId: orgId, timeout: 300000 });
+      if (r2.status !== 200) throw new Error('读取检测结果报告单失败(HTTP ' + r2.status + ')');
+      const p = r2.data && (r2.data.body || r2.data.data);
+      if (!p || typeof p !== 'string') throw new Error('该项目尚无「检测结果报告单」文件（可能未提交/未生成）');
+      return { path: p, isOver: false, node: null, src: 'jcbgYl' };
+    }
     // 取「检测结果报告单」PDF 并内嵌显示（与「数据报告审核」同一套界面/逻辑）。
     //   opts.quiet   ：失败/未完结时只写状态栏、不弹 alert（供审核/回退成功后自动调用）
     //   opts.context ：状态栏文案里的场景名（默认「审批完结」），如「回退后」
@@ -2338,20 +2374,14 @@
       opts = opts || {};
       const ctxName = opts.context || '审批完结';
       const el = reportEls();
-      const r = await apiRequest('GET',
-        auditPaths('jcbg').affix + '?belongProject=' + encodeURIComponent(String(selectedProject.id)),
-        { token: token, orgId: orgId, timeout: 60000 });
-      if (r.status !== 200) throw new Error('读取检测结果报告单失败(HTTP ' + r.status + ')');
-      const rows = (r.data && r.data.body) || [];
-      if (!rows.length) throw new Error('该项目的「检测结果报告单」流程无记录');
-      const row = rows[0];
-      if (!row.jcbgAffix) throw new Error('该项目尚无「检测结果报告单」文件（可能未提交/未生成）');
-      const isOver = String(row.isOver) === '1';
+      const resolved = await resolveFinalReportPath(opts);
+      const row = { jcbgAffix: resolved.path, isOver: resolved.isOver, type: resolved.node };
+      const isOver = resolved.isOver;
       // jcbgAffix 形如 /src/ohit/jcbgReport/.../xxx_检测报告_签发.pdf —— 逐段编码以兼容中文路径
       const url = API_BASE + String(row.jcbgAffix).split('/').map(encodeURIComponent).join('/');
       const fname = String(row.jcbgAffix).split('/').pop() || '检测结果报告单.pdf';
       if (!isOver && !opts.quiet) {
-        alert('该项目「检测结果报告单」尚未审批完结（当前节点：' + nodeName(row.type) + '）。\n'
+        alert('该项目「检测结果报告单」尚未审批完结' + (row.type ? '（当前节点：' + nodeName(row.type) + '）' : '') + '。\n'
           + '仍将显示当前报告文件，如需「审批完结」版请先跑完审核链（或等待其余节点审批）。\n\n' + fname);
       }
       // 平台下载接口用 Authorization 头鉴权，iframe 直开带不了头 → 先 fetch 成 blob，再内嵌 blob URL

@@ -46,7 +46,7 @@ page.on("pageerror", (e) => { if (!IGNORE.test(e.message)) errors.push("pageerro
 // 平台接口 mock：必须在 goto 之前注册。
 // 否则启动期的 /auth/info 401 会触发「登录失效」把会话清掉（token=null），
 // 后面点「回退」只会走 showLogin() 而不会发出任何请求。
-const seen = { findList: "", jcbg: "", reset: [] };
+const seen = { findList: "", jcbg: "", jcbgYl: "", reset: [] };
 const j = (body) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
 await page.route("**/auth/info*", (route) => route.fulfill(j({ user: { userName: "测试账号" } })));
 await page.route("**/api/reportData/findList*", (route) => {
@@ -111,6 +111,14 @@ page.on("request", (r) => {
 await page.route("**/projectXccyLastAffix/resetProjectApprovalProcess*", (route) =>
   route.fulfill(j({ code: "200", message: "重置成功！", body: false })));
 page.on("request", (r) => { if (/resetProjectApprovalProcess/.test(r.url())) seen.reset.push(r.url()); });
+// ★ 检测结果报告单**本体**接口（平台「检测结果报告单」页用的就是它）：
+//   GET /api/jcbgReport/jcbgYl?projectId=&organizationId= → body = 相对路径
+//   ⚠ 数据报告回退会清空 jcbg 审批链记录（getAffix 变空），此时报告只能从这里取 —— 回退后预览的来源。
+await page.route("**/api/jcbgReport/jcbgYl*", (route) => {
+  seen.jcbgYl = route.request().url();
+  return route.fulfill(j({ code: "200", message: "success",
+    body: "/src/ohit/jcbgReport/913310020555095418/jcbg/BTC26-SZJC0959-x/BTC26-SZJC0959_检测报告.pdf" }));
+});
 
 await page.goto(APP_URL, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(1200);
@@ -204,6 +212,11 @@ check("body:false 视为成功（两步都跑完，不误报「重置失败」�
 // 8) 「数据报告审核」= 4 步跨账号审批链
 //    ① btc-jyg 提交审复核（检测底稿） ② btc-wcy 理化复核通过
 //    ③ btc-zhj 报告单理化审核通过     ④ btc-gxz 报告单理化签发通过
+//    ⚠ 上一步回退会连带触发一次 PDF 加载；须等按钮重新可用再点审核。
+await page.waitForFunction(() => {
+  const b = document.getElementById("report-audit");
+  return b && !b.disabled;
+}, null, { timeout: 20000 });
 const calls = [];      // 审批类请求（按发生顺序）
 const tokenCalls = []; // 账号桥取令牌的账号（按发生顺序）
 const auditReqBodies = []; // 通过类请求的 body（解析后对象，附 __url）
@@ -315,11 +328,22 @@ check("滚动条足够长：滚到底能把 PDF 顶部带到浏览器顶部",
   "滚动前top=" + scrollInfo.topBefore + " 滚动到底top=" + scrollInfo.topAfter);
 
 // 11) 「数据报告回退」成功后：与「数据报告审核」同一套界面/逻辑，自动在下方内嵌显示「检测结果报告单」PDF
-//     此时项目已审核完结（jcbg isOver=1），回退应能取到报告单 PDF 并内嵌显示
+//     ★ 关键：回退会**清空 jcbg 审批链记录**（getAffix 变空），此时报告只能从「检测结果报告单本体」
+//       接口 GET /api/jcbgReport/jcbgYl?projectId=&organizationId= 取 —— 这正是「回退后加载失败：
+//       该项目的「检测结果报告单」流程无记录」的根因修复点。
+//     ⚠ 第 7 步的回退会连带触发一次 PDF 加载；须等按钮重新可用，否则第 11 步点击会命中 disabled。
+await page.waitForFunction(() => {
+  const b = document.getElementById("report-reset");
+  return b && !b.disabled;
+}, null, { timeout: 20000 });
 await page.evaluate(() => {
   // 先清掉上一次的预览（模拟回退前状态），并隐藏已完结预览
   if (window.SamplingUpload && window.SamplingUpload.hideReportPdf) window.SamplingUpload.hideReportPdf();
 });
+// 模拟回退效果：清空 jcbg 审批链记录（getAffix → []）
+affixState.jcbg = null;
+affixState.jcbgOver = false;
+seen.jcbgYl = "";
 const dlgBeforeReset = dialogs.length;
 const openedBeforeReset = (await page.evaluate(() => window.__openedUrls || [])).length;
 await page.click("#report-reset");
@@ -329,6 +353,9 @@ const resetDlg = dialogs.slice(dlgBeforeReset);
 const resetBoxVisible = await page.isVisible("#report-pdf-box");
 const resetIframeSrc = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
 const openedAfterReset = (await page.evaluate(() => window.__openedUrls || [])).length;
+check("回退后改从「检测结果报告单本体」接口取报告（getAffix 已空，仍能加载）",
+  /jcbgReport\/jcbgYl\?[^#]*projectId=/.test(seen.jcbgYl || ""),
+  seen.jcbgYl || "（未发出 jcbgYl 请求）");
 check("回退成功后自动在下方内嵌 iframe 显示检测结果报告单（界面/逻辑同审核）",
   resetBoxVisible && resetIframeSrc.startsWith("blob:")
     && openedAfterReset === openedBeforeReset
