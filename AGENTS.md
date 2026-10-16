@@ -77,6 +77,11 @@ sampling-plan/
 
 **列结构**：共 61 列 = 录入区 22 列（`A–U` + `V` 备注）+ 自动计算区 39 列（`W–BI`）。渲染顺序、表头、列宽在 app.js 的 `ALL_COLS` / `HEADERS` / `COL_W`；计算侧的列常量在 logic.js：`INPUT_COLS` `COMPUTED_COLS` `MANUAL_COLS`（自动区中仍手工填写的列）`OVERRIDE_COLS`（有下拉、可覆盖自动值：Y/Z/AO/AR）`TEXT_OVERRIDE_COLS`（BI）。**任何增删列都要同时改这两处**。
 
+**录入区→计算区的「组级填充」**（logic.js `computeRows`）：以下录入列有内容时，会按组把值扩散到计算区同组各行；组内取**第一个非空**值（J 还要求该行 AM 未被手工覆盖）；手工覆盖（`overridden`）始终优先。
+- `J` 工作内容 → `AM`，分组键 = **车间(W)|岗位(X)|点位(AL)**
+- `O` 岗位性质 → `Y`（`Ybase`），分组键 = **车间(W)|岗位(X)**（不含点位）；组内 O 全空 → 默认「固定」
+- `K` 危害因素其他来源 → `BE`/`BD`、`L` 作业方式 → `AC`，分组键 = 车间(W)|岗位(X)|点位(AL)
+
 **记录格式**：`{ id, name, createdAt, updatedAt, rows, survey? }`；远端只存**索引**（不含 rows），单条按 id 拉取，localStorage 里保存完整镜像作为离线兜底与预览缓存。
 
 | 存储端 | 索引位置 | 单条记录位置 | 写入入口 |
@@ -115,6 +120,7 @@ sampling-plan/
   ```bash
   node tests/engine.test.mjs     # 计算引擎 vs 原 Excel 缓存（需原表 xlsx，可用 SAMPLING_SRC_XLSX 指定；缺失自动跳过）
   node tests/xlsxio.test.mjs     # xlsx 导出/导入往返（需 @oai/artifact-tool；缺失自动跳过）
+  node tests/logic.ygroup.test.mjs # 岗位性质(Y)按车间+岗位组填充（纯 Node）
   node tests/server.test.mjs     # 本地服务接口
   node tests/ui.smoke.mjs        # 浏览器冒烟（自动探测 Chrome/Edge）
   node tests/survey.smoke.mjs    # 调查表冒烟（Playwright）

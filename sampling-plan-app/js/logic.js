@@ -153,7 +153,7 @@
     // 1) 基础下填/默认列（对应 W/X/Y/Z/AA/AC/AG/AH/AY/AZ/AL/AQ/AR/BC）
     const W = fillDown(A);
     const X = fillDown(B);
-    const Ybase = O.map((v) => (v !== "" ? v : "固定"));
+    const Ydefault = O.map((v) => (v !== "" ? v : "固定"));
     const Zbase = A.map(() => "浓度（或强度）相对稳定");
     const AA = fillDown(H).map(toNum);
     const ACbase = L.map((v) => (v !== "" ? v : "半手工作业"));
@@ -278,6 +278,21 @@
       return AMbase.map((v, i) => {
         const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
         return groupJ.has(key) ? groupJ.get(key) : v;
+      });
+    })();
+    // 岗位性质（Y）：录入区 O 有内容时，同 车间(W)|岗位(X) 组的所有行
+    // 的 Y 按组内第一个非空 O 的内容填充（分组键不含点位，与工作内容 J→AM 略有区别）；
+    // O 全空则该组按原默认「固定」。手工覆盖（overridden.Y）在下方组装时仍优先
+    const Ybase = (() => {
+      const groupO = new Map(); // 车间|岗位 键 -> 第一个非空 O 内容
+      for (let i = 0; i < n; i++) {
+        const key = W[i] + "\u0001" + X[i];
+        const o = str(O[i]);
+        if (o !== "" && !groupO.has(key)) groupO.set(key, o);
+      }
+      return Ydefault.map((v, i) => {
+        const key = W[i] + "\u0001" + X[i];
+        return groupO.has(key) ? groupO.get(key) : v;
       });
     })();
     // 危害因素其他来源（BE）：录入区 K 有内容时，同 车间(W)|岗位(X)|点位(AL) 组内
