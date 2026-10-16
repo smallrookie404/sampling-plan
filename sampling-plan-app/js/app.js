@@ -3497,20 +3497,58 @@
       renderHazard();
     }, 200);
   });
-  $("hazard-add").addEventListener("click", () => {
-    hazardFactors.push(blankHazard());
-    selectedHazard = hazardFactors.length - 1;
+  // ---------- 危害因素库行操作（与主表一致：新增/插入/复制/删除，支持自定义行数） ----------
+  // 锚点行：优先用点击选中的行；没有时回退到列表末尾（新增）或直接忽略（插入/复制/删除）
+  function hazardAnchor() {
+    // selectedHazard 是 hazardFactors 的绝对下标；筛选/搜索下可能不在当前显示列表中，仍按绝对下标操作
+    return selectedHazard >= 0 && selectedHazard < hazardFactors.length ? selectedHazard : -1;
+  }
+  function afterHazardRowsChanged(keepSel) {
+    selectedHazard = keepSel;
+    renderHazard();
+    onHazardChange();
+  }
+  $("hazard-add").addEventListener("click", async () => {
+    const n = await askRowCount("新增行数", 1);
+    if (n === null) return;
+    if (hazardFactors.length + n > 5000) { alert("总条数不能超过 5000。"); return; }
+    for (let i = 0; i < n; i++) hazardFactors.push(blankHazard());
     if (hazardWrap) hazardWrap.scrollTop = hazardWrap.scrollHeight;
-    renderHazard();
-    onHazardChange();
+    afterHazardRowsChanged(hazardFactors.length - 1);
   });
-  $("hazard-del").addEventListener("click", () => {
-    if (selectedHazard < 0) { alert("请先点击选中要删除的因素行。"); return; }
-    if (!confirm(`确定删除「${hazardFactors[selectedHazard].rec || hazardFactors[selectedHazard].name || selectedHazard + 1}」？`)) return;
-    hazardFactors.splice(selectedHazard, 1);
-    selectedHazard = -1;
-    renderHazard();
-    onHazardChange();
+  $("hazard-insert").addEventListener("click", async () => {
+    const n = await askRowCount("插入行数", 1);
+    if (n === null) return;
+    if (hazardFactors.length + n > 5000) { alert("总条数不能超过 5000。"); return; }
+    const anchor = hazardAnchor();
+    const at = anchor >= 0 ? anchor + 1 : hazardFactors.length; // 无选中时插到末尾（与新增一致）
+    const ins = [];
+    for (let i = 0; i < n; i++) ins.push(blankHazard());
+    hazardFactors.splice(at, 0, ...ins);
+    afterHazardRowsChanged(at);
+  });
+  $("hazard-copy").addEventListener("click", async () => {
+    const at = hazardAnchor();
+    if (at < 0) { alert("请先点击选中要复制的行（点击行号或任意单元格）。"); return; }
+    const n = await askRowCount("复制行数", 1);
+    if (n === null) return;
+    if (hazardFactors.length + n > 5000) { alert("总条数不能超过 5000。"); return; }
+    const src = hazardFactors[at];
+    const copies = [];
+    for (let i = 0; i < n; i++) copies.push({ ...src });
+    hazardFactors.splice(at + 1, 0, ...copies);
+    afterHazardRowsChanged(at + n);
+  });
+  $("hazard-del").addEventListener("click", async () => {
+    const at = hazardAnchor();
+    if (at < 0) { alert("请先点击选中要删除的行（点击行号或任意单元格）。"); return; }
+    const n = await askRowCount("删除行数", 1);
+    if (n === null) return;
+    const cnt = Math.min(n, hazardFactors.length - at);
+    if (cnt < 1) return;
+    if (!confirm(`确定删除从第 ${at + 1} 行起的 ${cnt} 行？`)) return;
+    hazardFactors.splice(at, cnt);
+    afterHazardRowsChanged(-1);
   });
   $("hazard-restore").addEventListener("click", async () => {
     if (!confirm("恢复为软件内置的默认危害因素库？当前库将被替换。")) return;

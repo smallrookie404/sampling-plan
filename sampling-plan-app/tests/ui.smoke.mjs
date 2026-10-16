@@ -261,6 +261,62 @@ if (hazardCount < 100) throw new Error("危害因素数量异常: " + hazardStat
 console.log("危害因素页:", hazardStatus, "✔");
 await page.screenshot({ path: SHOT_DIR + "/2-hazard.png" });
 
+// 4a) 危害因素库行操作：新增行 / 插入行 / 复制行 / 删除行（与主表一致，均弹出「行数」输入框）
+{
+  const total = async () => {
+    const s = await page.textContent("#hazard-status");
+    return Number((s.match(/共 (\d+) 条/) || [])[1] || 0);
+  };
+  const hzScrollTop = () => page.$eval(".hazard-wrap", (el) => { el.scrollTop = 0; });
+  const selectRow0 = async () => {
+    await hzScrollTop();
+    await page.waitForTimeout(100);
+    await page.click('#hazard-body tr[data-h="0"] td.rowno');
+  };
+  const doHzRowOp = async (btnId, count) => {
+    await page.click(btnId);
+    await page.waitForSelector("#prompt-modal:not(.hidden)");
+    await page.fill("#prompt-input", String(count));
+    await page.click("#prompt-ok");
+    await page.waitForSelector("#prompt-modal.hidden", { state: "attached" });
+    await page.waitForTimeout(150);
+  };
+
+  const base = await total();
+
+  await doHzRowOp("#hazard-add", 1);
+  if ((await total()) !== base + 1) throw new Error("危害因素「新增行」未生效");
+
+  await selectRow0();
+  await doHzRowOp("#hazard-insert", 1);
+  if ((await total()) !== base + 2) throw new Error("危害因素「插入行」未生效");
+
+  await selectRow0();
+  await page.$eval('#hazard-body tr[data-h="0"] input[data-k="rec"]',
+    (el) => { el.value = "___测试因素___"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.waitForTimeout(400);
+  await selectRow0();
+  await doHzRowOp("#hazard-copy", 1);
+  if ((await total()) !== base + 3) throw new Error("危害因素「复制行」未生效");
+  const copiedVal = await page.$eval('#hazard-body tr[data-h="1"] input[data-k="rec"]', (el) => el.value);
+  if (copiedVal !== "___测试因素___") throw new Error("危害因素「复制行」未复制内容: " + copiedVal);
+
+  await hzScrollTop();
+  await page.waitForTimeout(100);
+  await page.click('#hazard-body tr[data-h="1"] td.rowno');
+  await doHzRowOp("#hazard-del", 1);
+  if ((await total()) !== base + 2) throw new Error("危害因素「删除行」未生效");
+
+  // 清理：删回基线
+  let guard = 0;
+  while ((await total()) > base && guard++ < 5) {
+    await selectRow0();
+    await doHzRowOp("#hazard-del", 1);
+  }
+  if ((await total()) !== base) throw new Error("危害因素行操作清理失败，剩 " + (await total()));
+  console.log("危害因素库 行操作（新增/插入/复制/删除）校验通过 ✔");
+}
+
 // 5) 浏览器内导出 Excel
 await page.click('.tab[data-tab="main"]');
 await page.waitForSelector("#main-grid");
