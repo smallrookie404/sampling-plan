@@ -2,8 +2,11 @@ import { chromium } from "playwright-core";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { findBrowser } from "./_browser.mjs";
 
-const ROOT = "G:/AtomCode/采样计划/sampling-plan-app";
+const ROOT = process.cwd();
+const CHROME = findBrowser();
+if (!CHROME) { console.error("未找到 Chrome/Edge，跳过该交互测试"); process.exit(0); }
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json" };
 const srv = http.createServer((req, res) => {
   let p = decodeURIComponent(req.url.split("?")[0]);
@@ -20,7 +23,7 @@ const srv = http.createServer((req, res) => {
 await new Promise((r) => srv.listen(0, r));
 const port = srv.address().port;
 
-const browser = await chromium.launch({ executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe", headless: true });
+const browser = await chromium.launch({ executablePath: CHROME, headless: true });
 const page = await browser.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push("PAGEERROR: " + e.message));

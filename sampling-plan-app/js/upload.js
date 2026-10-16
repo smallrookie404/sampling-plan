@@ -8,6 +8,9 @@
 (function () {
   'use strict';
 
+  // 共享工具（转义 / 脚本懒加载 / 列表结构兼容）：见 js/util.js
+  const Util = window.SamplingUtil;
+
   // ------------------- 配置区 -------------------
   // HTTPS 页面（Cloudflare Pages 部署，如 sampling-plan.pages.dev）走同源代理 /api/platform，
   // 避免浏览器混合内容拦截 http:// 平台接口；本地 http/file 打开时直连平台。
@@ -1331,8 +1334,8 @@
     function ensureJSZip() {
       if (window.JSZip) return Promise.resolve(window.JSZip);
       if (!jszipPromise) {
-        const load = window.SamplingApp && window.SamplingApp.loadScript;
-        jszipPromise = (load ? load('js/jszip.min.js') : Promise.reject(new Error('缺少脚本加载能力')))
+        const load = (window.SamplingApp && window.SamplingApp.loadScript) || Util.loadScript;
+        jszipPromise = load('js/jszip.min.js')
           .then(function () {
             if (!window.JSZip) throw new Error('jszip 加载失败');
             return window.JSZip;
@@ -1343,8 +1346,7 @@
 
     const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
     function noiseEsc(s) {
-      return String(s === null || s === undefined ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return Util.escHtml(s);
     }
     // 取文本：把 <w:br/> 还原成换行。两种写法都要支持：
     //   ① 非标准——<w:br/> 写在 <w:t> **内部**（WPS/Aspose 的部分模板，如检测报告）
@@ -1392,16 +1394,9 @@
       return runText(el);
     }
 
-    // 兼容平台列表接口的多种返回结构（records / rows / list / data，或直接是数组）
+    // 兼容平台列表接口的多种返回结构（统一走共享工具 js/util.js）
     function pickListRows(j) {
-      const cands = [j, j && j.body, j && j.data];
-      for (const c of cands) {
-        if (Array.isArray(c)) return c;
-        if (c && typeof c === 'object') {
-          for (const k of ['records', 'rows', 'list', 'data']) if (Array.isArray(c[k])) return c[k];
-        }
-      }
-      return [];
+      return Util.pickRows(j);
     }
 
     // 通用：从 docx 里取「某个标题段落下面的第一张表」，返回 { rows: string[][] }
@@ -2516,8 +2511,7 @@
     }
 
     function esc(s) {
-      return String(s === null || s === undefined ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      return Util.escHtml(s);
     }
 
     // 平台原生是三次连续确认；照搬，避免误触

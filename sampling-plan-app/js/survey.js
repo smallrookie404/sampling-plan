@@ -1,9 +1,12 @@
   // ---------- 调查表（现场调查导入模板中的 6 个工作表，按原格式） ----------
   // 自包含模块：通过 window.SurveySheets.refresh() 在页签切换时渲染
   const $S = (id) => document.getElementById(id);
+  // 转义 / 脚本懒加载统一走共享工具（js/util.js）
+  const U = window.SamplingUtil;
+  // 普通字符串化（非 HTML 转义）
   const esc = (v) => (v === null || v === undefined ? "" : String(v));
-  const escHtml = (v) => esc(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const escAttr = escHtml;
+  const escHtml = U.escHtml;
+  const escAttr = U.escAttr;
   const SURVEY_SHEETS = [
     { key: "process", name: "生产工艺调查", headers: ["*工艺名称", "*单元/工作场所", "*工艺描述"] },
     {
@@ -1493,22 +1496,15 @@
     document.body.appendChild(menu);
     sExportMenu = menu;
   });
-  // 加载 xlsxio（经典脚本，挂 window.SamplingXlsx；与主应用 ensureXlsx 同机制，动态 import 不适用）
+  // 加载 xlsxio（经典脚本，挂 window.SamplingXlsx；统一走共享工具 js/util.js 的懒加载）
   let sXlsxPromise = null;
   function sEnsureXlsx() {
     if (window.SamplingXlsx) return Promise.resolve(window.SamplingXlsx);
     if (!sXlsxPromise) {
-      sXlsxPromise = (async () => {
-        const load = (src) => new Promise((res, rej) => {
-          const s = document.createElement("script");
-          s.src = src; s.onload = res; s.onerror = () => rej(new Error("加载失败: " + src));
-          document.head.appendChild(s);
-        });
-        if (!window.JSZip) await load("js/jszip.min.js");
-        await load("js/xlsxio.js");
+      sXlsxPromise = U.loadScripts(["js/jszip.min.js", "js/xlsxio.js"]).then(() => {
         if (!window.SamplingXlsx) throw new Error("xlsx 模块加载失败");
         return window.SamplingXlsx;
-      })();
+      });
     }
     return sXlsxPromise;
   }

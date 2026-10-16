@@ -53,8 +53,12 @@
   })();
 
   // ---------------- 依赖懒加载 ----------------
+  // 统一走共享工具 js/util.js；本文件在 Node 测试里会被单独加载（无 SamplingUtil），
+  // 故保留一份等价的最小兜底，保证独立可运行。
+  const Util = root.SamplingUtil || null;
 
   function loadScript(src) {
+    if (Util && Util.loadScript) return Util.loadScript(src);
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
       s.src = src;
@@ -70,7 +74,7 @@
     if (!xlsxPromise) {
       xlsxPromise = (root.SamplingApp && root.SamplingApp.loadScript
         ? root.SamplingApp.loadScript('js/jszip.min.js').then(() => root.SamplingApp.loadScript('js/xlsxio.js'))
-        : Promise.all([loadScript('js/jszip.min.js'), loadScript('js/xlsxio.js')])
+        : loadScript('js/jszip.min.js').then(() => loadScript('js/xlsxio.js'))
       ).then(() => root.SamplingXlsx);
     }
     return xlsxPromise;
@@ -117,8 +121,11 @@
     return r;
   }
 
-  // 兼容上游多种列表返回结构
+  // 兼容上游多种列表返回结构 / 字段改名 —— 统一走共享工具（js/util.js），
+  // 单独加载时用等价本地实现兜底。
   function pickRows(j) {
+    if (Util && Util.pickRows) return Util.pickRows(j);
+    if (Array.isArray(j)) return j;
     const cands = [j, j && j.body, j && j.data, j && j.rows, j && j.records];
     for (const c of cands) {
       if (Array.isArray(c)) return c;
@@ -132,6 +139,7 @@
   // 上游字段在新旧版本中会改名（如 belongUnitName ↔ belongUnit、facilityOperations ↔ useNum）：
   // 按候选顺序取第一个非空值，做到新旧版兼容
   function pick(r, keys) {
+    if (Util && Util.pickField) return Util.pickField(r, keys);
     for (const k of keys) {
       const v = r[k];
       if (v !== undefined && v !== null && v !== '') return v;
@@ -411,7 +419,11 @@
   const HAZARD_COL_HEAD = '职业病危害因素';
   const NOISE_HAZARD = '噪声';
 
-  function normKey(s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); }
+  // 去空白比较键（共享工具）；单独加载时兜底
+  function normKey(s) {
+    if (Util && Util.stripWs) return Util.stripWs(s);
+    return String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
+  }
 
   // 从「其他粉尘,噪声,紫外辐射」里删掉「噪声」项；没删到返回 null。
   // 删空（该岗位只剩噪声）时填「-」，与报告其它空列写法一致。

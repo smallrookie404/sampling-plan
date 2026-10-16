@@ -3,13 +3,9 @@ import { chromium } from "playwright-core";
 import fs from "node:fs";
 import path from "node:path";
 import { startServer } from "../server.mjs";
+import { findBrowser } from "./_browser.mjs";
 
-const CANDIDATES = [
-  "C:/Program Files/Google/Chrome/Application/chrome.exe",
-  "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-  "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
-];
-const CHROME = CANDIDATES.find((p) => fs.existsSync(p));
+const CHROME = findBrowser();
 if (!CHROME) { console.error("未找到 Chrome/Edge，跳过该冒烟测试"); process.exit(0); }
 const SHOT_DIR = "tests/shots";
 // 用独立临时目录：server.mjs 会在 dataFile 同级建 records/，避免污染真实的 data/records/

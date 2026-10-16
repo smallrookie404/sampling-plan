@@ -18,15 +18,14 @@
 
 - **测点布局调查**：主表。白色列为录入区（A~U），灰色列为自动计算区（W~BI，与原表列一一对应）；黄色列（岗位性质、接触类型、是否采样/测量、检测方式）可从下拉覆盖自动值，选择「（自动计算）」恢复；红框单元格表示校验错误，悬停可见原因；工具栏「⛶ 全屏」可浏览器全屏显示表格，全屏时导入、导出、保存等操作按钮浮动在顶部。
 - **危害因素库**：604 条危害因素字典，可搜索、新增、删除、修改，改动后主表自动重算；「恢复默认库」可还原内置数据。
-- **检测项目参考**：444 个标准化检测项目名，支持搜索，重复项标红。
 - 接害因素（D 列）输入时有联想提示，名称必须在危害因素库中可查，否则自动列标红提示。
 - 常用操作：点击行号选中整行，用工具栏按钮新增 / 插入 / 复制 / 删除行。
 - **录入区 Excel 式编辑**：点击单元格定位（高亮框为当前单元格），方向键移动光标，Enter 下移、Tab 右移（Shift 反向），F2 或双击进入编辑，直接输入替换原内容，Delete/Backspace 清空选中的内容、Esc 还原；Shift+方向键、Shift+点击或拖动扩展选择区域，Ctrl+A 全选整张表；Ctrl+C 复制、Ctrl+V 粘贴 Excel 表格内容（粘贴时按行列规律重复填充到整个选中区域，复制单个内容则整片选中区域全部填入）；「清空录入区」可一键清除全部录入内容。
 - 行操作支持**自定义行数**：新增 / 插入 / 复制 / 删除时可输入批量行数（1~1000）。
 - **数据记录**：点「保存数据」为当前数据命名并保存到 `data\records.json`（项目文件夹内）；「数据记录」中可按名称或内容（车间 / 接害因素 / 检测项目）搜索，一键「调用」替换当前表格，减少重复输入；支持 JSON 备份导出与导入，同名记录导入时自动覆盖。
-- **参考库同步**：危害因素库与检测项目参考的新增、删除、修改会自动保存（防抖约 1.2 秒），**只写当前使用的那个存储端**——本地版写项目文件夹的 `data\library.json`，网页版写 GitHub 或 Cloudflare；打开页面只读取、不回写。
+- **参考库同步**：危害因素库的新增、删除、修改会自动保存（防抖约 1.2 秒），**只写当前使用的那个存储端**——本地版写项目文件夹的 `data\library.json`，网页版写 GitHub 或 Cloudflare；**打开页面只读取、不回写**。
 - **GitHub 配置**：部署到静态网页（GitHub Pages）时，在此填写仓库与 Token，保存的数据与参考库将通过 GitHub API 直接写入仓库中的 `data/records.json` 与 `data/library.json`，实现“数据库在 GitHub 上”。
-- **GitHub 同步**：配置 GitHub 后（静态网页版），打开软件时自动从 GitHub 读取最新数据与参考库；「保存数据」直接写回 GitHub。**三端（本地文件夹 / GitHub / Cloudflare）各自独立存储、互不同步**，读取时按时间取最新的一份，避免无谓的跨端写入（Cloudflare KV 免费额度每天仅 1000 次写）。
+- **GitHub 同步**：配置 GitHub 后（静态网页版），「保存数据」直接写回 GitHub。**三端（本地文件夹 / GitHub / Cloudflare）各自独立存储、互不同步**，读取时只从**当前存储端**取，不做跨端回写——避免无谓的跨端写入（Cloudflare KV 免费额度每天仅 1000 次写）。
 
 ## 与原 Excel 的功能对应
 
@@ -35,7 +34,7 @@
 | W~BI 动态数组公式 | `js/logic.js` 计算引擎，逐列对应原公式 |
 | 下拉数据验证（是/否、定点/个体、班制等） | 录入区与可覆盖列的下拉选择 |
 | 条件格式错误标红 | 错误单元格红框 + 状态栏错误计数 |
-| 危害因素 / 检测项目两张参照表 | 独立页签，可维护、可搜索 |
+| 危害因素参照表 | 独立「危害因素库」页签，可维护、可搜索 |
 | 外部引用“班制数”模板 | 已内化为代码逻辑，不再需要外部文件 |
 | 导出 xlsx | 单张工作表，仅自动计算区（W~BI 39 列），行数到「检测项目」列最后一个非空单元格为止，供采样计划交付使用 |
 
@@ -67,14 +66,16 @@ sampling-plan-app/
 ├─ data/records.json     数据记录文件（首次保存时自动生成）
 ├─ css/styles.css        界面样式
 ├─ js/
+│  ├─ util.js            全站共享工具（转义 / 脚本懒加载 / 列表结构兼容）
 │  ├─ logic.js           计算与校验引擎（浏览器/Node 通用）
 │  ├─ xlsxio.js          xlsx 导入导出（仅依赖内置 jszip）
 │  ├─ data.js            全量内置数据（供 Node 测试 require）
 │  ├─ data-core.js       主表列结构（页面启动同步加载）
-│  ├─ data-library.js    内置危害因素库与检测项目（页面端懒加载）
+│  ├─ data-library.js    内置危害因素库（页面端懒加载）
 │  ├─ jszip.min.js       第三方压缩库
 │  ├─ app.js             主工具界面逻辑
 │  ├─ survey.js          调查表模块（6 个现场子表）
+│  ├─ blf.js             网站数据导入 / 检评报告生成
 │  └─ upload.js          统一登录 + 现场调查上传
 ├─ scripts/extract-data.mjs  从原 Excel 重新提取内置数据的脚本（生成 data.js / data-core.js / data-library.js）
 └─ tests/                自动化测试（见下）
@@ -82,15 +83,23 @@ sampling-plan-app/
 
 ## 自动化测试
 
-测试脚本基于 Node.js，验证“软件实现与原 Excel 结果一致”：
+测试脚本基于 Node.js：
 
 ```bash
-node tests/engine.test.mjs   # 引擎 vs 原表缓存结果（312 个单元格逐一对比）
-node tests/xlsxio.test.mjs   # 导出文件可被 Excel 引擎打开 + 导入往返一致
-node tests/ui.smoke.mjs      # 浏览器界面：计算、错误联动、覆盖联动、导出
+node tests/pjbg.note.test.mjs       # 检评报告备注/流程逻辑（47 项）
+node tests/pjbg.note1009.test.mjs   # 报告处理流程（18 项）
+node tests/captcha.test.mjs         # 验证码 OCR（8 项）
+node tests/bridge-cloudflare.test.mjs  # 云端账号桥（10 项）
+node tests/server.test.mjs          # 本地服务端
+node tests/cloudflare.test.mjs      # Cloudflare KV 契约
+node tests/report.smoke.mjs         # 浏览器报告面板
+node tests/ui.smoke.mjs             # 浏览器界面：计算、错误联动、导出
+node tests/survey.smoke.mjs         # 调查表界面
+node tests/engine.test.mjs          # 引擎 vs 原表缓存（需本地样例 xlsx）
+node tests/xlsxio.test.mjs          # 导出文件可被 Excel 引擎打开（需 @oai/artifact-tool）
 ```
 
-已通过：引擎 312/312 单元格与原表一致；导出 xlsx 通过 OpenXML 校验并可被 Excel 引擎读取；浏览器往返导出/导入数据一致。
+完整清单与已知失败项见仓库根 `AGENTS.md` 的「测试」小节。浏览器类测试会自动探测 Chrome / Edge，也可用 `CHROME_PATH` / `EDGE_PATH` 指定。
 
 ## 注意事项
 

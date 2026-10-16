@@ -7,7 +7,13 @@ const require = createRequire(import.meta.url);
 const data = require("../js/data.js");
 const logic = require("../js/logic.js");
 
-const SRC = "G:/codex工作台/采样计划/0.系统测点布局调查2025.12.19（6）.xlsx";
+const SRC = process.env.SAMPLING_SRC_XLSX
+  || "G:/codex工作台/采样计划/0.系统测点布局调查2025.12.19（6）.xlsx";
+// 原表样例在仓库外（体积大、含业务数据，默认不入库）：缺失时明确跳过，不误报失败。
+if (!fs.existsSync(SRC)) {
+  console.error("未找到原表样例（可用 SAMPLING_SRC_XLSX 环境变量指定），跳过 engine.test");
+  process.exit(0);
+}
 
 // ---------- 读取原表（输入 A:U 与缓存计算 W:BI） ----------
 function unescapeXml(s) {

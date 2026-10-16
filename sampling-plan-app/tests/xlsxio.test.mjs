@@ -1,6 +1,16 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import { FileBlob, SpreadsheetFile } from "@oai/artifact-tool";
+
+// 可选依赖：@oai/artifact-tool 只是「用第三方库交叉校验导出结果」的辅助工具，
+// 未安装时不应让整个测试报错（此前顶层 import 缺失即 ERR_MODULE_NOT_FOUND）。
+let SpreadsheetFile = null;
+let FileBlob = null;
+try {
+  ({ SpreadsheetFile, FileBlob } = await import("@oai/artifact-tool"));
+} catch {
+  console.error("未安装 @oai/artifact-tool，跳过 xlsxio 交叉校验测试");
+  process.exit(0);
+}
 
 const require = createRequire(import.meta.url);
 const data = require("../js/data.js");

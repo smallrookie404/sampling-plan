@@ -26,43 +26,50 @@ sampling-plan/
     ├── data/
     │   ├── records.json            # 记录「索引」[{id,name,createdAt,updatedAt}]（旧版整表格式会自动迁移）
     │   ├── records/<id>.json       # 单条完整记录（含 rows / survey），本地服务按需创建
-    │   └── library.json            # 危害因素库 + 检测项目（应用自动写回，勿手工改格式）
+    │   └── library.json            # 危害因素库（应用自动写回，勿手工改格式）
     ├── js/
-    │   ├── data.js                 # 全量数据 {mainHeaders,hazardFactors,detectionItems}，仅 Node 测试 require（勿手改）
+    │   ├── util.js                 # ★ 全站共享工具（转义 / 脚本懒加载 / 列表结构兼容）；须最先加载
+    │   ├── data.js                 # 全量数据 {mainHeaders,hazardFactors}，仅 Node 测试 require（勿手改）
     │   ├── data-core.js            # 主表列结构（仅 mainHeaders），页面启动同步加载（勿手改）
-    │   ├── data-library.js         # 内置危害因素库/检测项目，页面端懒加载（勿手改）
+    │   ├── data-library.js         # 内置危害因素库，页面端懒加载（勿手改）
     │   ├── logic.js                # 计算引擎（浏览器/Node 通用，纯函数）
     │   ├── xlsxio.js + jszip.min.js# xlsx 读写（懒加载，首次导入/导出时加载）
     │   ├── app.js                  # 主工具界面逻辑；暴露 window.SamplingApp（导出/错误数/车间岗位映射）
     │   ├── survey.js               # 调查表模块（6 个现场调查子表，Excel 式编辑）；暴露 window.SurveySheets
+    │   ├── blf.js                  # 「网站数据导入」「检评报告生成」等；暴露 window.SamplingBlf
     │   └── upload.js               # 统一登录 + 现场调查上传（平台接口、团队配置、云端同步）
     ├── functions/api/              # Cloudflare Pages Functions（编译为 Worker）
     │   ├── records.js / library.js # KV 数据读写（binding: SAMPLING_RECORDS）
     │   ├── team.js                 # 团队配置云端存取（按账号分 key team:<账号>）
+    │   ├── bridge/[[path]].js      # 云端账号桥（验证码 OCR + RSA + 登录 + 令牌缓存）
     │   └── platform/[[path]].js    # 平台接口同源代理（cloudflare:sockets 原始 TCP 转发）
     ├── scripts/extract-data.mjs    # 从原 Excel 生成 js/data.js + data-core.js + data-library.js
-    └── tests/                      # 自动化测试（Node + Playwright）；另有 check_shots.py、validate_export.py
+    └── tests/                      # 自动化测试（Node + Playwright）；另有 _browser.mjs、check_shots.py、validate_export.py
 ```
 
 ## 运行时组成与模块契约
 
-- **加载顺序**（`index.html` 末尾，不可随意调整）：`data-core.js → logic.js → survey.js → app.js → upload.js`；`data-library.js`（内置库，~125KB）、`xlsxio.js` 与 `jszip.min.js` 均为**懒加载**——内置库由 app.js `ensureLibraryDefaults()` 在「无云端/本地参考库」时经 `loadScript()` 拉取，xlsx 由 app.js/survey.js 的 `ensureXlsx()` 在首次导入/导出时拉取。app.js/survey.js 有大量顶层 `$()` 元素绑定与 `init()`，因此脚本必须放在 `</body>` 前。
+- **加载顺序**（`index.html` 末尾，不可随意调整）：`util.js → data-core.js → logic.js → survey.js → app.js → upload.js → blf-data.js → blf.js`；`data-library.js`（内置库，~125KB）、`xlsxio.js` 与 `jszip.min.js` 均为**懒加载**——内置库由 app.js `ensureLibraryDefaults()` 在「无云端/本地参考库」时经 `SamplingUtil.loadScript()` 拉取，xlsx 由各模块的 `ensureXlsx()` 在首次导入/导出时拉取。app.js/survey.js 有大量顶层 `$()` 元素绑定与 `init()`，因此脚本必须放在 `</body>` 前。
+  - **`util.js` 必须最先加载**：其余业务脚本在顶层就引用 `window.SamplingUtil`（app/survey/upload 为硬依赖；blf.js 在 Node 单测里单独加载，故对 `SamplingUtil` 缺失做了内联兜底）。
 - **模块间只通过全局对象通信**：
 
 | 全局对象 | 定义处 | 主要成员 |
 |---|---|---|
-| `SamplingData` | js/data-core.js（页面启动）/ js/data.js（Node 测试） | data-core.js 仅 `{ mainHeaders }`；data.js 为全量 `{ mainHeaders, hazardFactors, detectionItems }` |
-| `SamplingLibrary` | js/data-library.js | 内置 `{ hazardFactors, detectionItems }`（页面端懒加载） |
-| `SamplingLogic` | js/logic.js | `computeRows` `validateRow` `countErrors` `snapshotRows` `restoreRows` `findDuplicates` |
+| `SamplingUtil` | js/util.js | `loadScript` `loadScripts` `escHtml` `escAttr` `escXml` `stripWs` `squashWs` `pickRows` `pickField` |
+| `SamplingData` | js/data-core.js（页面启动）/ js/data.js（Node 测试） | data-core.js 仅 `{ mainHeaders }`；data.js 为 `{ mainHeaders, hazardFactors }` |
+| `SamplingLibrary` | js/data-library.js | 内置 `{ hazardFactors }`（页面端懒加载） |
+| `SamplingLogic` | js/logic.js | `computeRows` `validateRow` `countErrors` `snapshotRows` `restoreRows` |
 | `SamplingXlsx` | js/xlsxio.js | `readWorkbook` `sheetToArray` `writeWorkbook`（支持 `[{name,rows,widths}]` 多表）`downloadBlob` `colToIndex` `indexToCol` |
-| `SamplingApp` | app.js `window.SamplingApp` | `exportWorkbookBytes` `exportName` `countErrors` `promptSave` `askRowCount` `workshopNames` `computedHeaders` `workshopPosts` |
+| `SamplingApp` | app.js `window.SamplingApp` | `exportWorkbookBytes` `exportName` `countErrors` `promptSave` `askRowCount` `workshopNames` `computedHeaders` `workshopPosts` `loadScript` `importWorkbook` `syncNonNoiseJobs` |
 | `SurveySheets` | survey.js `window.SurveySheets` | `refresh` `exportAllWorkbook` `importFromArray` `getData` `setData` |
-| `SamplingUpload` | upload.js | `show` `bootstrap`（登录态判断 + 上传视图） |
+| `SamplingBlf` | blf.js | `patchPjbgDocx` `genPjbgDocx` 等（网站数据导入 / 检评报告后处理） |
+| `SamplingUpload` | upload.js | `show` `bootstrap`（登录态判断 + 上传视图）；数据报告回退/审核、账号池、报告 PDF 显示 |
 
 - **反向依赖（改动签名必须同时改两处）**：
   - survey.js 依赖 `SamplingApp`：`workshopNames()`（主表 A 列车间去重保序）、`workshopPosts()`（自动计算区 W→X 映射，含下填）、`computedHeaders()`、`askRowCount()`；
   - upload.js 依赖 `SamplingApp.exportWorkbookBytes/exportName/countErrors/promptSave` 与 `SurveySheets.exportAllWorkbook`；
-  - app.js 依赖 `SurveySheets.getData/setData/refresh/importFromArray/exportAllWorkbook` 与 `SamplingUpload.show`。
+  - app.js 依赖 `SurveySheets.getData/setData/refresh/importFromArray/exportAllWorkbook` 与 `SamplingUpload.show`；
+  - blf.js 依赖 `SamplingUpload`（搜索项目 / 401 处理）与 `SamplingApp.importWorkbook`。
 
 ## 数据模型与三端存储契约
 
@@ -81,8 +88,7 @@ sampling-plan/
 - 环境探测：app.js `detectStorageMode()` 用 `/api/health` 判定 `server`，否则看 GitHub 配置 → `github` / `static-unconfigured`；`file://` 打开为 `temp`（仅浏览器暂存）。
 - **⚠ 三端各自独立存储，互不同步（2026-10-13 起）**：每类数据**只写一个「主端」**，读取时按 `updatedAt` 取最新，**不再把较新一端回写到较旧一端**。
   - 主端判定（记录与参考库同一套规则）：静态部署 + 已配 GitHub → **GitHub**；否则当前服务端（本地版 = 项目文件夹；Cloudflare Pages = **KV**）；再否则只写浏览器 localStorage。
-  - 参考库：`persistLibrary` 只写主端（原来会**同时写 GitHub + KV**）；`loadLibrary` 只读不写（原来会回写较旧端）。
-  - `mirrorLibraryToLocal` 已改为**纯 localStorage 镜像**——原来在 server 模式下会 `PUT /api/library`，导致**每次打开页面都写一次 KV**。
+  - 参考库：`persistLibrary` 只写主端（原来会**同时写 GitHub + KV**）；`loadLibrary` 只读不写（原来会回写较旧端）。**打开页面不再写参考库**，杜绝每次开页写一次 KV。
   - 记录侧读取优先级仍为 GitHub > 本地服务 > localStorage 镜像；写入与读取保持同一端。
   - 目的：Cloudflare KV 免费额度**写只有 1000/天**，杜绝无谓写。剩余 KV 写只来自：Pages 版保存/删除记录、Pages 版改动参考库、`/api/team` 团队配置（低频）。
 - 兼容迁移：`server.mjs` 与 `functions/api/records.js` 都带 `migrateLegacy()`，会把旧版「整表记录数组」自动拆成「索引 + 单条」（本地会建出 `data/records/`）；仓库中的 `records.json` 仍是旧格式属于正常现象。
@@ -93,6 +99,7 @@ sampling-plan/
 |---|---|---|
 | `samplingPlanRecords_v1` | localStorage | 完整记录镜像（离线兜底） |
 | `samplingPlanLibrary_v1` | localStorage | 参考库镜像 |
+| `samplingPlanLibrary_v1` | localStorage | 参考库镜像（`<id>_<租户标识>` 命名空间） |
 | `samplingPlanLibraryDefaults_v1` | localStorage | 内置参考库默认值缓存（懒加载 data-library.js 解析后写入，见 app.js `ensureLibraryDefaults`） |
 | `samplingPlanGithubConfig_v1` | localStorage | 仓库/分支/路径/**Token 明文** |
 | `samplingPlanSurvey_v2` | localStorage | 调查表 6 子表数据（改动结构须升版本号） |
@@ -104,22 +111,25 @@ sampling-plan/
 ## 运行与测试
 
 - 本地启动：双击 `sampling-plan-app\启动采样计划软件.bat`（自动起服务并打开浏览器），或直接双击 `index.html`（临时模式）。
-- 自动化测试（需 Node 与 jszip/playwright 依赖）：
+- 自动化测试（需 Node 与 jszip/playwright 依赖；浏览器路径由 `tests/_browser.mjs` 自动探测 Chrome/Edge，缺失则跳过）：
   ```bash
-  node tests/engine.test.mjs     # 计算引擎 vs 原 Excel 缓存
-  node tests/xlsxio.test.mjs     # xlsx 导出/导入往返
+  node tests/engine.test.mjs     # 计算引擎 vs 原 Excel 缓存（需原表 xlsx，可用 SAMPLING_SRC_XLSX 指定；缺失自动跳过）
+  node tests/xlsxio.test.mjs     # xlsx 导出/导入往返（需 @oai/artifact-tool；缺失自动跳过）
   node tests/server.test.mjs     # 本地服务接口
-  node tests/ui.smoke.mjs        # 浏览器冒烟（依赖 Chrome/Edge）
+  node tests/ui.smoke.mjs        # 浏览器冒烟（自动探测 Chrome/Edge）
   node tests/survey.smoke.mjs    # 调查表冒烟（Playwright）
   node tests/survey.edit.mjs     # 调查表编辑交互（Playwright）
-  node tests/cloudflare.test.mjs # Cloudflare Functions 接口
-  node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤：注段落替换 + 表3-1 接触人数联动 + 氮氧化物措辞精简（需样例 docx，见下）
-  node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b：非噪声筛选为空时 A 段必须保留 / 氮氧化物精简（需 1009 报告样例，见下）
+  node tests/cloudflare.test.mjs # Cloudflare Functions 接口（索引 + 分条 KV）
+  node tests/captcha.test.mjs    # 验证码 OCR（JS 移植）准确率 + RSA 自检
+  node tests/bridge-cloudflare.test.mjs # 云端账号桥（假 KV + 假平台，真跑 OCR 与登录）
+  node tests/report.smoke.mjs    # 「数据报告处理」页签（回退/审核/断点续审/报告显示/面板缓存）
+  node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
+  node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
   ```
 - 测试注意：应用会自动把参考库写回 `data/library.json`；跑会改动参考库的测试前先备份，测试后 `git checkout -- sampling-plan-app/data/library.json` 恢复。
-- `tests/pjbg.note.test.mjs` 需要一份真实检评报告 docx 作样例，默认读 `%TEMP%/sampling-plan-login/pjbg.docx`，可用 `node tests/pjbg.note.test.mjs <path.docx>` 或环境变量 `PJBG_SAMPLE` 指定。纯 Node（`vm` 沙箱加载 `js/blf.js` + `JSZip`），不依赖浏览器。
-- `tests/pjbg.note1009.test.mjs` 针对「非噪声车间岗位筛选为空 → A 段被误删」的回归，默认读 `%TEMP%/sampling-plan-login/pjbg-1009.docx`（可用 `PJBG_1009` 环境变量或 argv 覆盖）；样例缺失时自动跳过。
-- 环境注意：本机系统 PATH 中可能没有 `node`（`启动采样计划软件.bat` 会按顺序回退到内置运行时）。可先取内置 Node 绝对路径再执行，例如 `C:\Users\<用户>\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe`；`sampling-plan-app/node_modules` 已含 jszip 与 playwright-core。
+- `tests/pjbg.note.test.mjs` / `pjbg.note1009.test.mjs` 需要真实检评报告 docx 作样例（默认读 `%TEMP%/sampling-plan-login/`，可用 `PJBG_SAMPLE` / `PJBG_1009` 或 argv 指定）。纯 Node（`vm` 沙箱加载 `js/blf.js` + `JSZip`），不依赖浏览器；**blf.js 为此保留了 `SamplingUtil` 缺失时的内联兜底**。
+- ⚠ 已知**预存在失败**（与近期改动无关，勿误判）：`tests/ui.smoke.mjs` 第 4 步「覆盖联动」（AR 覆盖为「个体」时期望 AS=长时间/AK=采样对象）——当前逻辑产出短时间/采样点，断言陈旧。
+- 环境注意：本机系统 PATH 中可能没有 `node`（`启动采样计划软件.bat` 会按顺序回退到内置运行时）。可先取内置 Node 绝对路径再执行；`sampling-plan-app/node_modules` 已含 jszip 与 playwright-core。
 - 快速自检：对改动文件跑 `node --check`（对全部 js/mjs 跑一遍也能一次性发现语法问题）。
 
 ## 部署
@@ -148,7 +158,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 - 平台接口为真实生产系统，上传/成员同步等写操作会影响真实数据，改动接口契约前先核对（请求体数组/对象格式易踩坑：成员新增传对象、成员删除传裸数字数组、上传用 FormData 且 query/body/请求头三处联动）。
 - `data/library.json`、`data/records.json` 由应用自动写回，仓库中保持提交以利备份；`.gitignore` 已排除原版 Excel 模板（含调查数据）。
 - `data/records.json` 目前仍是旧版「整表记录」格式（元素含 `rows`），首次访问 `/api/records` 时会自动迁移为索引 + `data/records/<id>.json`；迁移是幂等的，不要手工去改。
-- **只有修改参考库**才会触发 `scheduleLibrarySync` 防抖写回（约 1.2s，只写一个主端）；**打开页面不再写参考库**（`mirrorLibraryToLocal` 已改为纯 localStorage）。调试或跑测试前后仍建议备份与恢复 `data/library.json`。
+- **只有修改参考库**才会触发 `scheduleLibrarySync` 防抖写回（约 1.2s，只写一个主端）；**打开页面不再写参考库**。调试或跑测试前后仍建议备份与恢复 `data/library.json`。
 - 测试契约：`tests/ui.smoke.mjs` 依赖 `td[data-r]/td[data-c]`、`td.rowno`、`div.computed-text`、`#grid-status` 文案与 GitHub 配置键名；`tests/xlsxio.test.mjs` 依赖「只导出 W~BI 自动计算区」的行为。改 DOM 结构或导出范围前先看这些断言。
 - 纯函数引擎（logic.js）是唯一可被 Node 直接测试的部分，新增计算请优先放这里，不要在 app.js 里再写一份公式。
 - 源文件统一 UTF-8；页面迭代频繁，部署后浏览器需 Ctrl+F5 强刷。
@@ -166,7 +176,8 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 加/改调查表字段 | survey.js `SURVEY_SHEETS`（列名即键）+ `SURVEY_COL_OPTIONS`（下拉）；联动列用 `headers.indexOf` 定位，**改列名会使联动与旧 Excel 导入静默失效** |
 | 改调查表导出/导入 | survey.js `exportAllWorkbook` / `importFromArray`（按工作表名+表头名匹配，兼容列序变化） |
 | 改记录保存/读取/同步 | app.js `detectStorageMode`/`loadRecords`/`loadRecordById`/`persistRecord`/`deleteRecordById` + 三端实现（server.mjs、functions/api/records.js、app.js `github*`） |
-| 改参考库同步与时间戳 | app.js `loadLibrary`/`persistLibrary`/`scheduleLibrarySync`/`libTimestamp` |
+| 改参考库同步 | app.js `loadLibrary`/`persistLibrary`/`scheduleLibrarySync` |
+| 改通用工具（转义/懒加载/列表兼容） | js/util.js（`window.SamplingUtil`）；业务脚本只引用它，不要在 app/upload/survey/blf 里各写一份 |
 | 改登录/验证码/会话 | upload.js `API_BASE`/RSA 实现/`resolveOrgId`/`saveSession` + index.html 登录遮罩与内联隐藏脚本 |
 | 改上传流程或平台接口 | upload.js `apiRequest`/`runUploadFlow`/`syncProjectInfo`；代理侧 `functions/api/platform/[[path]].js`（目标 IP、头白名单） |
 | 改团队配置 | upload.js `loadTeamSettings`/`saveTeamSettings`/`loadProjectTeam` + `functions/api/team.js`（KV key、64KB 上限） |

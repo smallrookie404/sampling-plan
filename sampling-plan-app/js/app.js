@@ -6,18 +6,13 @@
   const DEFAULT_DATA = window.SamplingData;
   const DEFAULT_LIBRARY_KEY = "samplingPlanLibraryDefaults_v1";
 
+  // 共享工具（脚本懒加载 / 转义 / 列表结构兼容）：见 js/util.js
+  const U = window.SamplingUtil;
+  const loadScript = U.loadScript;
+
   // xlsx 读写模块（jszip + xlsxio）改为按需加载：首次导入/导出时才加载，加快页面启动
   let X = null;
   let xlsxPromise = null;
-  function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = src;
-      s.onload = resolve;
-      s.onerror = () => reject(new Error("脚本加载失败：" + src));
-      document.head.appendChild(s);
-    });
-  }
 
   // 内置危害因素库懒加载；localStorage 缓存 + 脚本兜底
   let libDefaultsPromise = null;
@@ -322,12 +317,9 @@
     return v === null || v === undefined ? "" : String(v);
   }
 
-  function escHtml(s) {
-    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-  function escAttr(s) {
-    return escHtml(s).replace(/"/g, "&quot;");
-  }
+  // 转义统一走共享工具（js/util.js）
+  const escHtml = U.escHtml;
+  const escAttr = U.escAttr;
 
   // ---------- 主表格 Excel 式列筛选（与危害因素库/调查表一致：列内勾选值「或」，列间「与」；仅影响显示，行号保持原行号） ----------
   // gridFilter: { 列字母: Set(勾选的显示值) }；筛选值取该格的实际显示值（input/manual/覆盖后的 values）
@@ -3620,7 +3612,7 @@
   // 规则：与 W(*单元/工作场所)、X(*岗位/工种)、AL(*点位/采样对象) 一一对应；
   //       命中的行若 AN(*检测项目) 含「噪声」且 lex < 80，则把 AI(是否噪声作业岗位) 置为「否」
   function syncNonNoiseJobs(list) {
-    const norm = (s) => String(s === null || s === undefined ? "" : s).replace(/\s+/g, "");
+    const norm = U.stripWs;
     const keyOf = (a, b, c) => norm(a) + "\u0001" + norm(b) + "\u0001" + norm(c);
     const want = new Map();
     for (const it of list || []) {

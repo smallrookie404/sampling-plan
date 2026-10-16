@@ -442,15 +442,6 @@
     });
   }
 
-  function findDuplicates(items) {
-    const seen = new Map();
-    for (const it of items) {
-      const k = str(it);
-      seen.set(k, (seen.get(k) || 0) + 1);
-    }
-    return [...seen.entries()].filter(([, c]) => c > 1).map(([k]) => k);
-  }
-
   return {
     BANZHI_R,
     BANZHI_S,
@@ -474,7 +465,6 @@
     restoreRows,
     encodeUnicodeBase64,
     decodeUnicodeBase64,
-    findDuplicates,
     findHazardByRec,
     findHazardByName,
   };

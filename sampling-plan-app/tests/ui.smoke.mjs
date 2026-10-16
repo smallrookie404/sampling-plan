@@ -3,11 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { startServer } from "../server.mjs";
+import { findBrowser } from "./_browser.mjs";
 
 const require = createRequire(import.meta.url);
 const xlsxio = require("../js/xlsxio.js");
 
-const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
+const CHROME = findBrowser();
+if (!CHROME) { console.error("未找到 Chrome/Edge，跳过该冒烟测试"); process.exit(0); }
 const SHOT_DIR = "tests/shots";
 // 用独立临时目录：server.mjs 会在 dataFile 同级建 records/，避免污染真实的 data/records/
 const TEST_DIR = path.resolve("data/_test-ui");
@@ -47,8 +49,19 @@ page.on("console", (msg) => {
 });
 page.on("pageerror", (err) => errors.push("pageerror: " + err.message));
 
+// 平台接口 mock：启动期 upload.js 会先 await 云端团队配置(/api/team) 与 /auth/info，
+// 二者不可达时登录遮罩迟迟不隐藏 → 后续点击被遮罩拦截。
+// 这里把它们 mock 成成功响应，让会话恢复流程走通（与 report.smoke.mjs 同一套做法）。
+await page.route("**/auth/info*", (route) =>
+  route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({ user: { userName: "测试账号", userCode: "TEST", organization: { organizationId: "1" } } }) }));
+await page.route("**/api/team*", (route) =>
+  route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({}) }));
+
 await page.goto(APP_URL, { waitUntil: "load" });
 await page.waitForSelector("#main-grid tbody tr[data-r]", { timeout: 15000 });
+// 等待登录遮罩隐藏（会话恢复完成），避免后续操作被遮罩拦截
+await page.waitForSelector("#xcdc-login.hidden", { timeout: 15000 }).catch(() => {});
 const noticeHidden = await page.$eval("#storage-notice", (el) => el.classList.contains("hidden"));
 if (!noticeHidden) throw new Error("服务模式下不应显示临时模式提示条");
 

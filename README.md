@@ -8,10 +8,13 @@
 ├─ sampling-plan-app/        软件（网页界面 + 计算引擎 + 本地服务）
 │  ├─ index.html             软件入口（主工具 + 调查表页签 + 登录/上传）
 │  ├─ server.mjs             本地服务（静态页面 + 数据文件读写）
-│  ├─ data/records.json      数据记录（数据库文件，随仓库同步到 GitHub）
-│  ├─ data/library.json      危害因素库 + 检测项目（应用自动写回）
+│  ├─ js/util.js             全站共享工具（转义 / 脚本懒加载 / 列表结构兼容）
+│  ├─ data/records.json      数据记录索引（随仓库同步到 GitHub）
+│  ├─ data/records/<id>.json 单条完整记录
+│  ├─ data/library.json      危害因素库（应用自动写回）
 │  └─ tests/                 自动化测试
-├─ 同步数据库到GitHub.bat    把 data/records.json 提交并推送到 GitHub
+├─ captcha-ocr/              Python 原型（验证码 OCR / 账号池 / 平台取数）+ 本地账号桥
+├─ 同步数据库到GitHub.bat    把 data/ 提交并推送到 GitHub
 ├─ 平台接口文档.md            ★ 已实现功能用到的平台接口（按功能分类，随新发现更新）
 ├─ 交接文档-现状总览.md       项目现状/进行中项/待决风险（完整版）
 └─ .gitignore
@@ -73,10 +76,13 @@ git push -u origin main
 
 在软件右上角「GitHub 配置」中填写仓库与 Token 后：
 
-- **打开软件时自动从 GitHub 同步**最新记录（打开即同步，顶部有同步状态提示）；
-- 「保存数据」直接写回 GitHub 仓库的 `sampling-plan-app/data/records.json`，同时镜像到本地作为离线兜底；
-- 「数据记录」弹窗中的「从 GitHub 刷新」可手动拉取最新数据；
+- 「保存数据」直接写回 GitHub 仓库的 `sampling-plan-app/data/records.json`；
+- 「数据记录」弹窗列出、调用、删除已保存的记录（**不再有「从 GitHub 刷新」按钮**：打开软件即按当前存储端读取最新，不需要手动刷新）；
 - Token 仅保存在本机浏览器中，请勿提交到仓库或泄露。
+
+> ★ **三端各自独立存储、互不同步**（2026-10-13 起）：本地文件夹 / GitHub / Cloudflare KV 各存各的，
+> 读取时只从**当前所在的存储端**读，**不再跨端回写**（避免 Cloudflare KV 免费额度被无谓写耗尽）。
+> 主端判定：静态部署且已配 GitHub → GitHub；否则当前服务端（本地版＝项目文件夹；Pages 版＝KV）；再否则只写浏览器本地。
 
 ## 部署到 Cloudflare（dash.cloudflare.com）
 
@@ -98,9 +104,10 @@ git push -u origin main
 
 > 注意：`wrangler pages deploy` 的旧式参数（`--branch`、`--commit-dirty`）会关闭 Functions 编译，本脚本已避免使用；若手动部署请保持 `wrangler pages deploy .wrangler\pages-dist --project-name sampling-plan` 的写法。
 
-服务模式下，「数据记录」保存在 KV 的 `records` 键；**危害因素库与检测项目参考**保存在 KV 的 `library` 键（含 `updatedAt` 时间戳），修改后约 1 秒自动写回云端。
+服务模式下，「数据记录」保存在 KV 的 `records-index` 键（索引）与 `record:<id>` 键（单条）；**危害因素库**保存在 KV 的 `library` 键（含 `updatedAt` 时间戳），修改后约 1 秒自动写回云端。
 
-如果同一浏览器里同时配置了 GitHub（「GitHub 配置」弹窗）并打开 Cloudflare 页面，软件会读取两端参考库并比较 `updatedAt`：**取较新的一端作为当前库，并自动把最新内容同步到较旧的一端**，保证两边一致；只配置其中一端时则只读写该端。
+> ★ 存储端互不同步：同一浏览器里即使同时配置了 GitHub 与 Cloudflare，也不会互相回写——各自的写入只落到**当前存储端**（详见上文「数据记录与 GitHub 同步」）。
+> ⚠ Cloudflare KV 免费额度**写只有 1000 次/天**，故刻意避免任何跨端 mirror 写。
 
 > 提示：Cloudflare KV 为最终一致，保存后建议刷新「数据记录」确认；如需强一致数据库可改用 D1（SQLite），需要时我可以再适配。
 
