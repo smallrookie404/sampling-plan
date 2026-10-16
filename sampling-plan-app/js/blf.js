@@ -903,14 +903,25 @@
     if (arr.length === 0) {
       repl = '';                                        // 仅在 allowDelete=true 时到达
     } else {
-      // 克隆原段落的 <w:pPr>（保留字体/缩进/行距等格式），第 2 段紧随其后
+      // 克隆原段落的 <w:pPr>（保留字体/缩进/行距等格式），第 2 段紧随其后。
+      // ⚠ 第 2 段是**新建**的 <w:p>，必须同时带上原段落首个 <w:r> 的 <w:rPr>，
+      //   否则新 run 无字符格式，会回落到样式默认值（字体/字号/东亚字体 hint 与第 1 段不一致）。
       const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(oldP);
       const pPr = pPrM ? pPrM[0] : '';
+      // 取原段落第一个 <w:r> 自身的 <w:rPr>（先剔除 <w:pPr>，避免命中其内嵌的段落标记 rPr）
+      const pBody = pPr ? oldP.replace(pPr, '') : oldP;
+      const runM = /<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/.exec(pBody);
+      let rPr = '';
+      if (runM) {
+        const rPrM = /<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/.exec(runM[0]);
+        if (rPrM) rPr = rPrM[0];
+      }
       repl = setCellText(oldP, xmlEsc(arr[0]));
       for (let i = 1; i < arr.length; i++) {
         // 用同一 pPr，但去掉 paraId（避免 Word 里两段共用同一 paraId）
         const pPrClean = pPr.replace(/\sw14:paraId="[^"]*"/g, '');
-        repl += '<w:p>' + pPrClean + '<w:r><w:t xml:space="preserve">' + xmlEsc(arr[i]) + '</w:t></w:r></w:p>';
+        repl += '<w:p>' + pPrClean
+          + '<w:r>' + rPr + '<w:t xml:space="preserve">' + xmlEsc(arr[i]) + '</w:t></w:r></w:p>';
       }
     }
     // 兜底自检：替换结果里若连 A 段首句都不见了，说明定位/替换异常 → 放弃本次改动（保原样）

@@ -114,6 +114,49 @@ check("第2段含「当天工况噪声检测结果小于80dB(A)」", paras[1] &&
 check("第2段不含旧占位「M车间A岗位」", paras[1] && !paras[1].includes("M车间A岗位"));
 check("旧「注：无」已不存在", !/注：无/.test(outXml));
 
+// 格式一致性：第 2 段（换行后的新段落）必须与第 1 段同格式（同 <w:pPr>、同首个 <w:r> 的 <w:rPr>）
+function noteParaRawXml(x) {
+  const tbls = [...x.matchAll(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g)];
+  let t41 = null;
+  for (const m of tbls) {
+    const h = (m[0].match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/) || [""])[0];
+    if (h.includes("岗位（工种）") && h.includes("职业病危害因素")) { t41 = m; break; }
+  }
+  if (!t41) return [];
+  const tail = x.slice(t41.index + t41[0].length);
+  const out = [];
+  const re = /<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g;
+  let m;
+  while ((m = re.exec(tail))) {
+    const t = (m[0].match(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g) || []).map((z) => z.replace(/<[^>]+>/g, "")).join("");
+    if (!t) continue;
+    if (t.indexOf("注：") >= 0 || t.indexOf("接触的噪声经过验证性检测") >= 0) out.push(m[0]);
+    else break;
+  }
+  return out;
+}
+const rawParas = noteParaRawXml(outXml);
+function pPrOf(p) {
+  const m = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(p);
+  return m ? m[0] : "";
+}
+function firstRunRPr(p) {
+  const pPr = pPrOf(p);
+  const body = pPr ? p.replace(pPr, "") : p;
+  const runM = /<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/.exec(body);
+  const rM = runM && /<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/.exec(runM[0]);
+  return rM ? rM[0] : "";
+}
+const rprA = firstRunRPr(rawParas[0] || "");
+const rprB = firstRunRPr(rawParas[1] || "");
+check("第2段首个 run 带 <w:rPr>", !!rprB, rprB.slice(0, 40));
+check("第2段 rPr 与第1段完全一致（字体/字号/东亚字体 hint）", !!rprB && rprA === rprB);
+check("第1段 rPr 含仿宋_GB2312（基准）", rprA.includes("仿宋_GB2312"), rprA.slice(0, 80));
+const pprA = pPrOf(rawParas[0] || "").replace(/\sw14:paraId="[^"]*"/g, "");
+const pprB = pPrOf(rawParas[1] || "").replace(/\sw14:paraId="[^"]*"/g, "");
+check("第2段 pPr 与第1段一致（剔除 paraId 后）", !!pprB && pprA === pprB);
+check("第2段 pPr 不含 paraId（不与第1段冲突）", !/w14:paraId/.test(pPrOf(rawParas[1] || "")));
+
 // 表3-1 接触职业病危害人数单元格 = 91人
 function basicRows(x) {
   const tbls = x.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
