@@ -3234,7 +3234,6 @@
   // ---------- 危害因素库 ----------
   const HAZARD_HEADERS = ["序号", "识别", "系统名称", "粉尘性质", "定性分析", "委外检测", "计算TWA", "计算STEL", "计算CPE", "计算MAC", "结果保留位数", "存在高毒物品", "不检测原因说明"];
   const HAZARD_KEYS = ["rec", "name", "dust", "qual", "outsource", "twa", "stel", "cpe", "mac", "digits", "highTox", "noTestReason"];
-  const YESNO_COLS = new Set([3, 4, 5, 6, 7, 8, 10]);
   const HAZARD_ROW_H = 30;
   let lastHazardScrollTop = 0;
 
@@ -3431,12 +3430,9 @@
         `<td class="rowno${sel ? " selected" : ""}" data-h="${absIdx}">${absIdx + 1}</td>` +
         HAZARD_KEYS.map((k, ci) => {
           const val = fmt(h[k]);
-          let inner;
-          if (ci === 2) inner = `<select data-k="${k}">${optionList(["", "总尘", "呼尘"], val)}</select>`;
-          else if (YESNO_COLS.has(ci)) inner = `<select data-k="${k}">${optionList(["", "是", "否"], val)}</select>`;
-          else if (ci === 9) inner = `<input data-k="${k}" type="number" value="${escAttr(val)}">`;
-          else inner = `<input data-k="${k}" value="${escAttr(val)}">`;
-          return `<td class="${ci === 9 ? "cell-num" : ""}">${inner}</td>`;
+          // 全列改为纯文本输入（已取消下拉）：与主表录入区一致，支持直接键入覆盖/双击编辑/键盘导航
+          const inner = `<input data-k="${k}" value="${escAttr(val)}">`;
+          return `<td class="${ci === 9 ? "cell-num" : ""}" data-hc="${ci}">${inner}</td>`;
         }).join("") + `</tr>`;
     }
     const spacer = Math.max(0, list.length - end) * HAZARD_ROW_H;
@@ -3444,11 +3440,23 @@
     body.innerHTML = html;
     $("hazard-status").textContent = `共 ${hazardFactors.length} 条 · 显示 ${list.length} 条`;
     applyHazardWidths();
+    hazApplySelection();
+  }
+
+  // 当前显示列表（搜索/列筛选后的可见行，按显示顺序），元素为绝对下标
+  function hazardDisplayList() {
+    const q = $("hazard-search").value.trim();
+    return hazardFactors
+      .map((h, idx) => ({ h, idx }))
+      .filter((x) => !q || x.h.rec.includes(q) || x.h.name.includes(q))
+      .filter((x) => Object.entries(hazardFilter).every(([ci, set]) => set.has(fmt(x.h[HAZARD_KEYS[ci]]))))
+      .map((x) => x.idx);
   }
 
   const hazardWrap = document.querySelector(".hazard-wrap");
   if (hazardWrap) {
     hazardWrap.addEventListener("scroll", () => {
+      if (hzArm) { hazSyncArmPosition(); return; } // 布防框跟随当前格重定位，不做窗口化重绘
       if (Math.abs(hazardWrap.scrollTop - lastHazardScrollTop) > HAZARD_ROW_H) {
         lastHazardScrollTop = hazardWrap.scrollTop;
         renderHazard();
@@ -3456,37 +3464,576 @@
     });
   }
 
-  function optionList(options, cur) {
-    return options.map((o) => `<option value="${escAttr(o)}"${cur === o ? " selected" : ""}>${o === "" ? "（空）" : escHtml(o)}</option>`).join("");
+  // ---------- 危害因素库：单元格编辑（与主表录入区一致的 Excel 语义） ----------
+  // 单击仅选中（布防隐形编辑框），打字/输入法直接覆盖，双击/F2 进入编辑；方向键/Enter/Tab 导航；
+  // 选区高亮（sel/cur/hl-row/hl-col）、Delete/Backspace 清空、Ctrl+C/X/V、Ctrl+Z 撤销。
+  // ★ 已取消所有下拉列：全列均为纯文本输入，编辑逻辑与主表录入区完全一致。
+  const HAZARD_NCOL = HAZARD_KEYS.length;
+  let hzCur = null;         // 当前单元格 { r: 绝对下标, c: 列索引 }
+  let hzSelStart = null;
+  let hzSelEnd = null;
+  let hzSelAnchor = null;
+  let hzDragging = false;
+  let hzEditing = false;
+  let hzEditTyping = false;
+  let hzEditOriginal = null;
+  let hzArm = null;         // { r, c, ta, composing }
+  let hzEdge = 0;           // 自动扩行边界：末行继续向下时自动补空行
+  let lastHazardMouse = null; // 最近一次鼠标位置，双击时用于放置光标
+
+  // 已取消下拉列：所有列都是可编辑文本格（保留函数以便未来扩展）
+  function hazIsSelectCol(ci) { return false; }
+  function hazEditableCol(ci) { return ci >= 0 && ci < HAZARD_NCOL; }
+
+  function hazTd(r, ci) {
+    const tr = $("hazard-body").querySelector(`tr[data-h="${r}"]`);
+    return tr ? tr.querySelector(`td[data-hc="${ci}"]`) : null;
+  }
+  function hazGetValue(r, ci) {
+    const h = hazardFactors[r];
+    return h ? fmt(h[HAZARD_KEYS[ci]]) : "";
+  }
+  function hazSetValue(r, ci, v) {
+    const h = hazardFactors[r];
+    if (h) h[HAZARD_KEYS[ci]] = v;
+  }
+  function hazRect() {
+    if (!hzSelStart || !hzSelEnd) return null;
+    return {
+      r1: Math.min(hzSelStart.r, hzSelEnd.r), r2: Math.max(hzSelStart.r, hzSelEnd.r),
+      c1: Math.min(hzSelStart.c, hzSelEnd.c), c2: Math.max(hzSelStart.c, hzSelEnd.c),
+    };
+  }
+
+  // 选区/当前格高亮：按选区矩形与当前格给 td 打类（渲染是窗口化的，全量扫描可视行即可）
+  function hazApplySelection() {
+    const rect = hazRect();
+    // 单击也会产生 1×1 选区；多于一个单元格才视为“拖选”，让行列高亮让位
+    const multi = !!(rect && (rect.r1 !== rect.r2 || rect.c1 !== rect.c2));
+    for (const tr of $("hazard-body").querySelectorAll("tr[data-h]")) {
+      const r = Number(tr.dataset.h);
+      for (const td of tr.querySelectorAll("td[data-hc]")) {
+        const c = Number(td.dataset.hc);
+        const inSel = !!rect && r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2;
+        const isCur = !!hzCur && r === hzCur.r && c === hzCur.c;
+        td.classList.toggle("sel", inSel);
+        td.classList.toggle("cur", isCur);
+        td.classList.toggle("hl-row", !multi && !!hzCur && r === hzCur.r && !isCur);
+        td.classList.toggle("hl-col", !multi && !!hzCur && c === hzCur.c && !isCur);
+      }
+    }
+  }
+
+  // 把当前行所属的可见列表下标 → 绝对下标；hazMoveCur 在显示顺序上移动
+  function hazDisplayIndexOf(abs) { return hazardDisplayList().indexOf(abs); }
+
+  // 聚焦/布防当前单元格（移动落点保持「选中非编辑」态）
+  function hazFocusCurrentCell() {
+    if (!hzCur) return;
+    const td = hazTd(hzCur.r, hzCur.c);
+    if (!td) return;
+    if (hazIsSelectCol(hzCur.c)) {
+      const sel = td.querySelector("select");
+      if (sel) sel.focus({ preventScroll: true });
+      return;
+    }
+    if (hazEditableCol(hzCur.c)) hazArmCell(hzCur.r, hzCur.c);
+  }
+
+  function hazRemoveArm() {
+    if (hzArm) { hzArm.ta.remove(); hzArm = null; }
+  }
+
+  // 布防隐形编辑框（单击仅选中，打字/双击才进入编辑）
+  function hazArmCell(r, ci) {
+    hazRemoveArm();
+    if (!hzCur || hzCur.r !== r || hzCur.c !== ci) return;
+    if (!hazEditableCol(ci) || hazIsSelectCol(ci)) return;
+    const td = hazTd(r, ci);
+    if (!td) return;
+    const rect = td.getBoundingClientRect();
+    const ta = document.createElement("textarea");
+    ta.className = "grid-arm";
+    ta.value = "";
+    ta.style.left = rect.left + "px";
+    ta.style.top = rect.top + "px";
+    ta.style.width = rect.width + "px";
+    ta.style.height = rect.height + "px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.addEventListener("compositionstart", () => { if (hzArm) hzArm.composing = true; });
+    ta.addEventListener("compositionend", () => { if (hzArm) { hzArm.composing = false; hazArmReveal(); } });
+    ta.addEventListener("input", () => { if (hzArm && !hzArm.composing) hazArmReveal(); });
+    hzArm = { r, c: ci, ta, composing: false };
+  }
+
+  // 滚动后布防框跟随当前格重定位（不可见则移除）
+  function hazSyncArmPosition() {
+    if (!hzArm) return;
+    const td = hazTd(hzArm.r, hzArm.c);
+    const wrap = document.querySelector(".hazard-wrap");
+    if (!td || !wrap) { hazRemoveArm(); return; }
+    const r = td.getBoundingClientRect();
+    const w = wrap.getBoundingClientRect();
+    if (r.bottom <= w.top || r.top >= w.bottom || r.right <= w.left || r.left >= w.right) { hazRemoveArm(); return; }
+    hzArm.ta.style.left = r.left + "px";
+    hzArm.ta.style.top = r.top + "px";
+    hzArm.ta.style.width = r.width + "px";
+    hzArm.ta.style.height = r.height + "px";
+  }
+
+  // 布防框显形：转入正式编辑框（键入文本置于原值之前，光标跟在其后）
+  function hazArmReveal() {
+    if (!hzArm) return;
+    const { r, c, ta } = hzArm;
+    const pending = ta.value;
+    hazRemoveArm();
+    if (!hzCur || hzCur.r !== r || hzCur.c !== c) return;
+    const td = hazTd(r, c);
+    if (!td) return;
+    hzEditing = true;
+    hzEditTyping = true; // 直接键入进入：方向键提交并移动（Excel 输入模式）
+    hzEditOriginal = hazGetValue(r, c);
+    const el = td.querySelector("input");
+    if (el) {
+      el.value = pending;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.focus({ preventScroll: true });
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch {}
+    }
+  }
+
+  // 滚动到当前格可见并重绘（窗口化渲染）
+  function hazRevealCell(r, ci) {
+    const wrap = document.querySelector(".hazard-wrap");
+    if (!wrap) return;
+    const headH = $("hazard-head").offsetHeight || 30;
+    const top = headH + r * HAZARD_ROW_H;
+    const h = HAZARD_ROW_H;
+    const ch = wrap.clientHeight;
+    let st = wrap.scrollTop;
+    if (top < st + headH) st = Math.max(0, top - headH);
+    else if (top + h > st + ch) st = top + h - ch;
+    if (st !== wrap.scrollTop) { wrap.scrollTop = st; lastHazardScrollTop = st; renderHazard(); }
+    // 横向滚动
+    const td = hazTd(r, ci);
+    if (td) {
+      const wrapRect = wrap.getBoundingClientRect();
+      const tdRect = td.getBoundingClientRect();
+      const left = tdRect.left - wrapRect.left + wrap.scrollLeft;
+      const right = tdRect.right - wrapRect.left + wrap.scrollLeft;
+      if (left < wrap.scrollLeft) wrap.scrollLeft = left;
+      else if (right > wrap.scrollLeft + wrap.clientWidth) wrap.scrollLeft = right - wrap.clientWidth;
+    }
+    hazApplySelection();
+  }
+
+  function hazSetCur(r, ci, opts = {}) {
+    if (hazardFactors.length === 0) return;
+    const { extend = false, focus = true } = opts;
+    r = Math.max(0, Math.min(r, hazardFactors.length - 1));
+    ci = Math.max(0, Math.min(ci, HAZARD_NCOL - 1));
+    const prev = hzCur;
+    hzCur = { r, c: ci };
+    hzEditing = false;
+    hzEditOriginal = null;
+    hazRemoveArm();
+    if (extend && (hzSelAnchor || prev)) {
+      if (!hzSelAnchor && prev) hzSelAnchor = prev;
+      hzSelStart = hzSelAnchor;
+      hzSelEnd = { r, c: ci };
+    } else {
+      hzSelAnchor = { r, c: ci };
+      hzSelStart = { r, c: ci };
+      hzSelEnd = { r, c: ci };
+    }
+    // 当前格不在可见窗口内时先滚动重绘
+    const wrap = document.querySelector(".hazard-wrap");
+    if (wrap) {
+      const headH = $("hazard-head").offsetHeight || 30;
+      const top = r * HAZARD_ROW_H;
+      if (top < wrap.scrollTop || top + HAZARD_ROW_H > wrap.scrollTop + wrap.clientHeight - headH) {
+        hazRevealCell(r, ci);
+        if (focus) hazFocusCurrentCell();
+        return;
+      }
+    }
+    hazApplySelection();
+    if (focus) hazFocusCurrentCell();
+  }
+
+  // 在“显示顺序”上移动：dr 行、dc 列
+  function hazMoveCur(dr, dc, opts = {}) {
+    if (!hzCur) return;
+    const disp = hazardDisplayList();
+    if (!disp.length) return;
+    let di = disp.indexOf(hzCur.r);
+    if (di < 0) di = 0;
+    let ci = hzCur.c + dc;
+    if (opts.wrap) {
+      while (ci >= HAZARD_NCOL) { ci -= HAZARD_NCOL; di += 1; }
+      while (ci < 0) { ci += HAZARD_NCOL; di -= 1; }
+      if (di < 0) { di = 0; ci = 0; }
+    }
+    di += dr;
+    if (opts.grow && di > disp.length - 1) {
+      // 末行继续向下：自动补一行（与主表“grow”一致）
+      if (hazardFactors.length < 5000 && dc === 0 && dr > 0) {
+        hazardFactors.push(blankHazard());
+        renderHazard();
+        onHazardChange();
+      }
+      di = Math.min(di, hazardDisplayList().length - 1);
+    }
+    di = Math.max(0, Math.min(di, hazardDisplayList().length - 1));
+    const nr = hazardDisplayList()[di];
+    hazSetCur(nr, ci, opts);
+  }
+
+  function hazCommitCurrent() {
+    if (!hzCur) return;
+    const td = hazTd(hzCur.r, hzCur.c);
+    const el = td ? td.querySelector("input,select") : null;
+    if (el && hazIsSelectCol(hzCur.c) === false) hazSetValue(hzCur.r, hzCur.c, el.value);
+    hzEditing = false;
+    hzEditOriginal = null;
+    onHazardChange();
+  }
+  function hazRevertCurrent() {
+    if (!hzCur) return;
+    const restore = hzEditOriginal === null ? hazGetValue(hzCur.r, hzCur.c) : hzEditOriginal;
+    hazSetValue(hzCur.r, hzCur.c, restore);
+    const td = hazTd(hzCur.r, hzCur.c);
+    if (td) { const el = td.querySelector("input"); if (el) el.value = restore; }
+    hzEditing = false;
+    hzEditOriginal = null;
+    if (!hazIsSelectCol(hzCur.c)) onHazardChange();
+  }
+
+  // 清空选区内的可编辑格（跳过下拉列）——同步清空已渲染的输入框 DOM，避免窗口化渲染残留旧值
+  function hazClearRange(rect) {
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        if (!hazEditableCol(c) || hazIsSelectCol(c)) continue;
+        hazSetValue(r, c, "");
+        const td = hazTd(r, c);
+        const el = td ? td.querySelector("input") : null;
+        if (el && el.value !== "") el.value = "";
+      }
+    }
+  }
+  function hazHasEditableInRect(rect) {
+    for (let c = rect.c1; c <= rect.c2; c++) if (hazEditableCol(c) && !hazIsSelectCol(c)) return true;
+    return false;
+  }
+
+  // 点击某单元格 → 设为当前格（doc 里按 data-hc 定位）
+  function hazCellFromEvent(e) {
+    const td = e.target.closest && e.target.closest("td[data-hc]");
+    if (!td) return null;
+    const tr = td.closest("tr[data-h]");
+    if (!tr) return null;
+    return { r: Number(tr.dataset.h), c: Number(td.dataset.hc), td };
   }
 
   $("hazard-body").addEventListener("input", (e) => {
     const el = e.target;
     if (el.tagName !== "INPUT") return;
-    const idx = Number(el.closest("tr").dataset.h);
-    hazardFactors[idx][el.dataset.k] = el.value;
+    const ci = hazCellFromEvent(e);
+    if (!ci) return;
+    hazSetValue(ci.r, ci.c, el.value);
     scheduleHazardChange(); // 按键合并重算，降低逐键全量计算的 CPU 占用
   });
-  $("hazard-body").addEventListener("change", (e) => {
-    const el = e.target;
-    if (el.tagName !== "SELECT") return;
-    const idx = Number(el.closest("tr").dataset.h);
-    hazardFactors[idx][el.dataset.k] = el.value;
-    onHazardChange();
-  });
-  $("hazard-body").addEventListener("click", (e) => {
-    const tr = e.target.closest("tr[data-h]");
-    if (!tr) return;
-    const idx = Number(tr.dataset.h);
-    selectedHazard = idx;
-    // 只切换高亮类，不重建表格，点击无卡顿
+  // 已取消下拉列：仅需 input 事件写回模型
+  // 行级选中（浅蓝整行）：点击单元格时同步 selectedHazard 与行高亮，不重建表格
+  function hazSelectRow(r) {
+    selectedHazard = r;
     for (const t of $("hazard-body").querySelectorAll("tr[data-h]")) {
-      const sel = Number(t.dataset.h) === idx;
+      const sel = Number(t.dataset.h) === r;
       t.classList.toggle("selected", sel);
       const rno = t.querySelector("td.rowno");
       if (rno) rno.classList.toggle("selected", sel);
     }
+  }
+
+  // 单击/拖动起点：设置当前格，可编辑文本格布防隐形编辑框（与主表 mousedown 一致）
+  $("hazard-body").addEventListener("mousedown", (e) => {
+    const cell = hazCellFromEvent(e);
+    if (!cell) {
+      // 行号列或行内空白：整行选中（行号列无 data-hc，交给 click 兜底重建）
+      const rno = e.target.closest && e.target.closest("td.rowno");
+      if (rno) {
+        hazSelectRow(Number(rno.closest("tr[data-h]").dataset.h));
+        hzCur = null;
+        hzSelStart = hzSelEnd = hzSelAnchor = null;
+        hazRemoveArm();
+        hazApplySelection();
+      }
+      return;
+    }
+    lastHazardMouse = { x: e.clientX, y: e.clientY };
+    hazSelectRow(cell.r);
+    // 编辑中点击同一格：走浏览器原生文本选择，不打断编辑（与主表一致）
+    if (hzEditing && hzCur && hzCur.r === cell.r && hzCur.c === cell.c) return;
+    if (e.shiftKey) {
+      hazRemoveArm();
+      if (!hzSelAnchor) hzSelAnchor = hzCur || cell;
+      hzSelStart = hzSelAnchor;
+      hzSelEnd = cell;
+      hzCur = { r: cell.r, c: cell.c };
+      hzDragging = true;
+      hazApplySelection();
+      return;
+    }
+    hzDragging = true;
+    e.preventDefault(); // 阻止 mousedown 默认聚焦输入框（靠布防框捕获首键）
+    hazSetCur(cell.r, cell.c, { focus: false });
+    hazArmCell(cell.r, cell.c);
   });
+
+  // 拖选：鼠标在表格内移动时实时扩展选区（rAF 合帧，与主表一致）
+  let hazSelFrame = false;
+  $("hazard-body").addEventListener("mouseover", (e) => {
+    if (!hzDragging || hzEditing) return;
+    const cell = hazCellFromEvent(e);
+    if (!cell) return;
+    hzSelEnd = { r: cell.r, c: cell.c };
+    if (!hazSelFrame) {
+      hazSelFrame = true;
+      requestAnimationFrame(() => { hazSelFrame = false; hazApplySelection(); });
+    }
+  });
+
+  document.addEventListener("mouseup", () => { hzDragging = false; });
+
+  // 双击进入编辑（Excel 语义）：与主表一致，光标落在双击处
+  $("hazard-body").addEventListener("dblclick", (e) => {
+    const cell = hazCellFromEvent(e);
+    if (!cell || !hazEditableCol(cell.c) || hazIsSelectCol(cell.c)) return;
+    if (!hzCur || hzCur.r !== cell.r || hzCur.c !== cell.c) hazSetCur(cell.r, cell.c, { focus: false });
+    hazRemoveArm();
+    hzEditing = true;
+    hzEditTyping = false; // 双击进入：方向键在格内移动光标（Excel 编辑模式）
+    hzEditOriginal = hazGetValue(cell.r, cell.c);
+    const el = cell.td.querySelector("input");
+    if (el) {
+      el.focus({ preventScroll: true });
+      let pos = el.value.length;
+      if (lastHazardMouse && document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(lastHazardMouse.x, lastHazardMouse.y);
+        if (range && range.startContainer === el) pos = range.startOffset;
+      }
+      try { el.setSelectionRange(pos, pos); } catch {}
+    }
+    hazApplySelection();
+  });
+
+  $("hazard-body").addEventListener("focusout", (e) => {
+    // 焦点离开本格编辑框时结束编辑态（布防框 focusout 不算：编辑尚未开始）
+    if (hzEditing && e.target && e.target.tagName === "INPUT" && !hzArm) hzEditing = false;
+  });
+
+  // 布防框键盘路由（挂 document：布防框 append 在 body 上，hazard-body 收不到 keydown）
+  document.addEventListener("keydown", (e) => {
+    if (!hzArm || e.target !== hzArm.ta) return;
+    if (e.isComposing || e.key === "Process") return;
+    const key = e.key;
+    const shift = e.shiftKey;
+    if (e.ctrlKey || e.metaKey) return; // Ctrl 组合（含 Ctrl+Z）交给下面文档级处理器
+    if (key === "Enter") { e.preventDefault(); hazRemoveArm(); hazMoveCur(shift ? -1 : 1, 0, { grow: true }); return; }
+    if (key === "Tab") { e.preventDefault(); hazRemoveArm(); hazMoveCur(0, shift ? -1 : 1, { grow: true, wrap: true }); return; }
+    if (key === "F2") { e.preventDefault(); hazArmReveal(); return; }
+    if (key === "ArrowDown" || key === "ArrowUp") { e.preventDefault(); hazRemoveArm(); hazMoveCur(key === "ArrowDown" ? 1 : -1, 0, { extend: shift }); return; }
+    if (key === "ArrowRight" || key === "ArrowLeft") { e.preventDefault(); hazRemoveArm(); hazMoveCur(0, key === "ArrowRight" ? 1 : -1, { extend: shift }); return; }
+    if (key === "Home") { e.preventDefault(); hazRemoveArm(); if (hzCur) hazSetCur(hzCur.r, 0); return; }
+    if (key === "End") { e.preventDefault(); hazRemoveArm(); hazSetCur(hzCur ? hzCur.r : 0, HAZARD_NCOL - 1); return; }
+    if (key === "PageDown" || key === "PageUp") {
+      e.preventDefault(); hazRemoveArm();
+      const wrap = document.querySelector(".hazard-wrap");
+      const page = Math.max(1, Math.floor((wrap ? wrap.clientHeight : 600) / HAZARD_ROW_H) - 1);
+      hazMoveCur(key === "PageDown" ? page : -page, 0, { extend: shift });
+      return;
+    }
+    if (key === "Delete") {
+      const rect = hazRect();
+      if (rect && hazHasEditableInRect(rect)) { e.preventDefault(); hazClearRange(rect); hazApplySelection(); onHazardChange(); }
+      return;
+    }
+    // 可打印字符/退格：不 preventDefault，交给布防框 input 事件显形（文本由 hazArmReveal 带入编辑框）
+  });
+
+  // 危害因素库按键总路由（挂 document）：
+  // ① 编辑态（焦点在格内 input）→ 提交/还原/方向键提交并移动；
+  // ② 布防态（焦点在布防框）或选区态（焦点在 body）→ 导航/清空/直接键入覆盖。
+  // 仅当危害因素库页签激活时生效，避免与主表/调查表的路由互相干扰。
+  document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;
+    if (!$("tab-hazard").classList.contains("active")) return;
+    if (e.isComposing || e.key === "Process") return;
+    const t = e.target;
+    const inGrid = t === document.body || (t && ($("hazard-body").contains(t) || (hzArm && t === hzArm.ta)));
+    if (!inGrid) return; // 搜索框/工具栏等不参与
+    const key = e.key;
+    const mod = e.ctrlKey || e.metaKey;
+    const shift = e.shiftKey;
+    const rect = hazRect();
+    const isInput = t && t.tagName === "INPUT";
+
+    if (mod) {
+      if (hzEditing) return; // 编辑中保留浏览器原生快捷键
+      if (key.toLowerCase() === "a") {
+        e.preventDefault();
+        const disp = hazardDisplayList();
+        if (!disp.length) return;
+        hzSelAnchor = hzCur || { r: disp[0], c: 0 };
+        hzSelStart = { r: disp[0], c: 0 };
+        hzSelEnd = { r: disp[disp.length - 1], c: HAZARD_NCOL - 1 };
+        hazApplySelection();
+        return;
+      }
+      return; // 其余 Ctrl 组合（复制/粘贴/剪切/撤销）交给专门的 document 处理器
+    }
+
+    // F2：进入编辑
+    if (key === "F2") {
+      e.preventDefault();
+      if (hzCur && isInput && !hazIsSelectCol(hzCur.c)) {
+        hzEditOriginal = hazGetValue(hzCur.r, hzCur.c);
+        hzEditing = true;
+        hzEditTyping = false;
+        try { t.setSelectionRange(t.value.length, t.value.length); } catch {}
+      } else if (hzCur && !hazIsSelectCol(hzCur.c)) {
+        hazArmCell(hzCur.r, hzCur.c); // 布防态下 F2 显形为编辑框
+        if (hzArm) hazArmReveal();
+      }
+      return;
+    }
+
+    if (hzEditing && isInput) {
+      if (key === "Enter") { e.preventDefault(); hazCommitCurrent(); hazMoveCur(shift ? -1 : 1, 0, { grow: true }); return; }
+      if (key === "Tab") { e.preventDefault(); hazCommitCurrent(); hazMoveCur(0, shift ? -1 : 1, { grow: true, wrap: true }); return; }
+      if (key === "Escape") { e.preventDefault(); hazRevertCurrent(); return; }
+      // 直接键入进入的编辑（输入模式）：方向键提交当前格并移动选中单元格
+      if (hzEditTyping && !e.altKey && (key === "ArrowDown" || key === "ArrowUp" || key === "ArrowLeft" || key === "ArrowRight")) {
+        e.preventDefault();
+        hazCommitCurrent();
+        hazMoveCur(key === "ArrowDown" ? 1 : key === "ArrowUp" ? -1 : 0, key === "ArrowRight" ? 1 : key === "ArrowLeft" ? -1 : 0, { grow: true });
+        return;
+      }
+      return; // 双击/F2 编辑模式：格内原生光标移动
+    }
+
+    // 非编辑态（布防/选区）导航
+    if (key === "Enter") { e.preventDefault(); hazMoveCur(shift ? -1 : 1, 0, { grow: true }); return; }
+    if (key === "Tab") { e.preventDefault(); hazMoveCur(0, shift ? -1 : 1, { grow: true, wrap: true }); return; }
+    if (key === "Escape") {
+      hazRemoveArm();
+      hzSelStart = hzSelEnd = hzSelAnchor = null;
+      hazApplySelection();
+      return;
+    }
+    if (key === "ArrowDown") { e.preventDefault(); hazRemoveArm(); hazMoveCur(1, 0, { extend: shift }); return; }
+    if (key === "ArrowUp") { e.preventDefault(); hazRemoveArm(); hazMoveCur(-1, 0, { extend: shift }); return; }
+    if (key === "ArrowRight") { e.preventDefault(); hazRemoveArm(); hazMoveCur(0, 1, { extend: shift }); return; }
+    if (key === "ArrowLeft") { e.preventDefault(); hazRemoveArm(); hazMoveCur(0, -1, { extend: shift }); return; }
+    if (key === "Home") { e.preventDefault(); hazRemoveArm(); if (hzCur) hazSetCur(hzCur.r, 0); return; }
+    if (key === "End") { e.preventDefault(); hazRemoveArm(); hazSetCur(hzCur ? hzCur.r : 0, HAZARD_NCOL - 1); return; }
+    if (key === "PageDown" || key === "PageUp") {
+      e.preventDefault(); hazRemoveArm();
+      const wrap = document.querySelector(".hazard-wrap");
+      const page = Math.max(1, Math.floor((wrap ? wrap.clientHeight : 600) / HAZARD_ROW_H) - 1);
+      hazMoveCur(key === "PageDown" ? page : -page, 0, { extend: shift });
+      return;
+    }
+    if (key === "Delete" || key === "Backspace") {
+      if (rect && hazHasEditableInRect(rect)) { e.preventDefault(); hazClearRange(rect); hazApplySelection(); onHazardChange(); }
+      return;
+    }
+    // 直接键入字符：Excel 替换语义——布防框捕获首键后显形，文本以键入字符开头
+    if (key.length === 1 && !shift && hzCur && !hzArm) {
+      e.preventDefault();
+      hazArmCell(hzCur.r, hzCur.c);
+      if (hzArm) { hzArm.ta.value = key; hazArmReveal(); }
+    }
+  });
+
+  // 布防/选区态复制：走当前单元格/选区内容（焦点不在真实输入框时原生复制为空）
+  document.addEventListener("copy", (e) => {
+    if (!$("tab-hazard").classList.contains("active")) return;
+    const ae = document.activeElement;
+    const onArm = hzArm && ae === hzArm.ta;
+    if (!onArm && ae && (ae.tagName === "INPUT" || ae.tagName === "SELECT") && $("hazard-body").contains(ae)) return; // 编辑中走原生
+    const rect = hazRect();
+    if (!rect || !hzCur) return;
+    if (!onArm && rect.r1 === rect.r2 && rect.c1 === rect.c2) return; // 单格交给原生
+    e.preventDefault();
+    const lines = [];
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      const cells = [];
+      for (let c = rect.c1; c <= rect.c2; c++) cells.push(hazGetValue(r, c));
+      lines.push(cells.join("\t"));
+    }
+    if (e.clipboardData) e.clipboardData.setData("text/plain", lines.join("\n"));
+  });
+
+  // 粘贴：与主表一致——多单元格 TSV 从选区左上角按行列规律填充；单格内的纯文本走原生插入
+  document.addEventListener("paste", (e) => {
+    if (!$("tab-hazard").classList.contains("active")) return;
+    const ae = document.activeElement;
+    const onArm = hzArm && ae === hzArm.ta;
+    const editEl = ae && !onArm && ae.tagName === "INPUT" && $("hazard-body").contains(ae) ? ae : null;
+    const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+    if (!text) return;
+    if (editEl && !text.includes("\t")) {
+      // 编辑中且无 Tab 的纯文本：在光标处插入（含换行并入当前格）
+      e.preventDefault();
+      const merged = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n+$/, "");
+      const st = editEl.selectionStart ?? editEl.value.length;
+      const en = editEl.selectionEnd ?? st;
+      editEl.setRangeText(merged, st, en, "end");
+      editEl.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    e.preventDefault();
+    const grid = parseTsvGrid(text);
+    if (grid.length > 1 && grid[grid.length - 1].length === 1 && grid[grid.length - 1][0] === "") grid.pop();
+    if (!grid.length) return;
+    const srcH = grid.length;
+    const srcW = grid.reduce((m, r) => Math.max(m, r.length), 1);
+    let rect = hazRect();
+    if (!rect || (rect.r1 === rect.r2 && rect.c1 === rect.c2)) {
+      const r0 = hzCur ? hzCur.r : 0;
+      const c0 = hzCur ? hzCur.c : 0;
+      rect = { r1: r0, c1: c0, r2: r0 + srcH - 1, c2: c0 + srcW - 1 };
+    }
+    let changed = false;
+    // 按下标从下往上补齐行，避免插入时下标漂移
+    const lastR = Math.min(rect.r2, hazardFactors.length + srcH - 1);
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      while (hazardFactors.length <= r) hazardFactors.push(blankHazard());
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        if (c >= HAZARD_NCOL) break;
+        if (hazIsSelectCol(c)) continue; // 下拉列不参与粘贴覆盖（保持原生选择）
+        const val = (grid[(r - rect.r1) % srcH] || [])[(c - rect.c1) % srcW] ?? "";
+        hazSetValue(r, c, val);
+        changed = true;
+      }
+    }
+    if (changed) {
+      hzCur = { r: rect.r1, c: rect.c1 };
+      hzSelAnchor = { r: rect.r1, c: rect.c1 };
+      hzEditing = false;
+      hzEditOriginal = null;
+      hazRemoveArm();
+      selectedHazard = rect.r1;
+      renderHazard();
+      hazRevealCell(rect.r1, rect.c1);
+      hazApplySelection();
+      hazArmCell(rect.r1, rect.c1); // 回到布防态，打字/导航随时可用
+      onHazardChange();
+    }
+  });
+
   // 危害因素库搜索防抖：逐键 renderHazard 全量重建开销大
   let hazardSearchTimer = null;
   $("hazard-search").addEventListener("input", () => {

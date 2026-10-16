@@ -129,6 +129,7 @@ sampling-plan/
   node tests/captcha.test.mjs    # 验证码 OCR（JS 移植）准确率 + RSA 自检
   node tests/bridge-cloudflare.test.mjs # 云端账号桥（假 KV + 假平台，真跑 OCR 与登录）
   node tests/report.smoke.mjs    # 「数据报告处理」页签（回退/审核/断点续审/报告显示/面板缓存）
+  node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区；Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
   ```
@@ -157,6 +158,13 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 6. **界面约定**：主界面样式变量在 `css/styles.css`（`--primary: #1f4e79` 等）；登录/上传视图样式统一用 `.xcdc` 作用域并复用同一套变量。新增页面元素需与 `upload.js` 中的 id 引用保持一致（上传页会一次性校验全部关键 id，缺任一个即 alert 并中止）。
 7. **调查表模块**（survey.js）：6 个现场调查子表（生产工艺/设备设施/原辅物料/主要产品/职业防护/个体防护），页签位于「测点布局调查」旁。Excel 式交互与主表格对齐：单击选中、双击编辑、拖选矩形、Enter 提交并下移、Alt+Enter 或编辑态粘贴多行为单元格内换行（非编辑态粘贴按行拆分填入多行）；下拉多选仅「车间」与「岗位(工种)」列，其余固定选项列为单选，「单元/工作场所」动态取主表车间名，岗位下拉数据源为主表自动计算区 W→X（含下填）。数据存 localStorage 键 `samplingPlanSurvey_v2`（统一默认 10 行），随记录保存/还原；无 Tab 多行粘贴兼容。导入 Excel 支持调查表；导出 6 合一首表为「劳动定员和职业病危害因素接触情况调查」（首行＝主表自动计算区表头，无数据行），上传页进入时自动生成两个文件。主表无数据时仍可保存仅含调查表的记录（两者均空才拦截）。
 8. **主表格编辑模型**：单击仅选中并「布防」隐形 textarea，输入/输入法经 `armReveal` 显形，双击进入编辑；Enter/Tab 提交并移动、Esc 还原、Delete 清空选区。粘贴统一走 `parseTsvGrid`：编辑态且无 Tab 时视为单元格内换行，否则按选区左上角平铺。`W–BI` 自动列可被覆盖的机制由 `overridden` 标记保留手动值，导入「仅自动计算区」文件时靠它反推录入区。
+9. **危害因素库编辑模型**（app.js，`haz*` 前缀）：与主表录入区**完全同构**的 Excel 语义编辑器 —— 单击仅选中（布防隐形 `textarea.grid-arm`）、直接键入按替换语义覆盖、双击/F2 进入编辑、方向键/Enter/Tab/Home/End/PageUp/PageDown 导航、Delete/Backspace 清空选区、拖选矩形高亮（`sel`/`cur`/`hl-row`/`hl-col`）、Ctrl+A 全选、Ctrl+C 复制为 TSV、粘贴按选区左上角平铺、Escape 取消。
+   - **★ 已取消全部下拉列**：危害因素库不再渲染任何 `<select>`，全列均为文本 `input`（`hazIsSelectCol()` 恒返回 `false`，保留函数以便未来扩展）。
+   - 网格为**窗口化渲染**（只渲染可视行，行高恒为 `HAZARD_ROW_H=30`），因此 `hzCur/hzSel*` 一律用 hazardFactors 的**绝对下标**；跨行移动需经 `hazardDisplayList()`（显示顺序）换算，`hazTd()` 只在当前已渲染的行里取 DOM。
+   - 布防框与滚动协同：`scroll` 事件在布防态下调 `hazSyncArmPosition()` 重定位（不做窗口化重绘），移出可视区才移除；`hazRevealCell()` 负责滚动到目标格并触发重绘。
+   - 清空/还原等改动模型的操作必须**同步已渲染的 input DOM**（`hazClearRange`/`hazRevertCurrent`），否则窗口化渲染会残留旧值。
+   - 专用回归测试：`tests/hazard.edit.smoke.mjs`（20 项）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。
+   - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
 
 ## 已知注意事项
 
@@ -178,6 +186,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 新增/修改一列自动计算 | logic.js 列常量 + `computeRows` 组装 → app.js `ALL_COLS`/`HEADERS`/`COL_W` → 视情况加 `OVERRIDE_COLS`/`MANUAL_COLS` |
 | 改公式/校验规则 | logic.js `computeRows`（组级计算、下填、库查找）、`validateRow`、`countErrors` |
 | 改主表格交互（选中/编辑/移动/粘贴/清空） | app.js `armCell`/`armReveal`/`commitCurrent`/`moveCur`/`clearRange`、`parseTsvGrid`+粘贴/复制、键盘路由与鼠标处理 |
+| 改危害因素库交互（编辑/导航/选区/行操作） | app.js `haz*` 函数族（`hazSetCur`/`hazMoveCur`/`hazArmCell`/`hazArmReveal`/`hazClearRange`/`hazApplySelection`/`hazTd`/`hazardDisplayList`）+ `hz*` 状态 + `renderHazard`（列结构 `HAZARD_HEADERS`/`HAZARD_KEYS`）；行操作用 `hazardAnchor`/`afterHazardRowsChanged` |
 | 改虚拟滚动/列宽/表头样式 | app.js `buildHead`/`cellHtml`/`rowHtml`/`renderWindow`（spacer 必须恒为首末子节点）+ `computeGridWidths` |
 | 加/改调查表字段 | survey.js `SURVEY_SHEETS`（列名即键）+ `SURVEY_COL_OPTIONS`（下拉）；联动列用 `headers.indexOf` 定位，**改列名会使联动与旧 Excel 导入静默失效** |
 | 改调查表导出/导入 | survey.js `exportAllWorkbook` / `importFromArray`（按工作表名+表头名匹配，兼容列序变化） |
@@ -192,6 +201,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 ## 常见任务速查
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
+- 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（20 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。
