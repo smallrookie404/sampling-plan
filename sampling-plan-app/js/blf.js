@@ -980,10 +980,237 @@
     };
   }
 
+  // ---------------- 报告后处理⑥：按「噪声 / 物化性质 / 存在高毒物品」条件删除条目 ----------------
+  // 需求（用户 2026-10-17）：
+  //   A. 「噪声数据结果」里**噪声车间岗位为空**（全项目无噪声岗位）时：
+  //        · 删 1.2.3 评价依据 下的 《听力防护装备的选择、使用和维护》(GB 23466-2025)；
+  //        · 删 9.2 职业卫生管理 下的「产生噪声的工作场所设置“噪声有害”“戴护耳器”等警示标识; 」
+  //   B. 取「检测项目确认表」的「职业病危害因素」列每个单元格 → 按危害因素库「系统名称」列匹配 →
+  //      读该行「物化性质」列；全部对应内容**都不含**关键词时按下表删除（含前面的序号）：
+  //        · 无毒物（物化性质不含「毒物」）→ 删毒物组（有毒物品条例 / 高毒物品目录 / 防毒面具 / 混合性粉(烟)尘警示句）
+  //        · 无粉尘（物化性质不含「粉尘」）→ 删粉尘组（尘肺病防治条例 / 防颗粒物呼吸器 / 产生粉尘警示句）
+  //        · 粉尘、毒物都没有      → 在以上基础上再删 《呼吸防护装备的选择、使用和维护》(GB 18664-2025)；
+  //   C. 同上取「存在高毒物品」列，全部都不是「是」→ 删 《高毒物品目录》（卫法监发（2003）142号）；
+  //   D. 删除后，被删条目所属**章节**内的「（1）（2）…」序号**重新按顺序排列**。
+  //
+  // ⚠ 判定口径（用户确认）：
+  //   · 关键词判定用**子串包含**（物化性质文本含「毒物」即视为有毒物、含「粉尘」即视为有粉尘）；
+  //   · **缺数据不删**：某个危害因素在库中找不到（或物化性质为空）→ 视为「证据不足」，整组**不删**（保守，防误删）；
+  //   · 条目定位用**全局文本匹配**（不限定章节），序号重排则**限定在所属章节内**。
+  //
+  // 设计：把「法规/警示句」按段落（<w:p>）整段删除——报告里每条独占一段，
+  //   段落文本（去首尾空白）以目标串开头/包含目标串即删整段。
+  //   序号重排：先记录每个删除段落所属章节（最近的上一个「标题段落」），删除后在每个受影响章节内
+  //   把剩余的「（N）」按出现顺序重编为「（1）（2）…」。
+  const PJBG_DEL_TARGETS = {
+    // A. 噪声
+    noiseEvalBasis: '《听力防护装备的选择、使用和维护》(GB 23466-2025)',
+    noiseWarnSign: '产生噪声的工作场所设置',
+    // B. 毒物组
+    toxB: ['《使用有毒物品作业场所劳动保护条例》', '《高毒物品目录》',
+      '《呼吸防护 自吸过滤式防毒面具》(GB 2890-2022)',
+      '产生含有有毒物质的混合性粉(烟)尘的工作场所应设置'],
+    // B. 粉尘组
+    dustB: ['《中华人民共和国尘肺病防治条例》',
+      '《呼吸防护 自吸过滤式防颗粒物呼吸器》(GB 2626-2019)',
+      '产生粉尘的工作场所设置'],
+    // B. 粉尘、毒物都无 → 再删
+    bothNone: '《呼吸防护装备的选择、使用和维护》(GB 18664-2025)',
+    // C. 高毒
+    highToxC: '《高毒物品目录》',
+  };
+
+  // 取段落可见文本（跨 run 拼接，去空白），用于关键词定位
+  function paraText(pXml) { return cellText(pXml); }
+
+  // 从 document.xml 里取「检测项目确认表」中指定列的每个单元格文本（按表头的列名定位）。
+  // 返回 { found: 是否找到该表, texts: [单元格文本...] }；找不到表返回 { found:false, texts:[] }。
+  function collectConfirmColTexts(xml, colNames) {
+    const out = { found: false, texts: [] };
+    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+    for (const tbl of tables) {
+      const rows = tableRows(tbl);
+      if (rows.length < 2) continue;
+      const headCells = rowCells(rows[0]).map(cellText);
+      // 该表是否「检测项目确认表」：表头里含「职业病危害因素」或「检测项目」即视为目标表
+      const isConfirm = headCells.some(function (h) { return h.indexOf('职业病危害因素') >= 0 || h.indexOf('检测项目') >= 0; });
+      if (!isConfirm) continue;
+      // 表头名是否在报告里带「检测项目确认表」标题——标题通常在表前段落，这里仅以列名匹配
+      let ci = -1;
+      for (let i = 0; i < headCells.length; i++) {
+        for (const nm of colNames) {
+          if (headCells[i].indexOf(nm) >= 0) { ci = i; break; }
+        }
+        if (ci >= 0) break;
+      }
+      if (ci < 0) continue;
+      out.found = true;
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = rowCells(rows[ri]);
+        if (cells.length < 2) continue;
+        const shifted = ci + (cells.length - headCells.length);   // 合并单元格导致的列号平移
+        const idx = (shifted >= 0 && shifted < cells.length) ? shifted : ci;
+        const t = cellText(cells[idx]);
+        if (t) out.texts.push(t);
+      }
+      if (out.texts.length) return out;   // 命中即返回（只处理第一张确认表）
+    }
+    return out;
+  }
+
+  // 依据确认表的危害因素名，查危害因素库对应行的某字段。
+  // 匹配口径：危害因素库「系统名称」列（字段 name）。返回 { ok: 是否可判定, values: [字段值...] }。
+  //   ok=false 表示「缺数据不能删」（有因素在库中找不到）。
+  function lookupHazardField(hf, texts, field) {
+    if (!Array.isArray(hf) || !hf.length) return { ok: false, values: [] };
+    const norm = function (s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); };
+    const idx = {};
+    for (const h of hf) { const k = norm(h && h.name); if (k) idx[k] = h; }
+    const values = [];
+    for (const raw of texts) {
+      // 单元格可能含多个因素（逗号/顿号分隔）时逐个匹配
+      const parts = String(raw).split(/[,，、;；\n]/).map(function (x) { return x.trim(); }).filter(Boolean);
+      for (const p of parts) {
+        const h = idx[norm(p)];
+        if (!h) return { ok: false, values: values };   // 缺数据 → 整组不删
+        values.push(String(h[field] === null || h[field] === undefined ? '' : h[field]));
+      }
+    }
+    return { ok: true, values: values };
+  }
+
+  // 判断一组文本里是否**全部都不含**关键词（空数组视为「无」→ true，配合 ok 使用）
+  function noneContains(values, keywords) {
+    if (!values.length) return true;
+    for (const v of values) {
+      for (const kw of keywords) {
+        if (v.indexOf(kw) >= 0) return false;   // 有任一含关键词 → 不算「都没有」
+      }
+    }
+    return true;
+  }
+
+  // 判断一串文本是否是「章节标题」段落（用于确定所属章节，做序号重排边界）
+  // 规则：形如「1.2.3评价依据」「9.2 职业卫生管理」——以「数字(.数字)*」开头，
+  //   后接**不以《/（/〔 开头**的短标题（≤30 字），且**不含法规书名号**（避免把「1.《xx》」这种条目当标题）。
+  function isHeadingPara(t) {
+    const s = String(t || '').replace(/\s+/g, '');
+    if (!s) return false;
+    const m = /^(\d+(?:\.\d+)*)(.+)$/.exec(s);
+    if (!m) return false;
+    const title = m[2];
+    if (title.length > 30) return false;
+    if (/^[《（(〔【]/.test(title)) return false;   // 后面紧跟书名号/括号 → 是条目，不是标题
+    if (/[《》]/.test(title)) return false;         // 含书名号 → 是法规条目
+    return true;
+  }
+
+  // 从段落文本里提取「（N）」序号（全角括号）；找不到返回 null
+  function paraIndexNo(t) {
+    const m = /^\s*[（(]\s*(\d+)\s*[)）]/.exec(String(t || ''));
+    return m ? { no: parseInt(m[1], 10), len: m[0].length } : null;
+  }
+
+  // 删除命中的整段并做章节内序号重排。
+  // targets: 需要删除的文本数组（段落文本包含其一即删）。
+  // 返回 { xml, changed, sections: 受影响的章节数 }
+  function deletePjbgParas(xml, targets) {
+    const list = (targets || []).filter(Boolean);
+    if (!list.length) return { xml: xml, changed: 0, sections: 0 };
+    // 逐段扫描，标记删除 + 记录章节
+    const re = /<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g;
+    const segs = [];   // { xml, text, del, heading }
+    let m;
+    while ((m = re.exec(xml))) {
+      const pXml = m[0];
+      const t = paraText(pXml);
+      const heading = isHeadingPara(t);
+      let del = false;
+      if (!heading) {
+        for (const tg of list) { if (t.indexOf(tg) >= 0) { del = true; break; } }
+      }
+      segs.push({ xml: pXml, text: t, del: del, heading: heading });
+    }
+    let changed = 0;
+    // 计算每个非标题段所属章节索引（最近的上一个标题段）
+    let sect = -1;
+    const sectOf = [];
+    for (let i = 0; i < segs.length; i++) {
+      if (segs[i].heading) sect = i;
+      sectOf[i] = sect;
+    }
+    // 统计删除
+    for (const s of segs) if (s.del) changed++;
+    if (!changed) return { xml: xml, changed: 0, sections: 0 };
+    // 标记受影响章节（有删除的章节）
+    const dirty = new Set();
+    for (let i = 0; i < segs.length; i++) if (segs[i].del && sectOf[i] >= 0) dirty.add(sectOf[i]);
+    // 章节内序号重排：对每个受影响章节，按顺序把未删段的「（N）」重编为 1..k
+    for (const sh of dirty) {
+      let n = 0;
+      for (let i = sh + 1; i < segs.length; i++) {
+        if (segs[i].heading) break;                 // 到达下一章节
+        if (segs[i].del) continue;
+        const cur = segs[i].text;
+        const idx = paraIndexNo(cur);
+        if (!idx) continue;
+        n++;
+        if (idx.no === n) continue;                 // 序号已正确，不动
+        // 把首部「（N）」替换为「（n）」——跨 run 替换，保留格式
+        const from = /^\s*[（(]\s*\d+\s*[)）]/.exec(cur)[0];
+        const to = from.replace(/\d+/, String(n));
+        const np = replaceAcrossRuns(segs[i].xml, from, to);
+        if (np !== null) { segs[i].xml = np; segs[i].text = paraText(np); }
+      }
+    }
+    // 重组 XML：去掉删除段
+    let out = '';
+    for (const s of segs) { if (!s.del) out += s.xml; }
+    return { xml: out, changed: changed, sections: dirty.size };
+  }
+
+  // 主入口⑥：按条件计算删除目标，再执行「删段 + 重排」
+  // opt = { noiseWorkshopEmpty: bool, hazardFactors: [] }
+  function fixConditionalDeletions(xml, opt) {
+    const o = opt || {};
+    const targets = [];
+    const reasons = [];
+    const emptyNoise = o.noiseWorkshopEmpty === true;
+    // A. 噪声车间岗位为空
+    if (emptyNoise) {
+      targets.push(PJBG_DEL_TARGETS.noiseEvalBasis, PJBG_DEL_TARGETS.noiseWarnSign);
+      reasons.push('噪声车间岗位为空→删噪声类条目');
+    }
+    // B/C. 依赖危害因素库
+    const hf = o.hazardFactors;
+    const cf = collectConfirmColTexts(xml, ['职业病危害因素']);
+    if (cf.found && Array.isArray(hf) && hf.length) {
+      const phy = lookupHazardField(hf, cf.texts, 'physchem');
+      if (phy.ok) {
+        const noTox = noneContains(phy.values, ['毒物']);
+        const noDust = noneContains(phy.values, ['粉尘']);
+        if (noTox) { for (const t of PJBG_DEL_TARGETS.toxB) targets.push(t); reasons.push('无毒物→删毒物组'); }
+        if (noDust) { for (const t of PJBG_DEL_TARGETS.dustB) targets.push(t); reasons.push('无粉尘→删粉尘组'); }
+        if (noTox && noDust) { targets.push(PJBG_DEL_TARGETS.bothNone); reasons.push('粉尘毒物俱无→再删GB18664'); }
+      } else {
+        reasons.push('物化性质缺数据→毒物/粉尘组不删');
+      }
+      const ht = lookupHazardField(hf, cf.texts, 'highTox');
+      if (ht.ok) {
+        const noHigh = noneContains(ht.values, ['是']);
+        if (noHigh) { targets.push(PJBG_DEL_TARGETS.highToxC); reasons.push('无高毒物品→删高毒目录'); }
+      } else {
+        reasons.push('存在高毒物品缺数据→高毒目录不删');
+      }
+    }
+    if (!targets.length) return { xml: xml, changed: 0, reasons: reasons };
+    const r = deletePjbgParas(xml, targets);
+    return { xml: r.xml, changed: r.changed, sections: r.sections, reasons: reasons };
+  }
+
   // 对下载到的检评报告 docx 做全部后处理（读一次 document.xml，改完统一重打包）；
   // 任何一步失败都不影响出报告（回退到上一步结果 / 原始文件）。
-  async function patchPjbgDocx(buf) {
-    try {
+  async function patchPjbgDocx(buf) {    try {
       const JSZip = await ensureJSZip();
       const zip = await JSZip.loadAsync(buf);
       const f = zip.file('word/document.xml');
@@ -1028,6 +1255,31 @@
           + '，非噪声岗位文本=' + (r5.jobs ? '有(' + r5.jobs.length + '字)' : '空→仅保留注段A') + '）');
         console.info('[检评报告] 注段落文本：' + (r5.noteTexts || []).length + ' 段 → '
           + (r5.noteTexts || []).map(function (t) { return '「' + String(t).slice(0, 20) + '…」'; }).join(' + '));
+      }
+      // ⑥ 条件删除条目（噪声为空 / 无粉尘·毒物 / 无高毒物品 → 删对应评价依据、警示标识条目）+ 章节内序号重排
+      {
+        let noiseWorkshopEmpty = false;
+        if (u && typeof u.noiseWorkshopGroupsFromBuf === 'function') {
+          try {
+            const ws = await u.noiseWorkshopGroupsFromBuf(buf);
+            noiseWorkshopEmpty = Array.isArray(ws) && ws.length === 0;
+          } catch (e) { noiseWorkshopEmpty = false; }
+        }
+        let hazardFactors = [];
+        const app = root.SamplingApp;
+        if (app && typeof app.librarySnapshot === 'function') {
+          try {
+            const lib = app.librarySnapshot();
+            if (lib && Array.isArray(lib.hazardFactors)) hazardFactors = lib.hazardFactors;
+          } catch (e) { hazardFactors = []; }
+        }
+        const r6 = fixConditionalDeletions(xml, { noiseWorkshopEmpty: noiseWorkshopEmpty, hazardFactors: hazardFactors });
+        xml = r6.xml; changed += r6.changed;
+        if (r6.changed) {
+          console.info('[检评报告] 条件删除条目，共删除 ' + r6.changed + ' 段'
+            + (r6.sections ? '（涉及 ' + r6.sections + ' 个章节，序号已重排）' : '')
+            + '：' + (r6.reasons || []).join('；'));
+        }
       }
       if (!changed) return buf;
       zip.file('word/document.xml', xml);
@@ -1395,7 +1647,7 @@
     }
   }
 
-  root.SamplingBlf = { open: openBlfModal, buildTemplateSheets, fetchUpstream, workerTo39, exportFlowAndLayout, generatePjbgReport, genPjbgDocx, fixHighToxColumn, fixNonNoiseHazards, fixNitrogenOxide, fixReportText, fixHazardNote, collectHazardMarks, trimNote3, patchPjbgDocx };
+  // 注：SamplingBlf 的完整导出在文件末尾统一给出（含生产接口 + 测试钩子），此处不再重复赋值。
 
   // 绑定按钮（主工具栏 + 全屏工具栏）与弹窗内交互
   function bind() {
@@ -1443,12 +1695,32 @@
 
   // 测试/复用钩子：后处理相关纯函数（供 Node 测试直接调用，不依赖 DOM）
   root.SamplingBlf = {
+    // 生产接口（页面调用）
+    open: openBlfModal,
+    buildTemplateSheets: buildTemplateSheets,
+    fetchUpstream: fetchUpstream,
+    workerTo39: workerTo39,
+    exportFlowAndLayout: exportFlowAndLayout,
+    generatePjbgReport: generatePjbgReport,
+    genPjbgDocx: genPjbgDocx,
+    fixHighToxColumn: fixHighToxColumn,
+    fixNonNoiseHazards: fixNonNoiseHazards,
+    fixNitrogenOxide: fixNitrogenOxide,
+    fixReportText: fixReportText,
+    fixHazardNote: fixHazardNote,
+    collectHazardMarks: collectHazardMarks,
+    trimNote3: trimNote3,
     patchPjbgDocx: patchPjbgDocx,
+    // 后处理⑥（条件删除条目）
+    fixConditionalDeletions: fixConditionalDeletions,
+    collectConfirmColTexts: collectConfirmColTexts,
+    lookupHazardField: lookupHazardField,
+    deletePjbgParas: deletePjbgParas,
+    // 测试用纯函数 / 常量
     fixNoteAndContactCount: fixNoteAndContactCount,
     sumExposedWorkers: sumExposedWorkers,
     readBasicInfoTable: readBasicInfoTable,
     fixNoteParagraph: fixNoteParagraph,
-    fixNitrogenOxide: fixNitrogenOxide,
     NOX_FROM_HALF: NOX_FROM_HALF,
     NOX_TO: NOX_TO,
     NOX_FROM_FULL: NOX_FROM_FULL,

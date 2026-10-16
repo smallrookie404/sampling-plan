@@ -132,6 +132,7 @@ sampling-plan/
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
+  node tests/pjbg.conddel.test.mjs # 后处理⑥ 条件删除条目 + 章节内序号重排（纯 XML 夹具，无需真实报告）
   ```
 - 测试注意：应用会自动把参考库写回 `data/library.json`；跑会改动参考库的测试前先备份，测试后 `git checkout -- sampling-plan-app/data/library.json` 恢复。
 - `tests/pjbg.note.test.mjs` / `pjbg.note1009.test.mjs` 需要真实检评报告 docx 作样例（默认读 `%TEMP%/sampling-plan-login/`，可用 `PJBG_SAMPLE` / `PJBG_1009` 或 argv 指定）。纯 Node（`vm` 沙箱加载 `js/blf.js` + `JSZip`），不依赖浏览器；**blf.js 为此保留了 `SamplingUtil` 缺失时的内联兜底**。
@@ -166,6 +167,10 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
    - 列结构：`HAZARD_HEADERS`（14 项，首项「序号」不在 keys 中）+ `HAZARD_KEYS`（13 项，末项为 2026-10 新增的 `physchem`「物化性质」）；**键索引 = 表头索引 - 1**。新增列只需在两数组**同位置**追加，`blankHazard`/`renderHazard`/`hazGetValue`/`hazSetValue`/窗口化 `colspan` 均由 `HAZARD_KEYS` 派生，会自动生效。
    - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
+10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，顺序跑 6 步、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）。
+   - ⑥ 依据（用户 2026-10-17）：**噪声车间岗位为空**（`SamplingUpload.noiseWorkshopGroupsFromBuf` 返回 `[]`）→ 删 1.2.3 评价依据下 GB 23466-2025 条目、9.2 下「产生噪声的工作场所设置…」；**探测「检测项目确认表」的「职业病危害因素」列**（`collectConfirmColTexts`，表头含「职业病危害因素」或「检测项目」）→ 按危害因素库**「系统名称」列**（字段 `name`）匹配（`lookupHazardField`）→ 读该行 `physchem`「物化性质」：全部**不含「毒物」**→删毒物组、全部**不含「粉尘」**→删粉尘组、**俱无**→再删 GB 18664-2025；读 `highTox` 全部不是「是」→删《高毒物品目录》。
+   - ⚠ ⑥ **判定口径**：关键词用**子串包含**；**缺数据不删**（因素在库中找不到即视为证据不足，整组不动，保守防误删）；条目定位用**全局文本匹配**（整段 `<w:p>` 删除），序号「（N）」重排**限定在所属章节内**（`isHeadingPara` 判标题边界——形如 `1.2.3评价依据`，**排除** `1.《xx》` 这类法规条目）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（34 项，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`、`pjbg.note1009.test`、`pjbg.conddel.test`。
 
 ## 已知注意事项
 
@@ -193,6 +198,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 改调查表导出/导入 | survey.js `exportAllWorkbook` / `importFromArray`（按工作表名+表头名匹配，兼容列序变化） |
 | 改记录保存/读取/同步 | app.js `detectStorageMode`/`loadRecords`/`loadRecordById`/`persistRecord`/`deleteRecordById` + 三端实现（server.mjs、functions/api/records.js、app.js `github*`） |
 | 改参考库同步 | app.js `loadLibrary`/`persistLibrary`/`scheduleLibrarySync` |
+| 改检评报告后处理（0/1、措辞、注段落、条件删条目） | blf.js `patchPjbgDocx` 内 6 步：`fixHighToxColumn`/`fixNonNoiseHazards`/`fixNitrogenOxide`/`fixReportText`(+`TEXT_FIXES`)/`fixHazardNote`/`fixNoteAndContactCount`/`fixConditionalDeletions`(+`PJBG_DEL_TARGETS`/`deletePjbgParas`/`collectConfirmColTexts`/`lookupHazardField`)；噪声数据侧 upload.js `buildNoiseSummary`/`noise*FromBuf` |
 | 改通用工具（转义/懒加载/列表兼容） | js/util.js（`window.SamplingUtil`）；业务脚本只引用它，不要在 app/upload/survey/blf 里各写一份 |
 | 改登录/验证码/会话 | upload.js `API_BASE`/RSA 实现/`resolveOrgId`/`saveSession` + index.html 登录遮罩与内联隐藏脚本 |
 | 改上传流程或平台接口 | upload.js `apiRequest`/`runUploadFlow`/`syncProjectInfo`；代理侧 `functions/api/platform/[[path]].js`（目标 IP、头白名单） |
@@ -203,6 +209,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
 - 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）。
+- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（34 项，纯夹具）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。

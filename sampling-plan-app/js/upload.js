@@ -1635,6 +1635,18 @@
       return groups.map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
     }
 
+    // 「噪声车间岗位」（LEX 最大值 ≥ 80 dB）分组：[{ unit, jobs:[...] }]；解析失败或无内容返回 []。
+    // 供「生成检评报告」后处理⑥判断「噪声车间岗位为空 → 删噪声类评价依据/警示标识条目」。
+    async function noiseWorkshopGroupsFromBuf(buf) {
+      try {
+        const data = await parsePjbgNoiseTableFromDocx(buf);
+        const s = buildNoiseSummary(buildNoiseDisplay(data.rows));
+        return (s && s.noiseWorkshop) || [];
+      } catch (e) {
+        return [];
+      }
+    }
+
     // 把「按车间合并」的结果拼成文本：车间岗位、岗位；车间岗位、岗位
     function noiseSummaryText(list) {      return (list || []).map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
     }
@@ -3166,6 +3178,8 @@
       // 从检评报告 docx 算出「非噪声车间岗位」分组/文本（供注段落拼接；空返回 ''）
       noiseNonNoiseGroupsFromBuf: noiseNonNoiseGroupsFromBuf,
       noiseNonNoiseTextFromBuf: noiseNonNoiseTextFromBuf,
+      // 从检评报告 docx 算出「噪声车间岗位」（LEX 最大值 ≥ 80）分组（供后处理⑥判断是否为空）
+      noiseWorkshopGroupsFromBuf: noiseWorkshopGroupsFromBuf,
       // 复用噪声页签已生成并下载的检评报告（供「生成检评报告」缩短时间）：
       // 命中同一项目时返回 { buf, fileName, modName }，否则 null
       getPjbgCache: function (projectId) {

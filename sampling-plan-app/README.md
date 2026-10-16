@@ -86,8 +86,9 @@ sampling-plan-app/
 测试脚本基于 Node.js：
 
 ```bash
-node tests/pjbg.note.test.mjs       # 检评报告备注/流程逻辑（47 项）
+node tests/pjbg.note.test.mjs       # 检评报告备注/流程逻辑（52 项）
 node tests/pjbg.note1009.test.mjs   # 报告处理流程（18 项）
+node tests/pjbg.conddel.test.mjs    # 报告条件删除条目 + 序号重排（34 项）
 node tests/captcha.test.mjs         # 验证码 OCR（8 项）
 node tests/bridge-cloudflare.test.mjs  # 云端账号桥（10 项）
 node tests/server.test.mjs          # 本地服务端
