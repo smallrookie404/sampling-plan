@@ -160,7 +160,24 @@ await page.keyboard.press("Home");
 await page.waitForTimeout(120);
 check((await page.$eval("#hazard-body td.cur", (el) => el.dataset.hc)) === "0", "Home 跳到首列");
 
-// 13) 无运行时错误
+// 13) 末尾新增「物化性质」列（最右列，键 physchem）可编辑
+const headCols = await page.$$eval("#hazard-head th", (els) => els.map((el) => el.textContent.replace(/[▼\s]/g, "")));
+check(headCols[headCols.length - 1] === "物化性质", `最右列表头为「物化性质」（实际：${headCols.slice(-2).join("/")}）`);
+const lastCi = await page.$eval("#hazard-body tr[data-h]", (tr) => Math.max(...[...tr.querySelectorAll("td[data-hc]")].map((td) => Number(td.dataset.hc))));
+check(lastCi === headCols.length - 2, `末列索引与表头数一致（末列 ci=${lastCi}）`);
+const physInput = await page.$eval(cellSel(0, lastCi) + " input", (el) => !!el);
+check(physInput, "「物化性质」列为可编辑文本输入");
+// 末列可能超出视口宽度：先横向滚到最右再点击
+await page.$eval(".hazard-wrap", (w) => { w.scrollLeft = w.scrollWidth; });
+await page.waitForTimeout(120);
+await clickCell(0, lastCi);
+await page.keyboard.type("白色粉末");
+await page.waitForTimeout(180);
+check((await valOf(0, lastCi)) === "白色粉末", "「物化性质」列可直接键入", await valOf(0, lastCi));
+await page.keyboard.press("Enter");
+await page.waitForTimeout(180);
+
+// 14) 无运行时错误
 check(pageErrors.length === 0, "无页面 JS 错误", pageErrors.join(" | "));
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

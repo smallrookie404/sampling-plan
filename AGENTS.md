@@ -129,7 +129,7 @@ sampling-plan/
   node tests/captcha.test.mjs    # 验证码 OCR（JS 移植）准确率 + RSA 自检
   node tests/bridge-cloudflare.test.mjs # 云端账号桥（假 KV + 假平台，真跑 OCR 与登录）
   node tests/report.smoke.mjs    # 「数据报告处理」页签（回退/审核/断点续审/报告显示/面板缓存）
-  node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区；Playwright）
+  node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
   ```
@@ -163,7 +163,8 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
    - 网格为**窗口化渲染**（只渲染可视行，行高恒为 `HAZARD_ROW_H=30`），因此 `hzCur/hzSel*` 一律用 hazardFactors 的**绝对下标**；跨行移动需经 `hazardDisplayList()`（显示顺序）换算，`hazTd()` 只在当前已渲染的行里取 DOM。
    - 布防框与滚动协同：`scroll` 事件在布防态下调 `hazSyncArmPosition()` 重定位（不做窗口化重绘），移出可视区才移除；`hazRevealCell()` 负责滚动到目标格并触发重绘。
    - 清空/还原等改动模型的操作必须**同步已渲染的 input DOM**（`hazClearRange`/`hazRevertCurrent`），否则窗口化渲染会残留旧值。
-   - 专用回归测试：`tests/hazard.edit.smoke.mjs`（20 项）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。
+   - 列结构：`HAZARD_HEADERS`（14 项，首项「序号」不在 keys 中）+ `HAZARD_KEYS`（13 项，末项为 2026-10 新增的 `physchem`「物化性质」）；**键索引 = 表头索引 - 1**。新增列只需在两数组**同位置**追加，`blankHazard`/`renderHazard`/`hazGetValue`/`hazSetValue`/窗口化 `colspan` 均由 `HAZARD_KEYS` 派生，会自动生效。
+   - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
 
 ## 已知注意事项
@@ -201,7 +202,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 ## 常见任务速查
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
-- 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（20 项）。
+- 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。

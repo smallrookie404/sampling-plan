@@ -185,8 +185,6 @@
       360,
       14
     );
-    // 下拉单元格（粉尘性质、是/否 等）额外预留箭头空间
-    w.forEach((x, i) => { if (i === 2 || (i >= 3 && i <= 8) || i === 10) w[i] += 24; });
     $("hazard-cols").innerHTML =
       "<col style='width:42px'>" + w.map((x) => `<col style="width:${x}px">`).join("");
   }
@@ -3232,8 +3230,8 @@
   });
 
   // ---------- 危害因素库 ----------
-  const HAZARD_HEADERS = ["序号", "识别", "系统名称", "粉尘性质", "定性分析", "委外检测", "计算TWA", "计算STEL", "计算CPE", "计算MAC", "结果保留位数", "存在高毒物品", "不检测原因说明"];
-  const HAZARD_KEYS = ["rec", "name", "dust", "qual", "outsource", "twa", "stel", "cpe", "mac", "digits", "highTox", "noTestReason"];
+  const HAZARD_HEADERS = ["序号", "识别", "系统名称", "粉尘性质", "定性分析", "委外检测", "计算TWA", "计算STEL", "计算CPE", "计算MAC", "结果保留位数", "存在高毒物品", "不检测原因说明", "物化性质"];
+  const HAZARD_KEYS = ["rec", "name", "dust", "qual", "outsource", "twa", "stel", "cpe", "mac", "digits", "highTox", "noTestReason", "physchem"];
   const HAZARD_ROW_H = 30;
   let lastHazardScrollTop = 0;
 
