@@ -349,11 +349,6 @@
   let sFilterMode = false;
   let sFilterCi = null; // 当前打开弹层的列 { sheet, col }
 
-  function sFilterCount(sh) {
-    const f = sFilter[sh.key];
-    return f ? Object.keys(f).length : 0;
-  }
-
   // 当前子表应用筛选后的行：返回 [{ r: 原始行数组, ri: 原始行号 }]，编辑/选择仍按原行号定位
   function sFilteredRows(sh) {
     const rows = surveyRows();
@@ -608,7 +603,7 @@
           `</tr>`;
         }).join("")
       : `<tr class="empty-row"><td colspan="${sh.headers.length}" style="text-align:center;color:#94a3b8;padding:16px">暂无数据，点击「+ 新增行」开始填写</td></tr>`;
-    $S("survey-status").textContent = `${sh.name} · 共 ${rows.length} 行` + (sFilterMode && sFilterCount(sh) ? `（已筛选，原 ${surveyRows().length} 行）` : "");
+    // 不再显示「子表名 · 共 N 行」这类文字注释（筛选开启时「▼ 筛选」按钮自身会加深提示）
     updateSurveySelection();
     // 重建 tbody 后为当前格重新布防隐形编辑器（焦点常在，打字/输入法随时可写）
     if (sCur) sArmCell(sCur.r, sCur.c);

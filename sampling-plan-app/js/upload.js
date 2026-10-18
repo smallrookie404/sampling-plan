@@ -328,6 +328,100 @@
     return '工艺图片：成功 ' + ok + ' 张，失败 ' + failed.length + ' 张（' + failed.slice(0, 5).join('；') + (failed.length > 5 ? ' 等' : '') + '）';
   }
 
+  // ---------------- 企业信息（受检单位信息）：在职人数 / 接害人数 ----------------
+  // 平台「现场调查 - 企业信息」页签字段：enterpriseNum=在职人数、hazardNum=接害人数。
+  // 读：GET  /api/inspectedUnitInfo?id=<belongInspect>（reportData 的 belongInspect，不是项目 id）
+  // 写：PUT  /api/inspectedUnitInfo/edit（整对象回写，数组字段按平台前端口径拼回字符串）
+  // 2026-10-18 真机验证（BTC26-SZJC0959，id=6205/belongInspect=1450）：
+  //   GET id=1450 → enterpriseNum=410/hazardNum=53；PUT 原值回写 → code:"200" 修改成功。
+  var ENTINFO_JOIN = { area: '/', belongIndustry: '/', registrant: '/', jsfwField: ',' };
+
+  function normalizeEntInfoRecord(rec) {
+    var t = JSON.parse(JSON.stringify(rec));
+    Object.keys(ENTINFO_JOIN).forEach(function (k) {
+      if (Array.isArray(t[k])) t[k] = t[k].join(ENTINFO_JOIN[k]);
+    });
+    var ih = t.inspectedHelp;
+    if (ih) {
+      if (Array.isArray(ih.newPneumDisease)) ih.newPneumDisease = ih.newPneumDisease.join(',');
+      if (Array.isArray(ih.newHxDisease)) ih.newHxDisease = ih.newHxDisease.join(',');
+      if (Array.isArray(ih.meetStandardDetails)) ih.meetStandardDetails = ih.meetStandardDetails.join('/');
+    }
+    return t;
+  }
+
+  async function fetchEnterpriseInfo(token, orgId, belongInspect) {
+    if (belongInspect === undefined || belongInspect === null || belongInspect === '') return null;
+    var r = await apiRequest('GET', '/api/inspectedUnitInfo?id=' + encodeURIComponent(belongInspect), {
+      token: token, orgId: orgId, timeout: 30000
+    });
+    if (r.status !== 200) throw new Error('获取企业信息失败(HTTP ' + r.status + ')');
+    var recs = (r.data && r.data.body && r.data.body.records) || [];
+    return recs.length ? recs[0] : null;
+  }
+
+  async function editEnterpriseInfo(token, orgId, record) {
+    return apiRequest('PUT', '/api/inspectedUnitInfo/edit', {
+      token: token, orgId: orgId, json: normalizeEntInfoRecord(record), timeout: 30000
+    });
+  }
+
+  // 输入框值 → 补丁（纯函数，便于测试）：都为空 → {empty:true}；格式非法 → {error}；
+  // 否则 {patch:{enterpriseNum?, hazardNum?}}（只含有值的一侧，数字串转 Number）
+  function buildEntInfoPatch(values) {
+    var onJob = String((values && values.onJobNum) == null ? '' : values.onJobNum).trim();
+    var hazard = String((values && values.hazardNum) == null ? '' : values.hazardNum).trim();
+    if (!onJob && !hazard) return { empty: true, patch: {} };
+    var pairs = [['在职人数', onJob], ['接害人数', hazard]];
+    for (var i = 0; i < pairs.length; i++) {
+      if (pairs[i][1] && !/^\d+$/.test(pairs[i][1])) return { error: pairs[i][0] + '须为非负整数' };
+    }
+    var patch = {};
+    if (onJob) patch.enterpriseNum = Number(onJob);
+    if (hazard) patch.hazardNum = Number(hazard);
+    return { patch: patch };
+  }
+
+  // 上传分工（用户约定）：主表格（测点布局调查）上传只带在职人数，调查表（6 合一）上传只带接害人数
+  function entPayloadForUpload(kind, values) {
+    var v = values || {};
+    if (kind === 'survey') return { onJobNum: '', hazardNum: v.hazardNum };
+    return { onJobNum: v.onJobNum, hazardNum: '' };
+  }
+
+  // 上传流程调用：把输入框里的在职人数/接害人数写进平台企业信息。
+  // 两个都为空 → 跳过（不调任何接口）；失败不阻断上传主体，只返回说明文本供日志/弹窗展示。
+  async function applyEntInfoOnUpload(token, orgId, project, values, onSaved) {
+    var built = buildEntInfoPatch(values);
+    if (built.empty) return '';
+    if (built.error) return '企业信息未写入：' + built.error;
+    var belongInspect = project && project.belongInspect;
+    if (belongInspect === undefined || belongInspect === null || belongInspect === '') {
+      return '企业信息未写入：项目未带受检单位标识（belongInspect）';
+    }
+    var rec = null;
+    try {
+      rec = await fetchEnterpriseInfo(token, orgId, belongInspect);
+    } catch (e) {
+      return '企业信息未写入：' + e.message;
+    }
+    if (!rec || rec.id === undefined || rec.id === null) {
+      return '企业信息未写入：平台无该受检单位记录（id=' + belongInspect + '）';
+    }
+    try {
+      var r = await editEnterpriseInfo(token, orgId, Object.assign({}, rec, built.patch));
+      if (r.status === 200 && r.data && r.data.code === '200') {
+        if (typeof onSaved === 'function') { try { onSaved(built.patch); } catch (e) {} }
+        var p = built.patch;
+        return '企业信息已更新（在职 ' + (p.enterpriseNum !== undefined ? p.enterpriseNum : '未改') +
+          ' 人，接害 ' + (p.hazardNum !== undefined ? p.hazardNum : '未改') + ' 人）';
+      }
+      return '企业信息未写入：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status));
+    } catch (e) {
+      return '企业信息未写入：' + e.message;
+    }
+  }
+
   // ---------------- 项目团队相关接口 ----------------
   async function fetchUsers(token, orgId) {
     const r = await apiRequest('GET', '/api/users?pageSize=-1&organizationId=' + orgId, { token: token });
@@ -809,8 +903,11 @@
     const investigatorSelect = $('investigatorSelect');
     const reviewerSelect = $('reviewerSelect');
     const investigateDate = $('investigateDate');
+    const entOnJobNum = $('entOnJobNum');
+    const entHazardNum = $('entHazardNum');
     if (!unitInput || !codeInput || !yearSelect || !suggestBox || !$('searching') || !$('projectInfo') ||
-        !memberSearch || !memberList || !memberTags || !btnMemberConfirm || !investigatorSelect || !reviewerSelect || !investigateDate) {
+        !memberSearch || !memberList || !memberTags || !btnMemberConfirm || !investigatorSelect || !reviewerSelect || !investigateDate ||
+        !entOnJobNum || !entHazardNum) {
       if (typeof console !== 'undefined') console.error('上传页面元素缺失，请强制刷新浏览器（Ctrl+F5）后重试');
       alert('上传页面加载不完整，请按 Ctrl+F5 强制刷新后重试');
       return;
@@ -818,6 +915,60 @@
     let searchSeq = 0;
     let currentAbort = null;
     let debounceTimer = null;
+
+    // 企业信息（在职人数/接害人数）：输入框 ↔ localStorage 缓存 ↔ 平台现值
+    const ENTINFO_KEY = 'xcdc_entinfo_v1';
+    let entInfoSeq = 0;
+
+    function entInfoCacheRead() {
+      try { return JSON.parse(localStorage.getItem(ENTINFO_KEY)) || {}; } catch (e) { return {}; }
+    }
+    function entInfoCacheSave(projectId, values) {
+      try {
+        const all = entInfoCacheRead();
+        all[String(projectId)] = {
+          onJobNum: String((values && values.onJobNum) || ''),
+          hazardNum: String((values && values.hazardNum) || '')
+        };
+        localStorage.setItem(ENTINFO_KEY, JSON.stringify(all));
+      } catch (e) {}
+    }
+    function setEntInputs(onJob, hazard) {
+      if (entOnJobNum) entOnJobNum.value = onJob == null ? '' : String(onJob);
+      if (entHazardNum) entHazardNum.value = hazard == null ? '' : String(hazard);
+    }
+    function entInputValues() {
+      return { onJobNum: entOnJobNum ? entOnJobNum.value : '', hazardNum: entHazardNum ? entHazardNum.value : '' };
+    }
+    // 上传前预校验：非法值直接拦截（等上传完再报就晚了）
+    function validateEntInputs() {
+      const v = entInputValues();
+      const pairs = [['在职人数', v.onJobNum], ['接害人数', v.hazardNum]];
+      for (let i = 0; i < pairs.length; i++) {
+        const s = String(pairs[i][1] || '').trim();
+        if (s && !/^\d+$/.test(s)) return pairs[i][0] + '须为非负整数（当前值：' + s + '）';
+      }
+      const a = parseInt(v.onJobNum, 10);
+      const b = parseInt(v.hazardNum, 10);
+      if (!isNaN(a) && !isNaN(b) && b > a) return '接害人数不能大于在职人数（' + b + ' > ' + a + '）';
+      return '';
+    }
+    // 选中项目后预填：先按项目 id 取本地缓存，再拉平台当前值覆盖（过期响应丢弃）
+    function prefillEntInfo(project) {
+      const seq = ++entInfoSeq;
+      if (!project) { setEntInputs('', ''); return; }
+      const cached = entInfoCacheRead()[String(project.id)];
+      setEntInputs(cached && cached.onJobNum, cached && cached.hazardNum);
+      if (!token || project.belongInspect === undefined || project.belongInspect === null || project.belongInspect === '') return;
+      fetchEnterpriseInfo(token, orgId, project.belongInspect).then(function (rec) {
+        if (seq !== entInfoSeq) return; // 已切换项目，丢弃过期响应
+        if (!rec) return;
+        const onJob = rec.enterpriseNum == null ? '' : String(rec.enterpriseNum);
+        const hazard = rec.hazardNum == null ? '' : String(rec.hazardNum);
+        setEntInputs(onJob, hazard);
+        entInfoCacheSave(project.id, { onJobNum: onJob, hazardNum: hazard });
+      }).catch(function () { /* 拉取失败：保留缓存/已填值 */ });
+    }
 
     function selectedMemberIds() {
       return confirmedMemberIds.slice();
@@ -1072,6 +1223,7 @@
           $('projectInfo').className = 'info ok';
           log('已选择项目：' + p.code + ' ' + (p.belongInspectName || ''));
           loadProjectTeam(p.id);
+          prefillEntInfo(p);   // 企业信息输入框预填（本地缓存 + 平台现值）
           refreshReportPanel();   // 「数据报告处理」页签同步显示当前项目
         });
         suggestBox.appendChild(item);
@@ -1225,6 +1377,9 @@
       // 上传前重新生成一次，确保文件为最新内容
       const file = isSurvey ? (await generateSurveyFile(), selectedSurveyFile) : (await generateExportFile(), selectedFile);
       if (!file) { log('上传文件生成失败，请先处理表格内容后重试'); return; }
+      // 企业信息输入框预校验：非法值直接拦截（等上传完再报就晚了）
+      const entErr = validateEntInputs();
+      if (entErr) { alert(entErr); return; }
       if (!isSurvey) {
         const errs = window.SamplingApp && window.SamplingApp.countErrors ? window.SamplingApp.countErrors() : 0;
         if (errs > 0 && !confirm('当前表格有 ' + errs + ' 处校验错误，仍要上传吗？')) return;
@@ -1264,6 +1419,26 @@
             log('同步团队信息失败：' + e.message);
             syncMsg = '，团队信息同步失败：' + e.message;
           }
+          // 企业信息：主表格上传带在职人数、调查表上传带接害人数（失败不影响上传主体）
+          let entMsg = '';
+          try {
+            entMsg = await applyEntInfoOnUpload(
+              token, orgId, selectedProject,
+              entPayloadForUpload(isSurvey ? 'survey' : 'main', entInputValues()),
+              function (patch) {
+                // 只更新本次真正写入的一侧，另一侧沿用缓存（避免主表格上传把接害人数缓存清空）
+                const prev = entInfoCacheRead()[String(projectId)] || {};
+                entInfoCacheSave(projectId, {
+                  onJobNum: patch.enterpriseNum !== undefined ? patch.enterpriseNum : prev.onJobNum,
+                  hazardNum: patch.hazardNum !== undefined ? patch.hazardNum : prev.hazardNum
+                });
+              }
+            );
+            if (entMsg) log(entMsg);
+          } catch (e) {
+            entMsg = '企业信息写入异常：' + e.message;
+            log(entMsg);
+          }
           // 上传成功后询问是否保存数据，默认名：年份 + 公司名称（从项目编号取年份前缀）
           try {
             const ym = /^BTC(\d{2})/.exec(selectedProject.code || '');
@@ -1287,10 +1462,10 @@
           }
           if (msgs.length > 0) {
             log('导入完成，但有以下提示：' + msgs.join('；'));
-            alert('导入完成，提示：\n' + msgs.join('\n') + (imgMsg ? '\n' + imgMsg : ''));
+            alert('导入完成，提示：\n' + msgs.join('\n') + (entMsg ? '\n' + entMsg : '') + (imgMsg ? '\n' + imgMsg : ''));
           } else {
-            log('导入成功！' + syncMsg + (imgMsg ? '，' + imgMsg : ''));
-            alert('导入成功！' + syncMsg + (imgMsg ? '，' + imgMsg : ''));
+            log('导入成功！' + syncMsg + (entMsg ? '，' + entMsg : '') + (imgMsg ? '，' + imgMsg : ''));
+            alert('导入成功！' + syncMsg + (entMsg ? '，' + entMsg : '') + (imgMsg ? '，' + imgMsg : ''));
           }
         } else {
           const msg = (d && (d.message || d.msg)) || ('HTTP ' + r.status);
@@ -1399,13 +1574,13 @@
       return Util.pickRows(j);
     }
 
-    // 通用：从 docx 里取「某个标题段落下面的第一张表」，返回 { rows: string[][] }
-    async function parseTableAfterHeadingFromDocx(buf, keyword, label) {
-      const JSZip = await ensureJSZip();
-      const zip = await JSZip.loadAsync(buf);
-      const f = zip.file('word/document.xml');
-      if (!f) throw new Error('docx 结构异常：缺少 word/document.xml');
-      const xml = await f.async('string');
+    // 通用：从 **document.xml 字符串**里取「某个标题段落下面的第一张表」，返回 { rows: string[][] }
+    //
+    // ★ 性能（2026-10-18）：把「解压 + 取 document.xml」与「解析表格」拆开。
+    //   原来每次取表都要 JSZip.loadAsync + async('string') 重新解压整份 docx；
+    //   现在上层可以复用**已经解出来**的 xml（检评报告后处理本来就已解压过一次），
+    //   省掉重复解压（1MB+ 的 document.xml 解压+转字符串是百毫秒级开销）。
+    function parseTableAfterHeadingFromXml(xml, keyword, label) {
       const doc = new DOMParser().parseFromString(xml, 'application/xml');
       const body = doc.getElementsByTagNameNS(W_NS, 'body')[0];
       if (!body) throw new Error('docx 结构异常：缺少 body');
@@ -1432,6 +1607,29 @@
         rows.push(cells);
       }
       return { rows: rows };
+    }
+
+    // 从 docx 里取「某个标题段落下面的第一张表」，返回 { rows: string[][] }
+    async function parseTableAfterHeadingFromDocx(buf, keyword, label) {
+      const xml = await readDocxDocumentXml(buf);
+      return parseTableAfterHeadingFromXml(xml, keyword, label);
+    }
+
+    // 解压 docx 并取出 word/document.xml 字符串（唯一入口，便于上层复用）
+    // 取文本优先用原生 TextDecoder（比 JSZip 自带 async('string') 的 JS 版 UTF-8 解码器快）；
+    // Node 的 vm 沙箱可能没有 TextDecoder，做存在性判断后回退。
+    async function readDocxDocumentXml(buf) {
+      const JSZip = await ensureJSZip();
+      const zip = await JSZip.loadAsync(buf);
+      const f = zip.file('word/document.xml');
+      if (!f) throw new Error('docx 结构异常：缺少 word/document.xml');
+      if (typeof TextDecoder !== 'undefined') {
+        try {
+          const u8 = await f.async('uint8array');
+          return new TextDecoder('utf-8').decode(u8);
+        } catch (e) { /* 回退到 JSZip 自带解码 */ }
+      }
+      return await f.async('string');
     }
 
     // 从**检评报告**里取「表7-3 噪声检测结果分析与评价」表，返回 { rows: string[][] }
@@ -1601,50 +1799,98 @@
       return out;
     }
 
+    // ---------- 噪声信息：一次解析，多方复用（★ 2026-10-18 性能重构） ----------
+    // 背景：检评报告后处理 ②⑤⑥ 三步分别需要「非噪声岗位 pairs」「非噪声岗位文本」
+    //   「噪声车间岗位分组」。原先各自独立调用一个 *FromBuf 函数，每次都要
+    //   JSZip.loadAsync 解压整份 docx + DOMParser 解析全文 + 遍历噪声表 ——
+    //   同一份报告被完整解析 3 次（浏览器实测 300ms+）。
+    // 现在统一由 noiseInfoFromXml / noiseInfoFromBuf 算一次，各调用方共享结果。
+    //
+    // 信息对象结构：{ rows, nonNoiseGroups, nonNoiseText, nonNoisePairs, noiseWorkshopGroups, ok }
+    //   · nonNoiseGroups / noiseWorkshopGroups：按车间合并后的 [{ unit, jobs:[...] }]
+    //   · nonNoisePairs：展开成 [{ unit, job }]（② 删除噪声危害用）
+    //   · nonNoiseText：'车间岗位、岗位；车间岗位'（⑤ 注段落拼接用），空列表为 ''
+    //   · ok：是否成功解析（false 时各字段为空，调用方按「缺数据」保守处理）
+
+    // 由「已解析出的噪声表行」构造噪声信息（noiseInfoFromXml / noiseInfoFromBuf /
+    // loadNoiseResult 共用同一份组装逻辑，避免三处各写一遍）
+    function noiseInfoFromRows(rows) {
+      const data = { rows: rows || [] };
+      const s = buildNoiseSummary(buildNoiseDisplay(data.rows));
+      const nonNoiseGroups = (s && s.nonNoise) || [];
+      const noiseWorkshopGroups = (s && s.noiseWorkshop) || [];
+      const pairs = [];
+      for (const g of nonNoiseGroups) for (const j of g.jobs) pairs.push({ unit: g.unit, job: j });
+      const text = nonNoiseGroups.length
+        ? nonNoiseGroups.map(function (g) { return g.unit + g.jobs.join('、'); }).join('；')
+        : '';
+      return {
+        rows: data.rows,
+        nonNoiseGroups: nonNoiseGroups,
+        nonNoiseText: text,
+        nonNoisePairs: pairs,
+        noiseWorkshopGroups: noiseWorkshopGroups,
+        ok: true,
+      };
+    }
+
+    function noiseInfoFromXml(xml) {
+      try {
+        const data = parseTableAfterHeadingFromXml(xml, '噪声检测结果分析与评价', '噪声检测结果分析与评价');
+        return noiseInfoFromRows(data.rows);
+      } catch (e) {
+        return { rows: [], nonNoiseGroups: [], nonNoiseText: '', nonNoisePairs: [], noiseWorkshopGroups: [], ok: false };
+      }
+    }
+
+    // 按 docx buffer 取噪声信息；同一个 buf 只解析一次（后处理链里 ②⑤⑥ 共用同一份 buffer）。
+    // 用单个槽位以 buf 对象身份为键；同一时刻只会处理一份报告，避免内存堆积。
+    let noiseInfoCache = { buf: null, info: null };
+    async function noiseInfoFromBuf(buf) {
+      if (noiseInfoCache.buf === buf && noiseInfoCache.info) return noiseInfoCache.info;
+      let info;
+      try {
+        const xml = await readDocxDocumentXml(buf);
+        info = noiseInfoFromXml(xml);
+      } catch (e) {
+        info = { rows: [], nonNoiseGroups: [], nonNoiseText: '', nonNoisePairs: [], noiseWorkshopGroups: [], ok: false };
+      }
+      noiseInfoCache = { buf: buf, info: info };
+      return info;
+    }
+
+    // 只读缓存：同一 buf 已解析过就返回，否则返回 null（**不做任何 IO**）。
+    // 供「生成检评报告」优先复用「噪声数据结果」页签已解析的结果（用户先看过噪声页签时零额外解析）。
+    function getCachedNoiseInfo(buf) {
+      return (noiseInfoCache.buf === buf && noiseInfoCache.info) ? noiseInfoCache.info : null;
+    }
+
     // 从**检评报告** docx 直接算出「非噪声车间岗位」清单（供「生成检评报告」删除噪声危害用，
     // 不依赖是否打开过噪声页签）。返回 [{ unit, job }]；解析失败返回 null。
     async function noiseNonNoiseFromBuf(buf) {
-      try {
-        const data = await parsePjbgNoiseTableFromDocx(buf);
-        const s = buildNoiseSummary(buildNoiseDisplay(data.rows));
-        const out = [];
-        for (const g of s.nonNoise) for (const j of g.jobs) out.push({ unit: g.unit, job: j });
-        return out;
-      } catch (e) {
-        return null;
-      }
+      const info = await noiseInfoFromBuf(buf);
+      return info.ok ? info.nonNoisePairs : null;
     }
 
     // 同上，但返回「按车间合并」的分组（供注段落拼接文本用）：[{ unit, jobs:[...] }]；
     // 解析失败或无内容时返回 []（不返回 null，便于直接判空）。
     async function noiseNonNoiseGroupsFromBuf(buf) {
-      try {
-        const data = await parsePjbgNoiseTableFromDocx(buf);
-        const s = buildNoiseSummary(buildNoiseDisplay(data.rows));
-        return (s && s.nonNoise) || [];
-      } catch (e) {
-        return [];
-      }
+      const info = await noiseInfoFromBuf(buf);
+      return info.nonNoiseGroups || [];
     }
 
     // 「非噪声车间岗位」文本：车间岗位、岗位；车间岗位、岗位（与页签「筛选结果」显示一致）；
     // 空列表返回 ''（供「生成检评报告」判断是否整段删除）。
     async function noiseNonNoiseTextFromBuf(buf) {
-      const groups = await noiseNonNoiseGroupsFromBuf(buf);
-      if (!groups.length) return '';
-      return groups.map(function (g) { return g.unit + g.jobs.join('、'); }).join('；');
+      const info = await noiseInfoFromBuf(buf);
+      return info.nonNoiseText || '';
     }
 
     // 「噪声车间岗位」（LEX 最大值 ≥ 80 dB）分组：[{ unit, jobs:[...] }]；解析失败或无内容返回 []。
     // 供「生成检评报告」后处理⑥判断「噪声车间岗位为空 → 删噪声类评价依据/警示标识条目」。
     async function noiseWorkshopGroupsFromBuf(buf) {
-      try {
-        const data = await parsePjbgNoiseTableFromDocx(buf);
-        const s = buildNoiseSummary(buildNoiseDisplay(data.rows));
-        return (s && s.noiseWorkshop) || [];
-      } catch (e) {
-        return [];
-      }
+      const info = await noiseInfoFromBuf(buf);
+      return info.noiseWorkshopGroups || [];
     }
 
     // 把「按车间合并」的结果拼成文本：车间岗位、岗位；车间岗位、岗位
@@ -1808,6 +2054,10 @@
           fileName: String(body).split('/').pop().replace(/\.pdf$/i, '.docx'),
           modName: mod.name || '',
         };
+        // ★ 顺手把噪声信息写进缓存：之后「生成检评报告」复用这份 docx 时可直接取用，
+        //   不必再 DOMParser 解析一次全文（用户先看过噪声页签是最常见的路径）。
+        //   try/catch 兜底：缓存只是加速手段，任何异常都不能影响噪声页签本身的加载。
+        try { noiseInfoCache = { buf: raw, info: noiseInfoFromRows(data.rows) }; } catch (e) { noiseInfoCache = { buf: null, info: null }; }
         noiseCache = { projectId: pid, data: data };
         renderNoiseTable(box, data);
         if (status) status.textContent = noiseProjectLabel() + ' · 共 ' + Math.max(0, data.rows.length - 1) + ' 行';
@@ -3180,6 +3430,16 @@
       noiseNonNoiseTextFromBuf: noiseNonNoiseTextFromBuf,
       // 从检评报告 docx 算出「噪声车间岗位」（LEX 最大值 ≥ 80）分组（供后处理⑥判断是否为空）
       noiseWorkshopGroupsFromBuf: noiseWorkshopGroupsFromBuf,
+      // ★ 一次性取全部噪声信息（②⑤⑥ 共用，避免同一份 docx 被解析多次）：
+      //   { nonNoiseGroups, nonNoiseText, nonNoisePairs, noiseWorkshopGroups, ok }
+      //   noiseInfoFromXml(xml) —— 复用上层已解压的 document.xml（最省，推荐）
+      //   noiseInfoFromBuf(buf) —— 自行解压（同一 buf 只解析一次，带记忆）
+      noiseInfoFromXml: noiseInfoFromXml,
+      noiseInfoFromBuf: noiseInfoFromBuf,
+      getCachedNoiseInfo: getCachedNoiseInfo,
+      noiseInfoFromRows: noiseInfoFromRows,
+      // 解压 docx 取 word/document.xml 字符串（供上层复用，避免重复解压）
+      readDocxDocumentXml: readDocxDocumentXml,
       // 复用噪声页签已生成并下载的检评报告（供「生成检评报告」缩短时间）：
       // 命中同一项目时返回 { buf, fileName, modName }，否则 null
       getPjbgCache: function (projectId) {
@@ -3190,6 +3450,12 @@
       },
       // 工艺图片补传（供测试/复用）
       uploadProcessImages: uploadProcessImages,
+      // 企业信息（在职人数/接害人数）读写（供测试/复用）
+      fetchEnterpriseInfo: fetchEnterpriseInfo,
+      editEnterpriseInfo: editEnterpriseInfo,
+      buildEntInfoPatch: buildEntInfoPatch,
+      entPayloadForUpload: entPayloadForUpload,
+      applyEntInfoOnUpload: applyEntInfoOnUpload,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null
       defaultSaveName: function () {
         if (!selectedProject) return null;
@@ -3260,6 +3526,11 @@
       searchProjects: searchProjects,
       fetchYearProjects: fetchYearProjects,
       uploadExcel: uploadExcel,
+      fetchEnterpriseInfo: fetchEnterpriseInfo,
+      editEnterpriseInfo: editEnterpriseInfo,
+      buildEntInfoPatch: buildEntInfoPatch,
+      entPayloadForUpload: entPayloadForUpload,
+      applyEntInfoOnUpload: applyEntInfoOnUpload,
       fetchUsers: fetchUsers,
       fetchProjectMembers: fetchProjectMembers,
       addProjectMembers: addProjectMembers,
