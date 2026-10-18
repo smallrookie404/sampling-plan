@@ -309,6 +309,20 @@
     return jszipPromise;
   }
 
+  // 取 zip 条目文本：优先「uint8array + 原生 TextDecoder」，退化到 JSZip 自带的 async('string')。
+  // ★ 性能（2026-10-18）：JSZip 的 async('string') 走它自己的 JS 版 UTF-8 解码器（分块 worker），
+  //   在 6MB 的 document.xml 上明显慢于原生 TextDecoder（实测 ~162ms → ~130ms）。
+  //   注意：Node 的 vm 沙箱里可能没有 TextDecoder 全局，故必须做存在性判断后回退。
+  async function readZipEntryText(file) {
+    if (typeof TextDecoder !== 'undefined') {
+      try {
+        const u8 = await file.async('uint8array');
+        return new TextDecoder('utf-8').decode(u8);
+      } catch (e) { /* 回退 */ }
+    }
+    return await file.async('string');
+  }
+
   function saveBlobAs(blob, name) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -357,22 +371,107 @@
   // 平台模板会把该列的原始标记直接印出来（0=否、1=是），需按字典换成中文再交付。
   const HIGHTOX_HEAD = '存在高毒物品';
 
+  // ---------------- 报告后处理：共用工具 ----------------
+  // ★ 段落正则只在这里定义一份：① ~ ⑦ 所有「逐段处理」的步骤都走 `mapParagraphs` / `PARA_SRC`，
+  //   避免同一条正则在各处重复书写、改一处漏一处。
+  const PARA_SRC = '<w:p(?:\\s[^>]*)?>[\\s\\S]*?<\\/w:p>';
+  const TBL_SRC = '<w:tbl(?:\\s[^>]*)?>[\\s\\S]*?<\\/w:tbl>';
+  function mapParagraphs(xml, cb) { return xml.replace(new RegExp(PARA_SRC, 'g'), cb); }
+  function mapTables(xml, cb) { return xml.replace(new RegExp(TBL_SRC, 'g'), cb); }
+  function tablesOf(xml) { return xml.match(new RegExp(TBL_SRC, 'g')) || []; }
+  function eachParagraph(xml, cb) {                    // 需要「匹配位置」时用
+    const re = new RegExp(PARA_SRC, 'g');
+    let m;
+    while ((m = re.exec(xml))) cb(m[0], m.index);
+  }
+
+  // ★ 只处理「包含指定字符」的段落，避免为了少数几个段落而全篇扫描。
+  //   needles 必须是**单字**（或至少是绝不会被 run 拆开的片段）——因为目标句可能被拆到多个 <w:t> 里，
+  //   但其中每个汉字仍原样出现在 XML 中，用单字做「必要预判」是安全的。
+  //   实现：indexOf 定位 → 向外扩到 <w:p …> … </w:p> 边界 → 去重 → **从后往前**替换（偏移不失效）。
+  function paraStartBefore(xml, pos) {
+    let s = xml.lastIndexOf('<w:p', pos);
+    while (s >= 0) {
+      const c = xml.charAt(s + 4);                     // 排除 <w:pPr> 之类
+      if (c === '>' || c === ' ' || c === '\t' || c === '\n' || c === '\r') return s;
+      s = xml.lastIndexOf('<w:p', s - 1);
+    }
+    return -1;
+  }
+  function mapParasContaining(xml, needles, cb) {
+    const list = (needles || []).filter(Boolean);
+    if (!list.length) return xml;
+    const spans = [];
+    const seen = new Set();
+    for (const nd of list) {
+      let i = xml.indexOf(nd);
+      while (i >= 0) {
+        const s = paraStartBefore(xml, i);
+        const e = xml.indexOf('</w:p>', i);
+        if (s >= 0 && e >= 0) {
+          const end = e + '</w:p>'.length;
+          const key = s + ':' + end;
+          if (!seen.has(key)) { seen.add(key); spans.push({ s: s, e: end }); }
+        }
+        i = xml.indexOf(nd, i + nd.length);
+      }
+    }
+    if (!spans.length) return xml;
+    spans.sort(function (a, b) { return b.s - a.s; });   // 从后往前，前面的偏移仍然有效
+    let out = xml;
+    for (const sp of spans) {
+      const p = out.slice(sp.s, sp.e);
+      const np = cb(p);
+      if (np !== p) out = out.slice(0, sp.s) + np + out.slice(sp.e);
+    }
+    return out;
+  }
+
   // 取一个 <w:tc>…</w:tc> 里的可见文本。
   // <w:br/> 的两种写法（与 <w:t> 并列 / 写在 <w:t> 内部）都还原成换行。
+  //
+  // ★ 性能（2026-10-17 重构）：原来是「先把所有非 <w:t> 标签用负向前瞻正则剥掉」，
+  //   在 7.7MB 文档 / 6000+ 段落上是最贵的一步（`/<(?!\/?w:t(?:\s|>))[^>]*>/g`）。
+  //   现在改为**一次正向扫描**，只匹配 `<w:t>` / `<w:br/>` / `<w:tab/>` 三类，输出完全等价。
+  const CELL_TOK_RE = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:br(?:\s[^>]*)?\/?>|<w:tab\s*\/?>/g;
   function cellText(tcXml) {
-    let s = String(tcXml === null || tcXml === undefined ? '' : tcXml);
-    s = s.replace(/<w:br(?:\s[^>]*)?\/?>/g, '\u0001').replace(/<w:tab\s*\/?>/g, '\t');
-    // 只保留 <w:t> 边界，其余标签（含属性）丢弃
-    s = s.replace(/<(?!\/?w:t(?:\s|>))[^>]*>/g, '');
-    s = s.replace(/<\/?w:t(?:\s[^>]*)?>/g, '');
-    return s
+    const s = String(tcXml === null || tcXml === undefined ? '' : tcXml);
+    if (s.indexOf('<w:t') < 0) return '';          // 没有文本节点 → 快速返回（图片/空单元格）
+    CELL_TOK_RE.lastIndex = 0;
+    let out = '';
+    let m;
+    while ((m = CELL_TOK_RE.exec(s))) {
+      if (m[1] !== undefined) {
+        let v = m[1];
+        // 少数报告把 <w:br/> / <w:tab/> 写进了 <w:t> 内部，先就地还原
+        if (v.indexOf('<') >= 0) {
+          v = v.replace(/<w:br(?:\s[^>]*)?\/?>/g, '\u0001').replace(/<w:tab\s*\/?>/g, '\t');
+        }
+        out += v;
+      } else if (m[0].indexOf('<w:br') === 0) {
+        out += '\u0001';
+      } else {
+        out += '\t';
+      }
+    }
+    return out
       .replace(/\u0001/g, '\n')
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
       .replace(/&apos;/g, "'").replace(/&amp;/g, '&')
       .trim();
   }
 
-  // 把单元格文本改成 text：第一个 <w:t> 承载内容，其余清空（保留段落结构）
+  // 把段落里所有 <w:t> 的内容按顺序拼起来（**不 trim、不处理换行**）。
+  // 与 cellText 的区别：这里的字符偏移与 <w:t> 内容**一一对应**，可直接用于 spliceParaRange。
+  const PARA_T_RE = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+  function paraTextConcat(pXml) {
+    PARA_T_RE.lastIndex = 0;
+    let s = '';
+    let m;
+    while ((m = PARA_T_RE.exec(pXml))) s += (m[1] || '');
+    return s;
+  }
+  // 把单元格/段落文本改成 text：第一个 <w:t> 承载内容，其余清空（保留段落结构）
   function setCellText(tcXml, text) {
     let first = true;
     return tcXml.replace(/<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g, function () {
@@ -387,15 +486,18 @@
   function fixHighToxColumn(xml) {
     if (xml.indexOf(HIGHTOX_HEAD) < 0) return { xml: xml, changed: 0 };
     let changed = 0;
-    const out = xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
-      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
-      if (rows.length < 2) return tbl;
-      const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+    const out = mapTables(xml, function (tbl) {
+      // ★ 性能：先只取**第一行（表头）**判断是不是目标表——避免为 20 张无关表解析全部行。
+      const firstRow = /<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/.exec(tbl);
+      if (!firstRow) return tbl;
+      const headCells = firstRow[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
       let col = -1;
       for (let i = 0; i < headCells.length; i++) {
         if (cellText(headCells[i]).indexOf(HIGHTOX_HEAD) >= 0) { col = i; break; }
       }
       if (col < 0) return tbl;   // 不是这张表
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return tbl;
       let newTbl = tbl;
       for (let ri = 1; ri < rows.length; ri++) {
         const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
@@ -444,7 +546,7 @@
     const set = {};
     nonNoise.forEach(function (p) { set[normKey(p.unit) + '\u0001' + normKey(p.job)] = 1; });
     let changed = 0;
-    const out = xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
+    const out = mapTables(xml, function (tbl) {
       const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
       if (rows.length < 2) return tbl;
       const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
@@ -500,7 +602,7 @@
   function fixNitrogenOxide(xml) {
     if (xml.indexOf('氮氧化物') < 0) return { xml: xml, changed: 0 };
     let changed = 0;
-    const out = xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
+    const out = mapTables(xml, function (tbl) {
       const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
       if (rows.length < 2) return tbl;
       const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
@@ -544,48 +646,40 @@
     { from: '物理有害因素检测结果分析与评价', to: '物理因素检测结果分析与评价' },
   ];
 
-  // 在**单个段落** XML 内做跨 run 的文本替换；命中返回新 XML，未命中返回 null
+  // 在**单个段落** XML 内做跨 run 的文本替换；命中返回新 XML，未命中返回 null。
+  // ★ 统一实现：真正的切片逻辑只有 `spliceParaRange` 一份，这里只是「按子串定位 → 调它」。
   function replaceAcrossRuns(pXml, from, to) {
-    const re = /<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g;
-    const nodes = [];
-    let m;
-    while ((m = re.exec(pXml))) {
-      const inner = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/.exec(m[0]);
-      nodes.push(inner ? inner[1] : '');
-    }
-    if (!nodes.length) return null;
-    let full = '';
-    const offs = nodes.map(function (t) { const s = full.length; full += t; return s; });
+    if (!from) return null;
+    const full = paraTextConcat(pXml);
     const idx = full.indexOf(from);
     if (idx < 0) return null;
-    const end = idx + from.length;
-    let hit = false;
-    const news = nodes.map(function (t, i) {
-      const s = offs[i], e = s + t.length;
-      if (e <= idx || s >= end) return null;   // 不涉及
-      hit = true;
-      if (s <= idx && e >= end) return t.slice(0, idx - s) + to + t.slice(end - s);  // 整段落在该 run 内
-      if (s <= idx && idx < e) return t.slice(0, idx - s) + to;                      // 起始 run
-      if (s < end && end <= e) return t.slice(end - s);                              // 结束 run
-      return '';                                                                     // 完全被覆盖
-    });
-    if (!hit) return null;
-    let k = 0;
-    return pXml.replace(re, function (raw) {
-      const nv = news[k++];
-      if (nv === null) return raw;
-      return raw.replace(/(<w:t(?:\s[^>]*)?>)[\s\S]*?(<\/w:t>)/, function (_, a, b) { return a + nv + b; });
-    });
+    // keepTag=true：保留原 <w:t> 的属性（与原实现逐字节一致）
+    return spliceParaRange(pXml, idx, idx + from.length, to, true);
   }
 
   // 对 document.xml 逐段落做全部文字替换，返回 { xml, changed }
+  // ★ 性能：① 每段只解析一次文本（原来 3 条 TEXT_FIXES 各解析一次）；
+  //        ② 只扫「含粉 / 含害」的段落（TEXT_FIXES 每条都至少含其中一个字），不再全篇扫。
+  //   ⚠ 以后往 TEXT_FIXES 加条目时，必须保证新条目的 from 里含 TEXT_FIX_NEEDLES 中的某个字，
+  //     否则该条永远匹配不到（下面有启动期自检，会打印警告）。
+  const TEXT_FIX_NEEDLES = ['粉', '害'];
+  TEXT_FIXES.forEach(function (f) {
+    const ok = TEXT_FIX_NEEDLES.some(function (n) { return f.from.indexOf(n) >= 0; });
+    if (!ok) console.warn('[检评报告] TEXT_FIXES 条目缺少定位字（会被漏掉）：' + f.from);
+  });
   function fixReportText(xml) {
     let changed = 0;
-    const out = xml.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, function (pXml) {
+    const out = mapParasContaining(xml, TEXT_FIX_NEEDLES, function (pXml) {
+      if (pXml.indexOf('<w:t') < 0) return pXml;
       let cur = pXml;
+      let full = null;
       for (const f of TEXT_FIXES) {
-        const np = replaceAcrossRuns(cur, f.from, f.to);
-        if (np !== null) { cur = np; changed++; }
+        if (full === null) full = paraTextConcat(cur);
+        const i = full.indexOf(f.from);
+        if (i < 0) continue;
+        cur = spliceParaRange(cur, i, i + f.from.length, f.to, true);   // keepTag：保留原 <w:t> 属性
+        full = null;                                                    // 文本已变 → 下次重算
+        changed++;
       }
       return cur;
     });
@@ -606,16 +700,20 @@
   // 收集表1-1「备注」列里出现过的标记；找不到该表返回 null
   function collectHazardMarks(xml) {
     let found = null;
-    xml.replace(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g, function (tbl) {
-      if (found) return tbl;
+    // ★ 性能（2026-10-18）：原来用 mapTables(xml, cb) —— 那是 xml.replace 全量重建一个 6MB 字符串，
+    //   而这里**根本不需要重建**（只读不改）。改为 tablesOf 逐表只读遍历；
+    //   再加单字预筛：目标表头必含「临界不良健康效应」和「备注」→ 原始 XML 必含「临」「备」。
+    for (const tbl of tablesOf(xml)) {
+      if (found) break;
+      if (tbl.indexOf('临') < 0 || tbl.indexOf('备') < 0) continue;
       const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
-      if (rows.length < 2) return tbl;
+      if (rows.length < 2) continue;
       const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
       const heads = headCells.map(cellText);
       const has = function (kw) { return heads.some(function (h) { return h.indexOf(kw) >= 0; }); };
       const hIdx = heads.findIndex(function (h) { return h.indexOf('备注') >= 0; });
       // 化学有害因素接触限值表：表头同时含「中文名」「临界不良健康效应」「备注」
-      if (hIdx < 0 || !has('中文名') || !has('临界不良健康效应')) return tbl;
+      if (hIdx < 0 || !has('中文名') || !has('临界不良健康效应')) continue;
       found = {};
       for (let ri = 1; ri < rows.length; ri++) {
         const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
@@ -625,8 +723,7 @@
         const v = cellText(cells[ci]);
         NOTE3_MARKS.forEach(function (it) { if (v.indexOf(it.mark) >= 0) found[it.mark] = 1; });
       }
-      return tbl;
-    });
+    }
     return found;
   }
 
@@ -666,25 +763,19 @@
 
   // 对 document.xml 处理注3，返回 { xml, changed }
   // 若注3 被整段删除，则把它**后面**的注号依次前移（注4 → 注3 …），前面的不动。
+  //
+  // ★ 性能：分两段式处理，避免「注」字把大量「备注」单元格也拉进来：
+  //   ① 先只扫含「癌」的段落（注3 那句含「人类致癌物」）——通常 0~1 个段落；
+  //   ② 只有真的整段删掉了注3，才再扫一遍含「注」的段落做注号前移。
   function fixHazardNote(xml) {
     const marks = collectHazardMarks(xml);
     if (!marks) return { xml: xml, changed: 0 };
     let changed = 0;
     let deleted = false;   // 是否已整段删除注3
     let removedNo = 0;     // 被删的注号
-    const out = xml.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, function (pXml) {
+
+    const out1 = mapParasContaining(xml, ['癌'], function (pXml) {
       const full = cellText(pXml);
-      if (deleted) {
-        if (!removedNo) return pXml;
-        const m = /^(注\d+)(\s*[：:])/.exec(full);
-        if (!m) return pXml;
-        const n = parseInt(m[1].slice(1), 10);
-        if (!(n > removedNo)) return pXml;                  // 前面的注号不动
-        const np = replaceAcrossRuns(pXml, m[0], '注' + (n - 1) + m[2]);
-        if (np === null) return pXml;
-        changed++;
-        return np;
-      }
       if (full.indexOf('人类致癌物') < 0) return pXml;       // 只处理注3 那句
       const next = trimNote3(full, marks);
       if (next === null || next === full) return pXml;
@@ -698,7 +789,20 @@
       }
       return setCellText(pXml, next);          // 文本写回首个 <w:t>，其余清空（保留段落格式）
     });
-    return { xml: out, changed: changed };
+    if (!deleted || !removedNo) return { xml: out1, changed: changed };
+
+    const out2 = mapParasContaining(out1, ['注'], function (pXml) {
+      const full = cellText(pXml);
+      const m = /^(注\d+)(\s*[：:])/.exec(full);
+      if (!m) return pXml;
+      const n = parseInt(m[1].slice(1), 10);
+      if (!(n > removedNo)) return pXml;                  // 前面的注号不动
+      const np = replaceAcrossRuns(pXml, m[0], '注' + (n - 1) + m[2]);
+      if (np === null) return pXml;
+      changed++;
+      return np;
+    });
+    return { xml: out2, changed: changed };
   }
 
   // ---------------- 报告后处理⑤：表4-1 下方的「注：」段落 + 表3-1 人数联动 ----------------
@@ -757,9 +861,18 @@
   }
 
   // 在 document.xml 里找**表头含指定列名**的表，返回其行/表头单元格等信息（找不到返回 null）
-  function findTableByHead(xml, predicate) {
-    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+  //
+  // ★ 性能（2026-10-18）：新增可选第 3 参 needChars —— 一组**单字**，必须**全部**原样出现在
+  //   该表的原始 XML 里才继续解析表头。用于在「扫表头」之前廉价跳过无关表（单字不会被 run 拆开，
+  //   判定安全）。不传则保持原行为（全表扫描）。
+  function findTableByHead(xml, predicate, needChars) {
+    const tables = tablesOf(xml);
     for (const tbl of tables) {
+      if (needChars) {
+        let miss = false;
+        for (const ch of needChars) { if (tbl.indexOf(ch) < 0) { miss = true; break; } }
+        if (miss) continue;
+      }
       const rows = tableRows(tbl);
       if (rows.length < 2) continue;
       const head = rowCells(rows[0]);
@@ -780,9 +893,19 @@
   // 表3-1 用人单位基本情况表：该表**不是**「表头 + 数据行」结构，而是「标签 | 值 | 标签 | 值」
   // 的键值对表格。因此不按表头定位，而是**逐行扫所有单元格**找标签，取同行右邻单元格作为值。
   // 返回 { staffText, contactText, staffLabelCell, contactLabelCell, tbl, rows }（找不到返回 null）
+  //
+  // ★ 性能（2026-10-18）：原实现会遍历**全文每一张表的每一个单元格**（真实报告 22 张表 ≈ 6400 个
+  //   单元格 → 单次 130ms+，是整条后处理管线最贵的一步）。现在先做一次**单字预筛**：
+  //   「在册职工人数」必含「册」、「接触职业病危害人数」必含「触」，且两标签**必须同表**才可能命中，
+  //   因此不含这两个字的表可以直接跳过。单字预筛是安全的——汉字即使被拆到多个 <w:t> 里，
+  //   该字本身仍原样出现在原始 XML 中（同 mapParasContaining 的 needles 约定）。
+  //   实测 22 张表 → 1 张，步耗时 139ms → 4ms。
   function readBasicInfoTable(xml) {
-    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+    const tables = tablesOf(xml);
+    const K_STAFF = normKey('在册职工人数');
+    const K_CONTACT = normKey('接触职业病危害人数');
     for (const tbl of tables) {
+      if (tbl.indexOf('册') < 0 || tbl.indexOf('触') < 0) continue;   // 预筛：两标签不可能同表
       const rows = tableRows(tbl);
       if (rows.length < 2) continue;
       let staffText = null, contactText = null, staffCi = -1, contactCi = -1, staffRow = -1, contactRow = -1;
@@ -790,9 +913,9 @@
         const texts = rowCells(rows[ri]).map(cellText);
         for (let ci = 0; ci < texts.length; ci++) {
           const k = normKey(texts[ci]);
-          if (staffText === null && k === normKey('在册职工人数')) {
+          if (staffText === null && k === K_STAFF) {
             staffText = texts[ci + 1] || ''; staffCi = ci; staffRow = ri;
-          } else if (contactText === null && k === normKey('接触职业病危害人数')) {
+          } else if (contactText === null && k === K_CONTACT) {
             contactText = texts[ci + 1] || ''; contactCi = ci; contactRow = ri;
           }
         }
@@ -811,11 +934,12 @@
   }
 
   // 表8-1：作业人数列按「单元/工作场所 + 岗位/工种」去重后求和；返回 { total, groups } 或 null
+  // ★ 性能：预筛单字「数」（作业人数）与「论」（评价结论），跳过无关表。
   function sumExposedWorkers(xml) {
     const t = findTableByHead(xml, function (heads) {
       return heads.some(function (h) { return normKey(h).indexOf('作业人数') >= 0; })
         && heads.some(function (h) { return normKey(h).indexOf('评价结论') >= 0; });
-    });
+    }, ['数', '论']);
     if (!t) return null;
     const cUnit = headIndexOf(t.heads, '单元/工作场所');
     const cJob = headIndexOf(t.heads, '岗位/工种');
@@ -860,9 +984,11 @@
       : [texts];
     // 空数组 = 删除整段；默认禁止（防误删），只有显式 allowDelete 才放行
     if (arr.length === 0 && !allowDelete) return { xml: xml, changed: 0 };
-    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+    const tables = tablesOf(xml);
     let target = null;
     for (const tbl of tables) {
+      // 性能预筛：目标表头必含「职业病危害因素」→ 原始 XML 必含「职」字
+      if (tbl.indexOf('职') < 0) continue;
       const rows = tableRows(tbl);
       if (!rows.length) continue;
       const heads = rowCells(rows[0]).map(cellText).map(normKey);
@@ -879,7 +1005,7 @@
         const nextTbl = xml.indexOf('<w:tbl', pos);
         const segEnd = nextTbl < 0 ? xml.length : nextTbl;
         const seg = xml.slice(pos, segEnd);
-        const re = /<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g;
+        const re = new RegExp(PARA_SRC, 'g');
         let m;
         while ((m = re.exec(seg))) {
           const t = cellText(m[0]);
@@ -1020,22 +1146,44 @@
     highToxC: '《高毒物品目录》',
   };
 
+  // ★ 分句裁剪关键词（只在「一整句话覆盖多种危害」的条目里切分句用，与上面的「整条删除目标」分开）
+  //   背景：9.2 第(4)条是一条长句，粉尘/毒物/噪声/高温/紫外各占一个分句，不能整条删，只能切分句。
+  //   这些串要足够具体，避免误伤其它章节里普通提到「粉尘」的句子。
+  const PJBG_TRIM_KWS = {
+    dust: ['产生粉尘的工作场所设置', '对皮肤有刺激性或经皮肤吸收的粉尘工作场所'],
+    tox: ['产生含有有毒物质的混合性粉(烟)尘的工作场所应设置', '有毒物品工作场所设置'],
+    noise: ['产生噪声的工作场所设置'],
+    // 下面三组：**只按「确认表里有没有这个因素」判定**，与粉尘/毒物组互相独立
+    mixed: ['产生含有有毒物质的混合性粉(烟)尘的工作场所应设置'],   // 需存在 physchem 恰为「粉尘、毒物」的因素
+    heat: ['高温工作场所设置'],                                    // 需存在「高温」因素
+    uv: ['产生紫外辐射的工作场所设置'],                             // 需存在「紫外辐射」因素
+  };
+
   // 取段落可见文本（跨 run 拼接，去空白），用于关键词定位
   function paraText(pXml) { return cellText(pXml); }
 
   // 从 document.xml 里取「检测项目确认表」中指定列的每个单元格文本（按表头的列名定位）。
   // 返回 { found: 是否找到该表, texts: [单元格文本...] }；找不到表返回 { found:false, texts:[] }。
+  //
+  // ⚠⚠ 报告里有多张表都带「职业病危害因素」列（如「岗位/危害因素一览表」也有一列同名），
+  //   早先「表头含该列名即命中」会**抓错表**（抓到一览表），那一列常出现 `-` 等占位值，
+  //   导致后续按因素名查库失败 → 「缺数据不删」→ 整组永远不删（实测 1095/1009 均如此）。
+  //   现在改为**两级优先**：
+  //     ① 表头同时含「职业病危害因素」和「检测项目」→ 这才是真正的检测项目确认表（首选）；
+  //     ② 没有①时才退回「只要含职业病危害因素」，并且优先**行数多**的那张。
   function collectConfirmColTexts(xml, colNames) {
     const out = { found: false, texts: [] };
-    const tables = xml.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
+    const tables = tablesOf(xml);
+    let best = null;   // { score, tbl, ci, headCells }
     for (const tbl of tables) {
+      // 性能预筛：必须有「职业病危害因素」列 → 该表原始 XML 必含「职」字（单字不会被 run 拆开）
+      if (tbl.indexOf('职') < 0) continue;
       const rows = tableRows(tbl);
       if (rows.length < 2) continue;
       const headCells = rowCells(rows[0]).map(cellText);
-      // 该表是否「检测项目确认表」：表头里含「职业病危害因素」或「检测项目」即视为目标表
-      const isConfirm = headCells.some(function (h) { return h.indexOf('职业病危害因素') >= 0 || h.indexOf('检测项目') >= 0; });
-      if (!isConfirm) continue;
-      // 表头名是否在报告里带「检测项目确认表」标题——标题通常在表前段落，这里仅以列名匹配
+      const hasHaz = headCells.some(function (h) { return h.indexOf('职业病危害因素') >= 0; });
+      if (!hasHaz) continue;                       // 必须有「职业病危害因素」列
+      const hasItem = headCells.some(function (h) { return h.indexOf('检测项目') >= 0; });
       let ci = -1;
       for (let i = 0; i < headCells.length; i++) {
         for (const nm of colNames) {
@@ -1044,39 +1192,105 @@
         if (ci >= 0) break;
       }
       if (ci < 0) continue;
-      out.found = true;
-      for (let ri = 1; ri < rows.length; ri++) {
-        const cells = rowCells(rows[ri]);
-        if (cells.length < 2) continue;
-        const shifted = ci + (cells.length - headCells.length);   // 合并单元格导致的列号平移
-        const idx = (shifted >= 0 && shifted < cells.length) ? shifted : ci;
-        const t = cellText(cells[idx]);
-        if (t) out.texts.push(t);
-      }
-      if (out.texts.length) return out;   // 命中即返回（只处理第一张确认表）
+      // 首选（含「检测项目」列）权重远高于备选；同级再按行数多者优先
+      const score = (hasItem ? 1e6 : 0) + rows.length;
+      if (!best || score > best.score) best = { score: score, tbl: tbl, ci: ci, headCells: headCells, rows: rows };
+    }
+    if (!best) return out;
+    out.found = true;
+    for (let ri = 1; ri < best.rows.length; ri++) {
+      const cells = rowCells(best.rows[ri]);
+      if (cells.length < 2) continue;
+      const shifted = best.ci + (cells.length - best.headCells.length);   // 合并单元格导致的列号平移
+      const idx = (shifted >= 0 && shifted < cells.length) ? shifted : best.ci;
+      const t = cellText(cells[idx]);
+      if (t) out.texts.push(t);
     }
     return out;
   }
 
-  // 依据确认表的危害因素名，查危害因素库对应行的某字段。
-  // 匹配口径：危害因素库「系统名称」列（字段 name）。返回 { ok: 是否可判定, values: [字段值...] }。
-  //   ok=false 表示「缺数据不能删」（有因素在库中找不到）。
-  function lookupHazardField(hf, texts, field) {
-    if (!Array.isArray(hf) || !hf.length) return { ok: false, values: [] };
-    const norm = function (s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); };
+  // 占位值（`-`/`—`/`/`/`无` 等）表示「本行无危害因素」，**跳过**而不是当成查不到的因素，
+  //   否则一张表里只要有一个 `-` 就会让整组判定失效（实测 1095 就是这样卡住的）。
+  const HAZ_PLACEHOLDER = /^(?:[-—–－~\/／\\]+|无|空|N\/A|NA)$/i;
+  function isHazPlaceholder(s) {
+    const t = String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
+    if (!t) return true;
+    return HAZ_PLACEHOLDER.test(t);
+  }
+  // 归一化：去空白 + NFKC（全角→半角，解决报告写 `<10%` 而库写 `＜10%` 对不上的问题）
+  function hazNorm(s) {
+    let t = String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
+    try { t = t.normalize('NFKC'); } catch (e) {}
+    return t.replace(/\s+/g, '');
+  }
+  // 把危害因素库建成「归一化系统名称 → 行」的索引。**同一轮里只建一次**（见 fixConditionalDeletions），
+  //   593 条 × 3 次字段查询 → 1 次，省掉两轮 NFKC 归一化。
+  function buildHazardIndex(hf) {
     const idx = {};
-    for (const h of hf) { const k = norm(h && h.name); if (k) idx[k] = h; }
-    const values = [];
-    for (const raw of texts) {
-      // 单元格可能含多个因素（逗号/顿号分隔）时逐个匹配
+    if (!Array.isArray(hf)) return idx;
+    for (const h of hf) { const k = hazNorm(h && h.name); if (k) idx[k] = h; }
+    return idx;
+  }
+  // 确认表单元格去重（同一因素常在多行重复出现，例如 1095 的 19 格只有 7 种）：
+  //   按「归一化后的整格文本」去重，顺序保持首次出现。
+  function uniqHazTexts(texts) {
+    const seen = new Set();
+    const out = [];
+    for (const raw of (texts || [])) {
+      const k = hazNorm(raw);
+      if (!k || seen.has(k)) continue;
+      seen.add(k); out.push(raw);
+    }
+    return out;
+  }
+
+  // 依据确认表的危害因素名，**一次性**匹配出危害因素库对应的行（多字段共用同一批结果）。
+  // 匹配口径：危害因素库「系统名称」列（字段 name）。
+  // ⚠ 占位值（`-`/`—`/`/`/`无` 等）表示「本行无危害因素」，**跳过**而不是当成查不到的因素，
+  //   否则一张表里只要有一个 `-` 就会让整组判定失效（实测 1095 就是这样卡住的）。
+  // 返回 { rows: [库行...], missing: [没查到的因素] }；missing 为空才算「可判定」。
+  // prepared：可选的 `buildHazardIndex(hf)` 结果，传入则复用（避免重复建索引）。
+  function matchHazardRows(hf, texts, prepared) {
+    if (!Array.isArray(hf) || !hf.length) return { rows: [], missing: [] };
+    const norm = hazNorm;
+    const idx = prepared || buildHazardIndex(hf);
+    // 三级匹配：① 原名 ② 去掉尾部「(总尘)/(呼尘)」 ③ 拆逗号后逐段
+    //   ② 是因为库里「滑石粉尘(游离SiO2含量＜10%)」用 dust 列区分总尘/呼尘，名字里不带后缀，
+    //      而报告确认表写的是「滑石粉尘(游离SiO2含量<10%)(呼尘)」。
+    const findHaz = function (key) {
+      const k = norm(key);
+      if (k && idx[k]) return idx[k];
+      const k2 = norm(String(key).replace(/[（(]\s*(?:总尘|呼尘)\s*[)）]\s*$/, ''));
+      if (k2 && idx[k2]) return idx[k2];
+      return null;
+    };
+    const rows = [];
+    const missing = [];
+    for (const raw of uniqHazTexts(texts)) {
+      const whole = String(raw === null || raw === undefined ? '' : raw).trim();
+      if (whole && !isHazPlaceholder(whole)) {
+        const h0 = findHaz(whole);          // ★ 先按**整格**匹配，避免把「1,2-二氯乙烷」按逗号拆坏
+        if (h0) { rows.push(h0); continue; }
+      }
+      // 单元格含多个因素（逗号/顿号分隔）时逐个匹配
       const parts = String(raw).split(/[,，、;；\n]/).map(function (x) { return x.trim(); }).filter(Boolean);
       for (const p of parts) {
-        const h = idx[norm(p)];
-        if (!h) return { ok: false, values: values };   // 缺数据 → 整组不删
-        values.push(String(h[field] === null || h[field] === undefined ? '' : h[field]));
+        if (isHazPlaceholder(p)) continue;              // 占位值 → 跳过（不算缺数据）
+        const h = findHaz(p);
+        if (!h) { missing.push(p); continue; }          // 记下缺哪些，最后统一判 ok
+        rows.push(h);
       }
     }
-    return { ok: true, values: values };
+    return { rows: rows, missing: missing };
+  }
+
+  // 依据确认表的危害因素名，查危害因素库对应行的某字段。
+  // 返回 { ok: 是否可判定, values: [字段值...], missing: [没查到的因素] }；ok=false 表示「缺数据不能删」。
+  function lookupHazardField(hf, texts, field, prepared) {
+    if (!Array.isArray(hf) || !hf.length) return { ok: false, values: [], missing: [] };
+    const r = matchHazardRows(hf, texts, prepared);
+    const values = r.rows.map(function (h) { return String(h[field] === null || h[field] === undefined ? '' : h[field]); });
+    return { ok: r.missing.length === 0, values: values, missing: r.missing };
   }
 
   // 判断一组文本里是否**全部都不含**关键词（空数组视为「无」→ true，配合 ok 使用）
@@ -1111,27 +1325,197 @@
     return m ? { no: parseInt(m[1], 10), len: m[0].length } : null;
   }
 
-  // 删除命中的整段并做章节内序号重排。
-  // targets: 需要删除的文本数组（段落文本包含其一即删）。
-  // 返回 { xml, changed, sections: 受影响的章节数 }
-  function deletePjbgParas(xml, targets) {
-    const list = (targets || []).filter(Boolean);
-    if (!list.length) return { xml: xml, changed: 0, sections: 0 };
-    // 逐段扫描，标记删除 + 记录章节
-    const re = /<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g;
-    const segs = [];   // { xml, text, del, heading }
+  // ---------------- 段落「按行」编辑工具（真实报告里一个 <w:p> 常含多行） ----------------
+  // ★★ 关键事实（2026-10-17 实测 1095/1009）：报告里「1.1 法律、法规、规章」「1.2.3 评价依据」
+  //   「9.2 建议」这些列表**不是一段一条**，而是**整节挤在一个 <w:p> 里、用 <w:br/> 软换行分行**。
+  //   所以「命中即删整段」会把整节条目全删掉（灾难性过度删除），必须先按 <w:br/> 切行再逐行处理。
+  //
+  // 把段落切成「行」：返回 { full, breaks, lines:[{start,end,text}] }，偏移量对应**所有 <w:t> 拼接后的纯文本**。
+  function paraLineMap(pXml) {
+    const tokRe = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:br(?:\s[^>]*)?\/?>/g;
     let m;
-    while ((m = re.exec(xml))) {
-      const pXml = m[0];
-      const t = paraText(pXml);
-      const heading = isHeadingPara(t);
-      let del = false;
-      if (!heading) {
-        for (const tg of list) { if (t.indexOf(tg) >= 0) { del = true; break; } }
-      }
-      segs.push({ xml: pXml, text: t, del: del, heading: heading });
+    let full = '';
+    const breaks = [];
+    while ((m = tokRe.exec(pXml))) {
+      if (m[0].indexOf('<w:br') === 0) breaks.push(full.length);
+      else full += (m[1] || '');
     }
+    const lines = [];
+    let s = 0;
+    for (const b of breaks) { lines.push({ start: s, end: b, text: full.slice(s, b) }); s = b; }
+    lines.push({ start: s, end: full.length, text: full.slice(s) });
+    return { full: full, breaks: breaks, lines: lines };
+  }
+
+  // 在段落内把纯文本区间 [start,end) 替换为 to（跨 run，未涉及的 run 原样保留）
+  // 在段落内把纯文本区间 [start,end) 替换为 to（跨 run，未涉及的 run 原样保留）。
+  // keepTag=true → 沿用原 <w:t> 的起始标签（与旧 replaceAcrossRuns 逐字节一致）；
+  // 否则统一写成 <w:t xml:space="preserve">（⑥⑦ 用，保证首尾空格不被 Word 吞掉）。
+  function spliceParaRange(pXml, start, end, to, keepTag) {
+    const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+    const nodes = [];
+    let full = '';
+    let m;
+    while ((m = re.exec(pXml))) { const t = m[1] || ''; nodes.push({ s: full.length, e: full.length + t.length }); full += t; }
+    let k = 0;
+    return pXml.replace(re, function (raw, t) {
+      const nd = nodes[k++];
+      if (!nd || nd.e <= start || nd.s >= end) return raw;
+      const a = Math.max(nd.s, start) - nd.s;
+      const b = Math.min(nd.e, end) - nd.s;
+      const nt = t.slice(0, a) + to + t.slice(b);
+      if (keepTag) {
+        const open = /^<w:t(?:\s[^>]*)?>/.exec(raw);
+        return (open ? open[0] : '<w:t>') + nt + '</w:t>';
+      }
+      return '<w:t xml:space="preserve">' + nt + '</w:t>';
+    });
+  }
+
+  // 删掉段落里「纯文本偏移量 = offset」处的那个 <w:br/>（用于删行时一并去掉换行）
+  function removeParaBreakAt(pXml, offset) {
+    const tokRe = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:br(?:\s[^>]*)?\/?>/g;
+    let m;
+    let full = 0;
+    const marks = [];
+    while ((m = tokRe.exec(pXml))) {
+      if (m[0].indexOf('<w:br') === 0) marks.push({ index: m.index, len: m[0].length, at: full });
+      else full += (m[1] || '').length;
+    }
+    const hit = marks.filter(function (x) { return x.at === offset; })[0];
+    if (!hit) return pXml;
+    return pXml.slice(0, hit.index) + pXml.slice(hit.index + hit.len);
+  }
+
+  // 段内「（N）/（N）」按出现顺序重编为 1..k（只改行首序号，其余文本不动）
+  function renumberParaLines(pXml) {
+    const map = paraLineMap(pXml);
+    const acts = [];
+    let n = 0;
+    for (const ln of map.lines) {
+      const mm = /^\s*[（(]\s*(\d+)\s*[)）]/.exec(ln.text);
+      if (!mm) continue;
+      n++;
+      if (parseInt(mm[1], 10) === n) continue;
+      const prefix = mm[0];
+      acts.push({ start: ln.start, end: ln.start + prefix.length, to: prefix.replace(/\d+/, String(n)) });
+    }
+    let out = pXml;
+    acts.sort(function (a, b) { return b.start - a.start; });
+    for (const a of acts) out = spliceParaRange(out, a.start, a.end, a.to);
+    return out;
+  }
+
+  // 分句裁剪：把「含某组关键词」的分句从行里切掉（用于 9.2 那条「一句话覆盖粉尘/毒物/噪声/高温/紫外」的警示标识）
+  //   · 按「；/;」切大句、再按「，/,」切分句；
+  //   · 命中关键词的分句：从**最近的「。」之后**切到分句末尾（保留「…设置相应的警示标识和指令标识。」这类引导句）；
+  //     找不到「。」→ 整个分句丢弃。
+  function trimClausesByKeywords(line, kws) {
+    const src = String(line);
+    const endedWithPeriod = /[。]\s*$/.test(src);
+    const parts = src.split(/([；;])/);
+    let res = '';
+    for (let i = 0; i < parts.length; i += 2) {
+      // 分隔符之后常带一个空格（如「…等警示标识; 有毒物品…」），拼接时去掉，避免出现「。 有毒物品」
+      const seg = i === 0 ? parts[i] : parts[i].replace(/^\s+/, '');
+      const sep = parts[i + 1] || '';
+      if (!seg) { res += sep; continue; }
+      const subs = seg.split(/([，,])/);
+      let segOut = '';
+      for (let j = 0; j < subs.length; j += 2) {
+        const sub = subs[j];
+        const subSep = subs[j + 1] || '';
+        if (!sub) continue;
+        const hit = kws.filter(function (k) { return sub.indexOf(k) >= 0; })[0];
+        if (!hit) { segOut += sub + subSep; continue; }
+        const at = sub.indexOf(hit);
+        const dot = sub.lastIndexOf('。', at);
+        if (dot >= 0) {
+          const head = sub.slice(0, dot + 1);
+          if (head.trim()) segOut += head;     // 保留引导句，不保留分隔符（避免留下孤立逗号）
+        }
+        // 无「。」→ 整分句丢弃
+      }
+      segOut = segOut.replace(/[，,]\s*$/, '');
+      if (segOut.trim()) {
+        // 若这一句已经以句号收尾（删掉的正是句号后的分句），就不要再补分号，避免出现「。;」
+        res += /[。]\s*$/.test(segOut) ? segOut : (segOut + sep);
+      }
+    }
+    res = res.replace(/[；;，,]\s*$/, '');                 // 去掉结尾残留的分隔符
+    res = res.replace(/。\s*[；;]\s*/g, '。');             // 「。;」→「。」
+    if (endedWithPeriod && res && !/[。]\s*$/.test(res)) res += '。';
+    return res;
+  }
+
+  // 删除命中的条目并做序号重排。
+  // targets: 需要删除的文本数组。
+  //   · 段落**只有一行**（无 <w:br/>）→ 沿用「整段删」语义；
+  //   · 段落**含多行**（<w:br/> 分行）→ 只删命中的那一行（保留同段其它条目），并在段内重排序号。
+  // opts.trimClauses: [{ kws:[...] }] —— 对「整行不是纯条目、只是一句话里的一个分句」的情况做分句裁剪。
+  // 返回 { xml, changed, sections: 受影响的章节数 }
+  function deletePjbgParas(xml, targets, opts) {
+    const o = opts || {};
+    const list = (targets || []).filter(Boolean);
+    const trims = (o.trimClauses || []).filter(function (r) { return r && r.kws && r.kws.length; });
+    if (!list.length && !trims.length) return { xml: xml, changed: 0, sections: 0 };
+    // 逐段扫描，标记删除 + 记录章节（顺带记下段落在全文中的位置，末尾只替换改过的段落）
+    const segs = [];   // { pos, orig, xml, text, del, heading, hasBr }
+    eachParagraph(xml, function (pXml, pos) {
+      const t = paraText(pXml);
+      // ★ 性能：绝大多数段落没有 <w:br/>。先做一次子串预判，避免对 6000+ 个段落各建两次行映射。
+      segs.push({ pos: pos, orig: pXml, xml: pXml, text: t, del: false,
+        heading: isHeadingPara(t), hasBr: pXml.indexOf('<w:br') >= 0 });
+    });
     let changed = 0;
+    // ---- 先做「行级」处理（多行段落） ----
+    for (const seg of segs) {
+      if (seg.heading || !seg.hasBr) continue;      // 无 <w:br/> → 单行段，留给下面的整段删逻辑
+      const map = paraLineMap(seg.xml);
+      if (map.lines.length <= 1) continue;
+      const acts = [];
+      let lineDel = 0;
+      for (const ln of map.lines) {
+        const txt = ln.text;
+        if (!txt) continue;
+        const body = txt.replace(/^\s*[（(]\s*\d+\s*[)）]/, '');   // 去掉行首序号后再判断
+        let hitTarget = null;
+        for (const tg of list) { if (txt.indexOf(tg) >= 0) { hitTarget = tg; break; } }
+        if (hitTarget) {
+          // 「整行就是这个条目」→ 删整行；否则（条目只是长句里的一小段）→ 走分句裁剪
+          const wholeLine = body.indexOf(hitTarget) === 0 || body.length <= hitTarget.length + 24;
+          if (wholeLine) {
+            acts.push({ start: ln.start, end: ln.end, to: '', brAt: ln.start });
+            lineDel++;
+            continue;
+          }
+        }
+        let newTxt = txt;
+        for (const rule of trims) {
+          if (rule.kws.some(function (k) { return newTxt.indexOf(k) >= 0; })) {
+            newTxt = trimClausesByKeywords(newTxt, rule.kws);
+          }
+        }
+        if (newTxt !== txt) acts.push({ start: ln.start, end: ln.end, to: newTxt, brAt: -1 });
+      }
+      if (!acts.length) continue;
+      // 从后往前应用，保证前面的偏移量仍然有效
+      acts.sort(function (a, b) { return b.start - a.start; });
+      let out = seg.xml;
+      for (const a of acts) {
+        out = spliceParaRange(out, a.start, a.end, a.to);
+        if (a.brAt >= 0) out = removeParaBreakAt(out, a.brAt);   // 删行后文本左移，换行现在落在 start 处
+      }
+      if (lineDel > 0) out = renumberParaLines(out);
+      seg.xml = out; seg.text = paraText(out);
+      changed += acts.length;
+    }
+    // ---- 再做「整段删」（单行段落） ----
+    for (const seg of segs) {
+      if (seg.heading || seg.del) continue;
+      if (seg.hasBr) continue;   // 多行段已在上面按行处理，绝不整段删
+      for (const tg of list) { if (seg.text.indexOf(tg) >= 0) { seg.del = true; changed++; break; } }
+    }
     // 计算每个非标题段所属章节索引（最近的上一个标题段）
     let sect = -1;
     const sectOf = [];
@@ -1139,8 +1523,6 @@
       if (segs[i].heading) sect = i;
       sectOf[i] = sect;
     }
-    // 统计删除
-    for (const s of segs) if (s.del) changed++;
     if (!changed) return { xml: xml, changed: 0, sections: 0 };
     // 标记受影响章节（有删除的章节）
     const dirty = new Set();
@@ -1163,49 +1545,206 @@
         if (np !== null) { segs[i].xml = np; segs[i].text = paraText(np); }
       }
     }
-    // 重组 XML：去掉删除段
-    let out = '';
-    for (const s of segs) { if (!s.del) out += s.xml; }
+    // 重组 XML：**只就地替换改过的段落**，表格 / sectPr / 其它非段落内容一律原样保留。
+    // ⚠⚠ 早先的实现是「把所有段落拼起来当输出」（out += seg.xml），会把**段落之外的全部内容**
+    //   整块丢掉——实测 1095 报告 21 张表、约 1.14MB 内容会凭空消失（文档体积从 7.7MB 掉到 6.6MB）。
+    //   因为此前 changed 恒为 0（判定永远不成立）从未走到这一步，所以这个坑一直没暴露。
+    // ★ 性能：从后往前 splice 改过的段落即可，不再对整篇 7.7MB 做一次 replace。
+    let out = xml;
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const s = segs[i];
+      const next = s.del ? '' : s.xml;
+      if (next === s.orig) continue;                      // 未改动 → 跳过
+      out = out.slice(0, s.pos) + next + out.slice(s.pos + s.orig.length);
+    }
     return { xml: out, changed: changed, sections: dirty.size };
   }
 
-  // 主入口⑥：按条件计算删除目标，再执行「删段 + 重排」
+  // 主入口⑥：按条件计算删除目标，再执行「删条目 + 重排」
   // opt = { noiseWorkshopEmpty: bool, hazardFactors: [] }
   function fixConditionalDeletions(xml, opt) {
     const o = opt || {};
     const targets = [];
+    const trims = [];
     const reasons = [];
     const emptyNoise = o.noiseWorkshopEmpty === true;
     // A. 噪声车间岗位为空
     if (emptyNoise) {
       targets.push(PJBG_DEL_TARGETS.noiseEvalBasis, PJBG_DEL_TARGETS.noiseWarnSign);
+      trims.push({ kws: PJBG_TRIM_KWS.noise });
       reasons.push('噪声车间岗位为空→删噪声类条目');
     }
     // B/C. 依赖危害因素库
     const hf = o.hazardFactors;
     const cf = collectConfirmColTexts(xml, ['职业病危害因素']);
     if (cf.found && Array.isArray(hf) && hf.length) {
-      const phy = lookupHazardField(hf, cf.texts, 'physchem');
-      if (phy.ok) {
-        const noTox = noneContains(phy.values, ['毒物']);
-        const noDust = noneContains(phy.values, ['粉尘']);
-        if (noTox) { for (const t of PJBG_DEL_TARGETS.toxB) targets.push(t); reasons.push('无毒物→删毒物组'); }
-        if (noDust) { for (const t of PJBG_DEL_TARGETS.dustB) targets.push(t); reasons.push('无粉尘→删粉尘组'); }
-        if (noTox && noDust) { targets.push(PJBG_DEL_TARGETS.bothNone); reasons.push('粉尘毒物俱无→再删GB18664'); }
+      // ---- 粉尘：看「粉尘性质」列（dust：总尘/呼尘/空）**或**「物化性质」含「粉尘」 ----
+      //   ⚠ 两个信号都要看：实测库里有 6 条（锰及其无机化合物、钼不溶性化合物、金属镍…）
+      //     dust 为空但 physchem 写着「粉尘、毒物」，只看 dust 会误判成「无粉尘」。
+      //   取「或」= 只要任一列说它是粉尘就算有粉尘（保守，少删）。
+      // ★ 性能：确认表单元格**先去重**（1095 的 140 格只有 15 种），库索引**只建一次**，
+      //   且**只匹配一次**得到库行，dust/physchem/highTox 三个字段都从同一批行里取。
+      const cells = uniqHazTexts(cf.texts);
+      const hIdx = buildHazardIndex(hf);
+      const mr = matchHazardRows(hf, cells, hIdx);
+      const okAll = mr.missing.length === 0;
+      const vals = function (f) {
+        return mr.rows.map(function (h) { return String(h[f] === null || h[f] === undefined ? '' : h[f]); });
+      };
+      const du = { ok: okAll, values: vals('dust'), missing: mr.missing };
+      const phy = { ok: okAll, values: vals('physchem'), missing: mr.missing };
+      let noDust = false;
+      if (du.ok) {
+        const hasDustByField = du.values.some(function (v) { return String(v || '').trim() !== ''; });
+        const hasDustByPhy = phy.ok && phy.values.some(function (v) { return String(v || '').indexOf('粉尘') >= 0; });
+        noDust = !hasDustByField && !hasDustByPhy;
+        if (noDust) {
+          for (const t of PJBG_DEL_TARGETS.dustB) targets.push(t);
+          trims.push({ kws: PJBG_TRIM_KWS.dust });
+          reasons.push('无粉尘→删粉尘组');
+        }
       } else {
-        reasons.push('物化性质缺数据→毒物/粉尘组不删');
+        reasons.push('粉尘性质缺数据（库中找不到：' + (du.missing || []).slice(0, 4).join('、') + '）→粉尘组不删');
       }
-      const ht = lookupHazardField(hf, cf.texts, 'highTox');
+      // ---- 毒物：看「物化性质」含不含「毒物」；整列都为空时视为**未知**，不删（保守） ----
+      const toxKnown = phy.ok && phy.values.some(function (v) { return String(v || '').trim(); });
+      const noTox = toxKnown && noneContains(phy.values, ['毒物']);
+      if (noTox) {
+        for (const t of PJBG_DEL_TARGETS.toxB) targets.push(t);
+        trims.push({ kws: PJBG_TRIM_KWS.tox });
+        reasons.push('无毒物→删毒物组');
+      } else if (!toxKnown) {
+        reasons.push('物化性质无数据→毒物组不删（无法判定）');
+      } else {
+        reasons.push('有毒物→保留毒物组');
+      }
+      // 粉尘毒物俱无 → 再删 GB 18664（毒物未知时不算「俱无」）
+      if (noTox && noDust) {
+        targets.push(PJBG_DEL_TARGETS.bothNone);
+        reasons.push('粉尘毒物俱无→再删GB18664');
+      }
+      const ht = { ok: okAll, values: vals('highTox'), missing: mr.missing };
       if (ht.ok) {
         const noHigh = noneContains(ht.values, ['是']);
         if (noHigh) { targets.push(PJBG_DEL_TARGETS.highToxC); reasons.push('无高毒物品→删高毒目录'); }
       } else {
-        reasons.push('存在高毒物品缺数据→高毒目录不删');
+        reasons.push('存在高毒物品缺数据（库中找不到：' + (ht.missing || []).slice(0, 4).join('、') + '）→高毒目录不删');
       }
+      // ---- D. 9.2 第四段里另外三种警示句：按「确认表里有没有这个因素」独立判定 ----
+      //   ⚠ 这三句是**一整句里的分句**，只能裁剪不能整段删，所以只进 trims（同时进 targets 兜底单行段落）。
+      if (okAll) {
+        const nameSet = new Set(mr.rows.map(function (h) { return hazNorm(h && h.name); }));
+        const phySet = new Set(mr.rows.map(function (h) { return hazNorm(h && h.physchem); }));
+        const hasHeat = nameSet.has(hazNorm('高温'));
+        const hasUV = nameSet.has(hazNorm('紫外辐射'));
+        // 「粉尘、毒物」= 物化性质**完全等于**该值（库里 17 条混合性因素），而不是含「粉尘」或含「毒物」
+        const hasMixed = phySet.has(hazNorm('粉尘、毒物'));
+        if (!hasMixed) {
+          for (const t of PJBG_TRIM_KWS.mixed) targets.push(t);
+          trims.push({ kws: PJBG_TRIM_KWS.mixed });
+          reasons.push('无「粉尘、毒物」因素→删混合性粉(烟)尘警示句');
+        }
+        if (!hasHeat) {
+          for (const t of PJBG_TRIM_KWS.heat) targets.push(t);
+          trims.push({ kws: PJBG_TRIM_KWS.heat });
+          reasons.push('无高温→删高温警示句');
+        }
+        if (!hasUV) {
+          for (const t of PJBG_TRIM_KWS.uv) targets.push(t);
+          trims.push({ kws: PJBG_TRIM_KWS.uv });
+          reasons.push('无紫外辐射→删紫外辐射警示句');
+        }
+      }
+    } else if (!cf.found) {
+      reasons.push('未找到「检测项目确认表」→毒物/粉尘/高毒均不删');
+    } else if (!Array.isArray(hf) || !hf.length) {
+      reasons.push('危害因素库为空→毒物/粉尘/高毒均不删');
     }
-    if (!targets.length) return { xml: xml, changed: 0, reasons: reasons };
-    const r = deletePjbgParas(xml, targets);
+    if (!targets.length && !trims.length) return { xml: xml, changed: 0, reasons: reasons };
+    const r = deletePjbgParas(xml, targets, { trimClauses: trims });
     return { xml: r.xml, changed: r.changed, sections: r.sections, reasons: reasons };
+  }
+
+  // ---------------- ⑦ 「两班制」作息说明句标红 ----------------
+  // 需求（用户 2026-10-17）：报告导出时把
+  //   「打磨岗位实行两班制，上班时间为白班8:00～20:00、晚班20:00～8:00（次日），
+  //     其余各岗位均实行白班制，上班时间为8:00～11:30、12:30～17:00。」
+  // 这句**标红**（字体颜色 FF0000），提醒人工核对班制与作息时间。
+  // 定位方式：在段落文本里找锚点「实行两班制」→ 向左回到上一个「。」之后、向右到下一个「。」（含），
+  //   只把这一句上色，同段其它文字（如「注：职工总数…接触人数…。」）保持原样。
+  // ⚠ 锚点用「实行两班制」而不是「打磨岗位…」：岗位名/时间可能随项目变化，锚点越短越稳；
+  //   实测两份真实报告里「两班制」都只出现 1 次，不会误伤其它章节。
+  const SHIFT_ANCHOR = '实行两班制';
+  const SHIFT_COLOR = 'FF0000';
+
+  // 在 <w:rPr> 里设置字体颜色。按 OOXML 子元素顺序插入（w:color 必须在 spacing/kern/sz/lang 之前），
+  // 否则 Word 可能提示文件格式错误。
+  function setRPrColor(rPr, hex) {
+    let s = String(rPr || '');
+    if (!s) s = '<w:rPr></w:rPr>';
+    s = s.replace(/<w:color\b[^>]*\/>/g, '');          // 去掉已有颜色，避免重复
+    const color = '<w:color w:val="' + hex + '"/>';
+    const later = /<w:(?:spacing|w|kern|position|sz|szCs|highlight|u|effect|bdr|shd|fitText|vertAlign|rtl|cs|em|lang|eastAsianLayout|specVanish|oMath)\b/;
+    const m = later.exec(s);
+    if (m) return s.slice(0, m.index) + color + s.slice(m.index);
+    return s.replace(/<\/w:rPr>\s*$/, color + '</w:rPr>');
+  }
+
+  // 把段落内纯文本区间 [start,end) 上色：按 run 切分（前段/着色段/后段），其余 run 原样保留。
+  // 返回新段落 XML；没命中返回 null。
+  function colorParaRange(pXml, start, end, hex) {
+    const reRun = /<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g;
+    let off = 0;
+    let hit = false;
+    const out = pXml.replace(reRun, function (runXml) {
+      // 该 run 的全部 <w:t> 文本（用于推进偏移；图片/制表符 run 没有 <w:t>）
+      const all = runXml.match(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g) || [];
+      const texts = all.map(function (x) { return (/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/.exec(x) || [])[1] || ''; });
+      const txt = texts.join('');
+      const rs = off, re2 = off + txt.length;
+      off = re2;
+      if (re2 <= start || rs >= end) return runXml;      // 不在范围内
+      // 只处理「单个 <w:t>、无软换行」的简单 run（真实报告就是这种）；
+      // 复杂的 run（多 <w:t> / 含 <w:br/>）原样放过，宁可不上色也不破坏结构。
+      if (texts.length !== 1 || runXml.indexOf('<w:br') >= 0) return runXml;
+      const a = Math.max(rs, start) - rs;
+      const b = Math.min(re2, end) - rs;
+      const rPrM = /<w:rPr>[\s\S]*?<\/w:rPr>/.exec(runXml);
+      const rPr = rPrM ? rPrM[0] : '<w:rPr></w:rPr>';
+      const rPrRed = setRPrColor(rPr, hex);
+      const mk = function (text, rp) {
+        return '<w:r>' + rp + '<w:t xml:space="preserve">' + text + '</w:t></w:r>';
+      };
+      const parts = [];
+      if (txt.slice(0, a)) parts.push(mk(txt.slice(0, a), rPr));
+      if (txt.slice(a, b)) parts.push(mk(txt.slice(a, b), rPrRed));
+      if (txt.slice(b)) parts.push(mk(txt.slice(b), rPr));
+      hit = true;
+      return parts.join('');
+    });
+    return hit ? out : null;
+  }
+
+  // 主入口⑦：把「…实行两班制…」那句标红。返回 { xml, changed }
+  function markShiftNoteRed(xml) {
+    if (xml.indexOf(SHIFT_ANCHOR) < 0) return { xml: xml, changed: 0 };
+    let changed = 0;
+    // ★ 性能：只扫「含两」的段落（锚点「实行两班制」必含「两」，跨 run 拆分也成立），
+    //   避免全篇 6000+ 段落扫描。
+    const out = mapParasContaining(xml, ['两'], function (pXml) {
+      if (pXml.indexOf('两') < 0) return pXml;
+      const full = paraTextConcat(pXml);            // 原始拼接文本（不 trim，保证偏移与 <w:t> 对齐）
+      const ai = full.indexOf(SHIFT_ANCHOR);
+      if (ai < 0) return pXml;
+      const prev = full.lastIndexOf('。', ai);
+      const start = prev >= 0 ? prev + 1 : 0;       // 句首：上一个句号之后
+      const nextDot = full.indexOf('。', ai);
+      const end = nextDot >= 0 ? nextDot + 1 : full.length;   // 句尾：下一个句号（含）
+      const np = colorParaRange(pXml, start, end, SHIFT_COLOR);
+      if (np && np !== pXml) { changed++; return np; }
+      return pXml;
+    });
+    return { xml: out, changed: changed };
   }
 
   // 对下载到的检评报告 docx 做全部后处理（读一次 document.xml，改完统一重打包）；
@@ -1215,21 +1754,45 @@
       const zip = await JSZip.loadAsync(buf);
       const f = zip.file('word/document.xml');
       if (!f) return buf;
-      let xml = await f.async('string');
+      let xml = await readZipEntryText(f);
       let changed = 0;
       // ① 「存在高毒物品」列 0/1 → 否/是
       const r1 = fixHighToxColumn(xml);
       xml = r1.xml; changed += r1.changed;
       if (r1.changed) console.info('[检评报告] 「存在高毒物品」列 0/1 → 否/是，共修正 ' + r1.changed + ' 处');
       // ② 非噪声岗位（LEX 最大值 < 80 dB）删掉「噪声」危害；同时取「非噪声车间岗位」文本供⑤用
+      //
+      // ★ 性能（2026-10-18）：②⑤⑥ 都要读噪声表。原先是三个 *FromBuf 函数各自调用一次，
+      //   每次都 JSZip.loadAsync 解压整份 docx + DOMParser 解析全文（同一报告被完整解析 3 次）。
+      //   现在**只算一次** noiseInfo：优先复用本函数已解压出来的 xml（连解压都省掉），
+      //   拿不到该接口时退回按 buf 解析（带记忆）。
       const u = root.SamplingUpload;
       let nonNoiseText = '';
-      if (u && typeof u.noiseNonNoiseFromBuf === 'function') {
+      let noiseInfo = null;
+      // ① 最高优先：用户已打开过「噪声数据结果」页签 → 该 docx 早已解析过，直接取缓存（零成本）
+      if (u && typeof u.getCachedNoiseInfo === 'function') {
+        try { noiseInfo = u.getCachedNoiseInfo(buf); } catch (e) { noiseInfo = null; }
+      }
+      // ② 次优：复用本函数**已经解压出来**的 xml 解析一次（省掉再次解压）
+      if (!noiseInfo && u && typeof u.noiseInfoFromXml === 'function') {
+        try { noiseInfo = u.noiseInfoFromXml(xml); } catch (e) { noiseInfo = null; }
+      }
+      // ③ 兜底：按 buf 解析（内部带记忆，同一 buf 只解压一次）
+      if (!noiseInfo && u && typeof u.noiseInfoFromBuf === 'function') {
+        try { noiseInfo = await u.noiseInfoFromBuf(buf); } catch (e) { noiseInfo = null; }
+      }
+      if (noiseInfo) {
+        const r2 = fixNonNoiseHazards(xml, noiseInfo.ok ? noiseInfo.nonNoisePairs : null);
+        xml = r2.xml; changed += r2.changed;
+        if (r2.changed) console.info('[检评报告] 非噪声岗位删除「噪声」危害，共修正 ' + r2.changed + ' 处');
+        nonNoiseText = noiseInfo.nonNoiseText || '';
+      } else if (u && typeof u.noiseNonNoiseFromBuf === 'function') {
+        // 兜底：老接口（页面缓存了旧版 upload.js 时）
         const pairs = await u.noiseNonNoiseFromBuf(buf);
         const r2 = fixNonNoiseHazards(xml, pairs);
         xml = r2.xml; changed += r2.changed;
         if (r2.changed) console.info('[检评报告] 非噪声岗位删除「噪声」危害，共修正 ' + r2.changed + ' 处');
-        if (u && typeof u.noiseNonNoiseTextFromBuf === 'function') {
+        if (typeof u.noiseNonNoiseTextFromBuf === 'function') {
           try { nonNoiseText = await u.noiseNonNoiseTextFromBuf(buf); } catch (e) { nonNoiseText = ''; }
         }
       }
@@ -1258,8 +1821,13 @@
       }
       // ⑥ 条件删除条目（噪声为空 / 无粉尘·毒物 / 无高毒物品 → 删对应评价依据、警示标识条目）+ 章节内序号重排
       {
+        // 复用 ② 已算出的噪声信息（noiseWorkshopGroups 为空 = 全项目无噪声岗位）
+        // ⚠ 语义与旧实现保持一致：解析失败（ok=false）时分组也是 []，等同「噪声车间岗位为空」→ 仍删；
+        //   只有**根本没有 SamplingUpload**（Node 测试沙箱）时才不删（noiseWorkshopEmpty 保持 false）。
         let noiseWorkshopEmpty = false;
-        if (u && typeof u.noiseWorkshopGroupsFromBuf === 'function') {
+        if (noiseInfo) {
+          noiseWorkshopEmpty = (noiseInfo.noiseWorkshopGroups || []).length === 0;
+        } else if (u && typeof u.noiseWorkshopGroupsFromBuf === 'function') {
           try {
             const ws = await u.noiseWorkshopGroupsFromBuf(buf);
             noiseWorkshopEmpty = Array.isArray(ws) && ws.length === 0;
@@ -1281,8 +1849,17 @@
             + '：' + (r6.reasons || []).join('；'));
         }
       }
+      // ⑦ 「…实行两班制…」作息说明句标红（提醒人工核对班制/作息时间）
+      const r7 = markShiftNoteRed(xml);
+      xml = r7.xml; changed += r7.changed;
+      if (r7.changed) console.info('[检评报告] 「两班制」作息说明句已标红，共 ' + r7.changed + ' 处');
       if (!changed) return buf;
       zip.file('word/document.xml', xml);
+      // 说明（2026-10-18 实测）：这一步是整条链路最贵的（真实报告 ~500ms，占一半）。
+      //   JSZip 对**未改动**的条目会直接复用原有压缩字节（图片不会被重新压缩），所以耗时几乎全在
+      //   document.xml（解压后 6MB+）的 DEFLATE 上，属于必要成本。
+      //   曾试过把 level 从默认 6 降到 4：交错 A/B 实测只省 ~46ms（9%），但文件体积 +2%，
+      //   性价比不足 → 保持默认级别（输出与改动前完全一致）。
       return await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
     } catch (e) {
       console.warn('[检评报告] 后处理失败，改用原始文件：', e);
@@ -1716,6 +2293,10 @@
     collectConfirmColTexts: collectConfirmColTexts,
     lookupHazardField: lookupHazardField,
     deletePjbgParas: deletePjbgParas,
+    // 后处理⑦（「两班制」作息说明句标红）
+    markShiftNoteRed: markShiftNoteRed,
+    colorParaRange: colorParaRange,
+    setRPrColor: setRPrColor,
     // 测试用纯函数 / 常量
     fixNoteAndContactCount: fixNoteAndContactCount,
     sumExposedWorkers: sumExposedWorkers,

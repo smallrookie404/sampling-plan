@@ -115,7 +115,12 @@ sampling-plan/
 
 ## 运行与测试
 
-- 本地启动：双击 `sampling-plan-app\启动采样计划软件.bat`（自动起服务并打开浏览器），或直接双击 `index.html`（临时模式）。
+- 本地启动：双击**仓库根目录的 `一键启动.bat`**（推荐，一键）或 `sampling-plan-app\启动采样计划软件.bat`（同一实现），自动起服务并打开浏览器；或直接双击 `index.html`（临时模式）。
+  - 实现集中在 `sampling-plan-app\start-app.bat`，两个中文名脚本只是薄封装（**改启动逻辑只改 start-app.bat**）。
+  - 幂等：服务已在跑时只重开浏览器，不会起第二个实例（先探 `/api/health` 再决定是否 spawn）。
+  - ⚠ 三个 bat 必须保持 **纯 ASCII 内容 + CRLF 换行**（中文只出现在文件名里）；`goto :label` 在 LF-only 文件里可能解析异常。
+  - ⚠ 代理免疫：若系统导出 `HTTP_PROXY` 与 `http_proxy` 两个大小写不同的同名键，`Start-Process` 会抛「字典中重复的关键字」，且 `Invoke-WebRequest` 会把 `127.0.0.1` 也送进代理（报「拒绝访问」）。所以启动器先在自身 PowerShell 子进程里清掉 4 个代理变量，健康检查改用 `HttpWebRequest` + `Proxy = $null`。
+  - ⚠ 不要用 `timeout /t` 做等待（stdin 被重定向时会失败），等待在 PowerShell 内用 `Start-Sleep`；整段「检查→启动→轮询」只起 **1 个** PowerShell 子进程（每次 spawn 约 4 秒，重复 spawn 会明显拖慢启动）。
 - 自动化测试（需 Node 与 jszip/playwright 依赖；浏览器路径由 `tests/_browser.mjs` 自动探测 Chrome/Edge，缺失则跳过）：
   ```bash
   node tests/engine.test.mjs     # 计算引擎 vs 原 Excel 缓存（需原表 xlsx，可用 SAMPLING_SRC_XLSX 指定；缺失自动跳过）
@@ -133,6 +138,9 @@ sampling-plan/
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
   node tests/pjbg.conddel.test.mjs # 后处理⑥ 条件删除条目 + 章节内序号重排（纯 XML 夹具，无需真实报告）
+  node tests/pjbg.shiftred.test.mjs # 后处理⑦ 「两班制」作息说明句标红（纯 XML 夹具）
+  node tests/pjbg.noisereuse.test.mjs # 噪声表「只解析一次」的复用/缓存/退化逻辑（纯夹具，无需真实报告）
+  node tests/pjbg.noiseapi.smoke.mjs # 真实 DOMParser 下 noiseInfoFromXml 的分组/拆分/文本（Playwright）
   ```
 - 测试注意：应用会自动把参考库写回 `data/library.json`；跑会改动参考库的测试前先备份，测试后 `git checkout -- sampling-plan-app/data/library.json` 恢复。
 - `tests/pjbg.note.test.mjs` / `pjbg.note1009.test.mjs` 需要真实检评报告 docx 作样例（默认读 `%TEMP%/sampling-plan-login/`，可用 `PJBG_SAMPLE` / `PJBG_1009` 或 argv 指定）。纯 Node（`vm` 沙箱加载 `js/blf.js` + `JSZip`），不依赖浏览器；**blf.js 为此保留了 `SamplingUtil` 缺失时的内联兜底**。
@@ -167,10 +175,42 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
    - 列结构：`HAZARD_HEADERS`（14 项，首项「序号」不在 keys 中）+ `HAZARD_KEYS`（13 项，末项为 2026-10 新增的 `physchem`「物化性质」）；**键索引 = 表头索引 - 1**。新增列只需在两数组**同位置**追加，`blankHazard`/`renderHazard`/`hazGetValue`/`hazSetValue`/窗口化 `colspan` 均由 `HAZARD_KEYS` 派生，会自动生效。
    - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
-10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，顺序跑 6 步、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）。
-   - ⑥ 依据（用户 2026-10-17）：**噪声车间岗位为空**（`SamplingUpload.noiseWorkshopGroupsFromBuf` 返回 `[]`）→ 删 1.2.3 评价依据下 GB 23466-2025 条目、9.2 下「产生噪声的工作场所设置…」；**探测「检测项目确认表」的「职业病危害因素」列**（`collectConfirmColTexts`，表头含「职业病危害因素」或「检测项目」）→ 按危害因素库**「系统名称」列**（字段 `name`）匹配（`lookupHazardField`）→ 读该行 `physchem`「物化性质」：全部**不含「毒物」**→删毒物组、全部**不含「粉尘」**→删粉尘组、**俱无**→再删 GB 18664-2025；读 `highTox` 全部不是「是」→删《高毒物品目录》。
-   - ⚠ ⑥ **判定口径**：关键词用**子串包含**；**缺数据不删**（因素在库中找不到即视为证据不足，整组不动，保守防误删）；条目定位用**全局文本匹配**（整段 `<w:p>` 删除），序号「（N）」重排**限定在所属章节内**（`isHeadingPara` 判标题边界——形如 `1.2.3评价依据`，**排除** `1.《xx》` 这类法规条目）。
-   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（34 项，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`、`pjbg.note1009.test`、`pjbg.conddel.test`。
+10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，顺序跑 6 步、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）。
+   - ⑥ 依据（用户 2026-10-17，2026-10-17 晚修正）：**噪声车间岗位为空**（`SamplingUpload.noiseWorkshopGroupsFromBuf` 返回 `[]`）→ 删 1.2.3 评价依据下 GB 23466-2025 条目、9.2 下「产生噪声的工作场所设置…」；**取「检测项目确认表」的「职业病危害因素」列**（`collectConfirmColTexts`）→ 按危害因素库**「系统名称」列**（字段 `name`）匹配（`lookupHazardField`）→ 判三组：
+     · **粉尘**：`dust`「粉尘性质」列（总尘/呼尘）非空 **或** `physchem` 含「粉尘」→ 有粉尘；两者皆无 → 删粉尘组。
+     · **毒物**：`physchem` 含「毒物」→ 有毒物；`physchem` 整列为空 → **未知，不删**（保守）；确认无毒物 → 删毒物组。
+     · **高毒**：`highTox` 全部不是「是」→ 删《高毒物品目录》。
+     · 粉尘毒物**俱无**（且毒物可判定）→ 再删 GB 18664-2025。
+     · **9.2 第四段另外三句**（按「确认表里有没有这个因素」**独立**判定，与粉尘/毒物组无关）：
+       - 无 **`physchem` 完全等于「粉尘、毒物」** 的因素 → 删「产生含有有毒物质的混合性粉(烟)尘的工作场所应设置…」（只有「粉尘」或只有「毒物」都不算）；
+       - 无 **`name` 为「高温」** 的因素 → 删「高温工作场所设置…」；
+       - 无 **`name` 为「紫外辐射」** 的因素 → 删「产生紫外辐射的工作场所设置…」。
+       ⚠ 用**因素名**判高温/紫外辐射（不能用 physchem：云端把物理因素的 physchem 全填成了「紫外辐射」）。
+   - ⚠⚠ ⑥ **判定口径（含 2026-10-17 晚修正的三处根因）**：
+     1. **确认表要选对**：报告里「岗位/危害因素一览表」也有「职业病危害因素」列，早先「表头含该列名即命中」会抓错表（那列常是 `-` 占位）→ 改为**必须同时含「检测项目」列**优先，同级按行数多者优先。
+     2. **占位值跳过**：`-`/`—`/`/`/`无` 表示「本行无因素」，`isHazPlaceholder` 直接跳过，**不再当成「查不到」**（否则一个 `-` 就让整组判定失效）。
+     3. **名字匹配三级**：① 整格（避免把 `1,2-二氯乙烷` 按逗号拆坏）② NFKC 全半角归一（报告 `<10%` vs 库 `＜10%`）③ 去掉尾部 `(总尘)/(呼尘)`（库里用 `dust` 列区分，名字不带后缀）④ 最后才按 `,，、;；` 拆分。
+     4. **条目要按行删，不能整段删**：真实报告里「1.1 法律法规」「1.2.3 评价依据」「9.2 建议」是**一个 `<w:p>` 内用 `<w:br/>` 软换行装十几行**（实测 1095/1009 都是），「命中即删整段」会把整节条目全删。现在 `deletePjbgParas` 先 `paraLineMap` 切行：整行就是该条目→删该行；只是长句里的一个分句→`trimClausesByKeywords` 切分句；并做**段内序号重排**。
+     5. **重组必须就地替换段落**：`xml.replace(re, cb)` 而不是「把段落拼起来」——否则表格/`sectPr` 等**段落之外的内容会整块丢失**（1095 会掉 21 张表、约 1.14MB）。
+     6. 关键词用**子串包含**；**缺数据不删**（库中找不到即视为证据不足，整组不动）；序号「（N）」重排**限定在所属章节内**（`isHeadingPara` 判标题边界——形如 `1.2.3评价依据`，**排除** `1.《xx》` 这类法规条目）。
+     7. **性能**（2026-10-17 晚，1095 实测）：确认表单元格先 `uniqHazTexts` **去重**（140 格→15 种，匹配量降 89%）；库索引 `buildHazardIndex` **一轮只建一次**给 dust/physchem/highTox 三次查询复用（原来 3 次）；段落扫描加 `hasBr` 廉价预判——只有含 `<w:br/>` 的段落才建行映射（1095 共 6035 段，仅 78 段含 `<w:br/>`，即 1.29%），省掉约 12000 次全量行映射。三项合计约省 24ms/次（⑥ 总耗时约 138ms，其余是 7.7MB 文档的段落正则扫描，属固有开销）。
+   - ⑦ **「两班制」作息说明句标红**（用户 2026-10-17）：把「…实行两班制，上班时间为白班…、晚班…，其余各岗位均实行白班制，上班时间为…」整句改成**红色字体**（`<w:color w:val="FF0000"/>`），提醒人工核对班制/作息。
+     · 定位：在段落文本里找锚点 **`实行两班制`** → 向左回到上一个「。」之后、向右到下一个「。」（含），只给这一句上色；同段的「注：职工总数…接触人数…。」保持原色。
+     · 锚点用短句而不是「打磨岗位…」：岗位名与时间随项目变化；实测两份真实报告里「两班制」都只出现 1 次。
+     · `colorParaRange()` 按字符偏移切 run（前段/着色段/后段）；`setRPrColor()` **按 OOXML 子元素顺序**插入 `w:color`（必须在 `spacing/kern/sz/szCs/lang` 之前），否则 Word 可能报格式错误。
+     · 保守回退：run 含多个 `<w:t>` 或 `<w:br/>` 时**原样放过**（宁可不标红也不破坏结构）。
+     · 必须在 ⑤ 之后执行（⑤ 会重写「注：」段落）。
+   - ⑦ 专项测试：`tests/pjbg.shiftred.test.mjs`（26 项：真实单 run 切分、前缀不上色、color 插入位置、无锚点不动、已有颜色替换、句尾无句号、跨 run 上色、含 br 放过）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**72 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（52）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（72）。
+   - ⑧ **整条链路性能优化（2026-10-18）**——改动集中在「重复劳动」上，输出结果**逐字节不变**：
+     1. **噪声表只解析一次**：②⑤⑥ 原来各自调一个 `noise*FromBuf(buf)`，每次都 `JSZip.loadAsync` 解压整份 docx + `DOMParser` 解析全文，**同一报告被完整解析 3 次**。现在 upload.js 提供 `noiseInfoFromXml(xml)` / `noiseInfoFromBuf(buf)`（带记忆）/ `getCachedNoiseInfo(buf)`，`patchPjbgDocx` 只算一次并复用给三步；且**优先复用 `patchPjbgDocx` 已解压出的 xml**，连解压都省掉。若用户先打开过「噪声数据结果」页签，`loadNoiseResult` 会顺手把结果写进缓存 → 导出时**零额外解析**。
+     2. **扫表前先做单字预筛**：`readBasicInfoTable`（在册职工人数/接触职业病危害人数）、`findTableByHead`（新增可选第 3 参 `needChars`）、`collectConfirmColTexts`、`fixNoteParagraph`、`collectHazardMarks` 原先会遍历**全文每张表的每个单元格**，现在先用单字（`册`/`触`/`数`/`论`/`职`/`临`/`备`）跳过无关表。单字预筛是安全的——汉字即使被拆到多个 `<w:t>`，该字仍原样出现在原始 XML 里（与 `mapParasContaining` 的 needles 约定同源）。
+     3. **`collectHazardMarks` 不再 `mapTables`**：原来用 `xml.replace` 全量重建一个 6MB 字符串却**丢弃返回值**（只读不改），改为 `tablesOf` 只读遍历。
+     4. **`readZipEntryText` 用原生 `TextDecoder`** 替代 JSZip 自带的 JS 版 UTF-8 解码器（`typeof TextDecoder` 判空回退，Node 的 vm 沙箱里可能没有）。
+     5. **不做的事**：`generateAsync` 的 DEFLATE 级别**保持默认 6**。实测 level 4 只省 ~46ms（9%）但体积 +2%，性价比不足。JSZip 对未改动条目会复用原压缩字节（图片不会被重压），所以重打包耗时几乎全在 `document.xml`（解压后 6MB+）的 deflate 上，属必要成本。
+     · 实测（真实报告 `pjbg.docx` 1.88MB / document.xml 6.05MB）：6 步后处理 **352ms → 237ms（-33%）**；浏览器端另省掉 2 次整份解析（每次解压 ~180ms + DOMParser 数百 ms）。
+     · 专项测试：`tests/pjbg.noisereuse.test.mjs`（**22 项**：只解析一次、缓存命中零解析、老接口退化、解析失败语义不变）+ `tests/pjbg.noiseapi.smoke.mjs`（**11 项**，Playwright：真实 DOMParser 下的分组/「/」拆分/文本格式/缓存只读/无表返回 ok=false）。
+     · 基准脚本：`tests/_bench_pjbg.mjs`（端到端）。
 
 ## 已知注意事项
 
@@ -198,7 +238,8 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 改调查表导出/导入 | survey.js `exportAllWorkbook` / `importFromArray`（按工作表名+表头名匹配，兼容列序变化） |
 | 改记录保存/读取/同步 | app.js `detectStorageMode`/`loadRecords`/`loadRecordById`/`persistRecord`/`deleteRecordById` + 三端实现（server.mjs、functions/api/records.js、app.js `github*`） |
 | 改参考库同步 | app.js `loadLibrary`/`persistLibrary`/`scheduleLibrarySync` |
-| 改检评报告后处理（0/1、措辞、注段落、条件删条目） | blf.js `patchPjbgDocx` 内 6 步：`fixHighToxColumn`/`fixNonNoiseHazards`/`fixNitrogenOxide`/`fixReportText`(+`TEXT_FIXES`)/`fixHazardNote`/`fixNoteAndContactCount`/`fixConditionalDeletions`(+`PJBG_DEL_TARGETS`/`deletePjbgParas`/`collectConfirmColTexts`/`lookupHazardField`)；噪声数据侧 upload.js `buildNoiseSummary`/`noise*FromBuf` |
+| 改检评报告后处理（0/1、措辞、注段落、条件删条目） | blf.js `patchPjbgDocx` 内 6 步：`fixHighToxColumn`/`fixNonNoiseHazards`/`fixNitrogenOxide`/`fixReportText`(+`TEXT_FIXES`)/`fixHazardNote`/`fixNoteAndContactCount`/`fixConditionalDeletions`(+`PJBG_DEL_TARGETS`/`deletePjbgParas`/`collectConfirmColTexts`/`lookupHazardField`)；噪声数据侧 upload.js `buildNoiseSummary`/`noiseInfoFromXml`/`noiseInfoFromBuf`/`getCachedNoiseInfo` |
+| 改检评报告处理性能 | blf.js `readZipEntryText`/`readBasicInfoTable`/`findTableByHead`(needChars)/`collectHazardMarks`/`collectConfirmColTexts`/`fixNoteParagraph`；upload.js `noiseInfoFromXml`/`noiseInfoFromBuf`/`readDocxDocumentXml`。⚠ 新增「扫全表」逻辑时先加单字预筛 |
 | 改通用工具（转义/懒加载/列表兼容） | js/util.js（`window.SamplingUtil`）；业务脚本只引用它，不要在 app/upload/survey/blf 里各写一份 |
 | 改登录/验证码/会话 | upload.js `API_BASE`/RSA 实现/`resolveOrgId`/`saveSession` + index.html 登录遮罩与内联隐藏脚本 |
 | 改上传流程或平台接口 | upload.js `apiRequest`/`runUploadFlow`/`syncProjectInfo`；代理侧 `functions/api/platform/[[path]].js`（目标 IP、头白名单） |
@@ -209,7 +250,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
 - 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）。
-- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（34 项，纯夹具）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
+- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。

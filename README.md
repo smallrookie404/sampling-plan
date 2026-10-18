@@ -31,7 +31,9 @@
 
 ## 在本机运行
 
-进入 `sampling-plan-app`，双击 `启动采样计划软件.bat`，软件会自动启动本地服务并打开浏览器。数据保存到 `sampling-plan-app\data\records.json`。
+**一键启动**：双击仓库根目录的 `一键启动.bat`（或 `sampling-plan-app` 里的 `启动采样计划软件.bat`），软件会自动启动本地服务并打开浏览器。数据保存到 `sampling-plan-app\data\records.json`。
+
+> 服务已在运行时再双击只会重新打开浏览器，不会重复启动。停止服务请双击 `sampling-plan-app\停止采样计划软件.bat`。
 
 ## 部署到 GitHub
 
