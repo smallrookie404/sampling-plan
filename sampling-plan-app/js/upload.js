@@ -940,6 +940,32 @@
     function entInputValues() {
       return { onJobNum: entOnJobNum ? entOnJobNum.value : '', hazardNum: entHazardNum ? entHazardNum.value : '' };
     }
+    // 上传成功后清空「本次实际写入」的那个输入框 + 它在本地的缓存值（2026-10-18 用户需求）。
+    //   · 只清写入的那一侧：另一个文件还没上传，提前清掉会让人重新填一遍；
+    //   · 由 applyEntInfoOnUpload 的 onSaved 回调触发，即**平台确认写入成功（code=200）**时才走到这里，
+    //     所以清空不会丢数据（值已在平台上）；
+    //   · 缓存同步置空，避免下次选中同一项目时又回填出旧值（若平台有值则按平台现值回填）。
+    // 入参 patch 是真正写进平台的补丁：{ enterpriseNum }=只写了在职人数、{ hazardNum }=只写了接害人数。
+    // 返回被清空的输入框名称（'在职人数' / '接害人数' / '在职人数、接害人数'），无则返回 ''。
+    function clearEntInputsAfterUpload(patch, projectId) {
+      const p = patch || {};
+      const pid = String(projectId);
+      const prev = entInfoCacheRead()[pid] || {};
+      const next = { onJobNum: prev.onJobNum, hazardNum: prev.hazardNum };
+      let cleared = '';
+      if (p.enterpriseNum !== undefined) {
+        if (entOnJobNum) entOnJobNum.value = '';
+        next.onJobNum = '';
+        cleared = '在职人数';
+      }
+      if (p.hazardNum !== undefined) {
+        if (entHazardNum) entHazardNum.value = '';
+        next.hazardNum = '';
+        cleared = cleared ? cleared + '、接害人数' : '接害人数';
+      }
+      if (cleared) entInfoCacheSave(pid, next);
+      return cleared;
+    }
     // 上传前预校验：非法值直接拦截（等上传完再报就晚了）
     function validateEntInputs() {
       const v = entInputValues();
@@ -1421,20 +1447,20 @@
           }
           // 企业信息：主表格上传带在职人数、调查表上传带接害人数（失败不影响上传主体）
           let entMsg = '';
+          let entCleared = '';   // 本次上传后清空的输入框名（只用于提示文案）
           try {
             entMsg = await applyEntInfoOnUpload(
               token, orgId, selectedProject,
               entPayloadForUpload(isSurvey ? 'survey' : 'main', entInputValues()),
               function (patch) {
-                // 只更新本次真正写入的一侧，另一侧沿用缓存（避免主表格上传把接害人数缓存清空）
-                const prev = entInfoCacheRead()[String(projectId)] || {};
-                entInfoCacheSave(projectId, {
-                  onJobNum: patch.enterpriseNum !== undefined ? patch.enterpriseNum : prev.onJobNum,
-                  hazardNum: patch.hazardNum !== undefined ? patch.hazardNum : prev.hazardNum
-                });
+                // 平台已确认写入成功 → 清空本次写入的那个输入框及其缓存值（详见 clearEntInputsAfterUpload）
+                entCleared = clearEntInputsAfterUpload(patch, projectId);
               }
             );
-            if (entMsg) log(entMsg);
+            if (entMsg) {
+              if (entCleared) entMsg += '；已清空「' + entCleared + '」输入框';
+              log(entMsg);
+            }
           } catch (e) {
             entMsg = '企业信息写入异常：' + e.message;
             log(entMsg);
@@ -3456,6 +3482,9 @@
       buildEntInfoPatch: buildEntInfoPatch,
       entPayloadForUpload: entPayloadForUpload,
       applyEntInfoOnUpload: applyEntInfoOnUpload,
+      // 上传成功后清空「本次写入」的输入框 + 其缓存值（供测试/复用）；
+      // 入参 patch = { enterpriseNum } / { hazardNum }，返回被清空的名称（'' 表示没清）
+      clearEntInputsAfterUpload: clearEntInputsAfterUpload,
       // 已选择项目时的默认保存名（年份+单位名称，与上传成功后弹出的保存框同公式）；未选项目返回 null
       defaultSaveName: function () {
         if (!selectedProject) return null;

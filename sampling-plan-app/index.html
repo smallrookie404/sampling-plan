@@ -209,7 +209,7 @@
   <section id="tab-main" class="tab-panel active">
     <div class="grid-toolbar">
       <div class="left">
-<span class="tb-field"><label for="entOnJobNum">在职人数</label><input id="entOnJobNum" class="tb-num" type="number" min="0" step="1" title="在职人数：随「上传测点布局调查」写入平台「现场调查 → 企业信息」页签，留空则不修改"></span>
+<span class="tb-field"><label for="entOnJobNum">在职人数</label><input id="entOnJobNum" class="tb-num" type="number" min="0" step="1" title="在职人数：随「上传测点布局调查」写入平台「现场调查 → 企业信息」页签，留空则不修改；写入成功后本输入框自动清空"></span>
 <button id="btn-add" class="btn small">+ 新增行</button>
 <button id="btn-insert" class="btn small">插入行</button>
 <button id="btn-copy" class="btn small">复制行</button>
@@ -266,7 +266,7 @@
     <div class="grid-toolbar">
       <div class="left">
         <div id="survey-tabs" class="survey-tabs"></div>
-        <span class="tb-field"><label for="entHazardNum">接害人数</label><input id="entHazardNum" class="tb-num" type="number" min="0" step="1" title="接害人数：随「上传调查表（6 合一）」写入平台「现场调查 → 企业信息」页签，留空则不修改"></span>
+        <span class="tb-field"><label for="entHazardNum">接害人数</label><input id="entHazardNum" class="tb-num" type="number" min="0" step="1" title="接害人数：随「上传调查表（6 合一）」写入平台「现场调查 → 企业信息」页签，留空则不修改；写入成功后本输入框自动清空"></span>
       </div>
       <div class="right">
         <button id="survey-add" class="btn small">+ 新增行</button>
@@ -497,7 +497,7 @@
         <button class="btn btn-secondary" id="xcdcBack">← 返回采样计划</button>
       </div>
       <h1>现场调查 Excel 上传</h1>
-      <div class="sub">上传文件自动使用当前表格导出的 Excel（无需手动选择）；在职人数 / 接害人数在「测点布局调查」「调查表」页签的工具栏中填写，上传时一并写入平台企业信息</div>
+      <div class="sub">上传文件自动使用当前表格导出的 Excel（无需手动选择）；在职人数 / 接害人数在「测点布局调查」「调查表」页签的工具栏中填写，上传时一并写入平台企业信息，<b>写入成功后对应的输入框会自动清空</b></div>
       <div id="mainPanel">
         <div class="info ok" id="greeting"></div>
 

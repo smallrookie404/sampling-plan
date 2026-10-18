@@ -264,6 +264,73 @@ const jb2 = JSON.parse(((await calls())[1] || {}).body || "{}");
 check(jb2.enterpriseNum === 410 && jb2.hazardNum === 60, "J3 调查表上传：只改接害人数，在职保持平台原值 410", JSON.stringify({ e: jb2.enterpriseNum, h: jb2.hazardNum }));
 check(jMsg2.indexOf("在职 未改") >= 0, "J4 调查表上传提示「在职 未改」", jMsg2);
 
+// ---- K. 上传成功后清空「本次写入」的输入框 + 其本地缓存值（2026-10-18 需求）----
+// 语义（用户确认）：只清本次真正写进平台的那一侧；另一侧保留（另一个文件还没上传）；
+//               缓存也只清那一侧；patch 为空（没写入任何字段）时一律不清。
+const seedK = () => page.evaluate(() => {
+  document.getElementById("entOnJobNum").value = "410";
+  document.getElementById("entHazardNum").value = "53";
+  localStorage.setItem("xcdc_entinfo_v1", JSON.stringify({ "6205": { onJobNum: "410", hazardNum: "53" } }));
+});
+const snapK = () => page.evaluate(() => {
+  let c = {};
+  try { c = JSON.parse(localStorage.getItem("xcdc_entinfo_v1") || "{}"); } catch (e) {}
+  return {
+    onJob: document.getElementById("entOnJobNum").value,
+    hazard: document.getElementById("entHazardNum").value,
+    cache: c["6205"] || {},
+  };
+});
+
+await seedK();
+const k1 = await page.evaluate(() => window.SamplingUpload.clearEntInputsAfterUpload({ enterpriseNum: 500 }, 6205));
+const s1 = await snapK();
+check(k1 === "在职人数", "K1 主表格上传（只写在职人数）→ 返回清空名称「在职人数」", k1);
+check(s1.onJob === "", "K2 在职人数输入框已清空", JSON.stringify(s1));
+check(s1.hazard === "53", "K3 接害人数输入框保留（另一个文件还没上传）", JSON.stringify(s1));
+check(s1.cache.onJobNum === "" && s1.cache.hazardNum === "53", "K4 缓存只清写入的那一侧", JSON.stringify(s1.cache));
+
+await seedK();
+const k2 = await page.evaluate(() => window.SamplingUpload.clearEntInputsAfterUpload({ hazardNum: 60 }, 6205));
+const s2 = await snapK();
+check(k2 === "接害人数", "K5 调查表上传（只写接害人数）→ 返回「接害人数」", k2);
+check(s2.hazard === "" && s2.onJob === "410", "K6 接害人数清空、在职人数保留", JSON.stringify(s2));
+check(s2.cache.hazardNum === "" && s2.cache.onJobNum === "410", "K7 缓存只清接害人数", JSON.stringify(s2.cache));
+
+await seedK();
+const k3 = await page.evaluate(() => window.SamplingUpload.clearEntInputsAfterUpload({}, 6205));
+const s3 = await snapK();
+check(k3 === "", "K8 未写入任何字段（patch 为空）→ 不清空", k3);
+check(s3.onJob === "410" && s3.hazard === "53", "K9 两个输入框都保持原值", JSON.stringify(s3));
+check(s3.cache.onJobNum === "410" && s3.cache.hazardNum === "53", "K10 缓存不变", JSON.stringify(s3.cache));
+
+// K11：真实链路 —— applyEntInfoOnUpload 写入成功后，onSaved 拿到的 patch 正好是「写入的那一侧」，
+//      即 runUploadFlow 里用同一个 patch 调 clearEntInputsAfterUpload 一定只清对应输入框。
+await setMode("ok", "ok");
+await resetCalls();
+await seedK();
+const k11 = await page.evaluate(async () => {
+  let saved = null;
+  const msg = await window.SamplingUpload.applyEntInfoOnUpload(
+    "tok", "1", { id: 6205, belongInspect: 1450 },
+    window.SamplingUpload.entPayloadForUpload("main", { onJobNum: "410", hazardNum: "53" }),
+    (patch) => { saved = patch; }
+  );
+  const cleared = saved ? window.SamplingUpload.clearEntInputsAfterUpload(saved, 6205) : "";
+  return {
+    msg: msg,
+    saved: saved,
+    cleared: cleared,
+    onJob: document.getElementById("entOnJobNum").value,
+    hazard: document.getElementById("entHazardNum").value,
+  };
+});
+check(k11.saved && k11.saved.enterpriseNum === 410 && k11.saved.hazardNum === undefined,
+  "K11 主表格上传：onSaved 只收到 enterpriseNum（不含 hazardNum）", JSON.stringify(k11.saved));
+check(k11.cleared === "在职人数" && k11.onJob === "" && k11.hazard === "53",
+  "K12 主表格上传后只清空在职人数", JSON.stringify(k11));
+check(k11.msg.indexOf("在职 410 人") >= 0, "K13 提示文案仍报告写入值（不受清空影响）", k11.msg);
+
 check(errCount === 0, "H1 页面无未捕获异常", pageErrors.join(" | "));
 
 console.log(`\nentinfo.smoke: ${pass} 通过, ${fail} 失败`);

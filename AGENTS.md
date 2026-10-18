@@ -134,6 +134,7 @@ sampling-plan/
   node tests/captcha.test.mjs    # 验证码 OCR（JS 移植）准确率 + RSA 自检
   node tests/bridge-cloudflare.test.mjs # 云端账号桥（假 KV + 假平台，真跑 OCR 与登录）
   node tests/report.smoke.mjs    # 「数据报告处理」页签（回退/审核/断点续审/报告显示/面板缓存）
+  node tests/entinfo.smoke.mjs   # 在职人数/接害人数：输入框预填、写入分工、上传成功后清空输入框与缓存（Playwright）
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
@@ -164,6 +165,9 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 3. **团队配置云端保存**：成员/调查人/复核人/日期确认后，本地 localStorage 兜底 + Cloudflare KV（`/api/team`，按账号 `team:<userCode>`）同步，换电脑登录同一账号可读取；确认后切换项目不清空，手动修改才更新。
 4. **平台代理**：`functions/api/platform/[[path]].js` 用 `cloudflare:sockets` 原始 TCP 连接平台 `http://223.93.144.122:27800`，透传请求头/响应头/Cookie 并解压 gzip，绕过 Cloudflare 直连 IP 限制；`upload.js` 在 pages.dev 上自动走 `/api/platform`，本地 http/file 直连平台。代理只透传固定头白名单（authorization / organizationId / belongProject / content-type / user-agent / accept / cookie），新增自定义头必须同步白名单。
 5. **导出上传联动**：「数据上传」按钮生成当前表格的导出 Excel（`window.SamplingApp.exportWorkbookBytes()`）作为上传文件，无需手动选文件；导出范围到「检测项目」列最后一个非空单元格。
+   - **企业信息（在职人数 / 接害人数）**：工具栏两个输入框 `#entOnJobNum` / `#entHazardNum`，随上传写入平台「现场调查 → 企业信息」（`enterpriseNum` / `hazardNum`，PUT 整对象回写）。
+     · **上传分工**：主表格（测点布局调查）只带在职人数、调查表（6 合一）只带接害人数（`entPayloadForUpload`），另一侧平台原值不动。
+     · **写入成功后自动清空**（2026-10-18 用户需求）：`applyEntInfoOnUpload` 的 `onSaved` 回调 → `clearEntInputsAfterUpload(patch, projectId)`，**只清本次真正写入的那一侧**（另一侧保留，因为另一个文件还没上传），并同步清空该侧在 `xcdc_entinfo_v1` 里的缓存值。失败/未写入一律不清（值还在输入框里，方便直接重传）。
 6. **界面约定**：主界面样式变量在 `css/styles.css`（`--primary: #1f4e79` 等）；登录/上传视图样式统一用 `.xcdc` 作用域并复用同一套变量。新增页面元素需与 `upload.js` 中的 id 引用保持一致（上传页会一次性校验全部关键 id，缺任一个即 alert 并中止）。
 7. **调查表模块**（survey.js）：6 个现场调查子表（生产工艺/设备设施/原辅物料/主要产品/职业防护/个体防护），页签位于「测点布局调查」旁。Excel 式交互与主表格对齐：单击选中、双击编辑、拖选矩形、Enter 提交并下移、Alt+Enter 或编辑态粘贴多行为单元格内换行（非编辑态粘贴按行拆分填入多行）；下拉多选仅「车间」与「岗位(工种)」列，其余固定选项列为单选，「单元/工作场所」动态取主表车间名，岗位下拉数据源为主表自动计算区 W→X（含下填）。数据存 localStorage 键 `samplingPlanSurvey_v2`（统一默认 10 行），随记录保存/还原；无 Tab 多行粘贴兼容。导入 Excel 支持调查表；导出 6 合一首表为「劳动定员和职业病危害因素接触情况调查」（首行＝主表自动计算区表头，无数据行），上传页进入时自动生成两个文件。主表无数据时仍可保存仅含调查表的记录（两者均空才拦截）。
 8. **主表格编辑模型**：单击仅选中并「布防」隐形 textarea，输入/输入法经 `armReveal` 显形，双击进入编辑；Enter/Tab 提交并移动、Esc 还原、Delete 清空选区。粘贴统一走 `parseTsvGrid`：编辑态且无 Tab 时视为单元格内换行，否则按选区左上角平铺。`W–BI` 自动列可被覆盖的机制由 `overridden` 标记保留手动值，导入「仅自动计算区」文件时靠它反推录入区。
@@ -243,6 +247,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 改通用工具（转义/懒加载/列表兼容） | js/util.js（`window.SamplingUtil`）；业务脚本只引用它，不要在 app/upload/survey/blf 里各写一份 |
 | 改登录/验证码/会话 | upload.js `API_BASE`/RSA 实现/`resolveOrgId`/`saveSession` + index.html 登录遮罩与内联隐藏脚本 |
 | 改上传流程或平台接口 | upload.js `apiRequest`/`runUploadFlow`/`syncProjectInfo`；代理侧 `functions/api/platform/[[path]].js`（目标 IP、头白名单） |
+| 改在职人数/接害人数（企业信息） | upload.js `entInputValues`/`validateEntInputs`/`entPayloadForUpload`/`buildEntInfoPatch`/`applyEntInfoOnUpload`/`clearEntInputsAfterUpload`/`prefillEntInfo` + index.html `#entOnJobNum`/`#entHazardNum`；测试 `tests/entinfo.smoke.mjs` |
 | 改团队配置 | upload.js `loadTeamSettings`/`saveTeamSettings`/`loadProjectTeam` + `functions/api/team.js`（KV key、64KB 上限） |
 | 改样式/主题 | 主界面 `css/styles.css`（CSS 变量）；登录/上传视图是 index.html 内联 `.xcdc`（老内核兼容写法勿改成 `inset` 简写等新语法） |
 
