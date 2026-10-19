@@ -120,6 +120,13 @@
     .xcdc .member-item:hover { background: #eef4fb; }
     .xcdc .member-item.hidden { display: none; }
     .xcdc .member-item input { cursor: pointer; }
+    /* 「企业基本信息上传」勾选项（调查表上传按钮下方） */
+    .xcdc .chk-row {
+      display: flex; align-items: center; gap: 6px; margin: 8px 0 0;
+      font-size: 13px; color: #374151; cursor: pointer;
+    }
+    .xcdc .chk-row input { margin: 0; cursor: pointer; }
+    .xcdc .chk-hint { font-size: 12px; color: #94a3b8; line-height: 1.5; margin-top: 4px; }
     .xcdc .member-tags { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 6px; }
     .xcdc .member-tag {
       background: #eef4fb; color: var(--primary-dark); border: 1px solid #c7d8ea;
@@ -604,6 +611,11 @@
             <div class="filename" id="fileNameSurvey"></div>
           </div>
           <button class="btn" id="btnUploadSurvey" style="width:100%; margin-top:6px;">上传调查表（6 合一）</button>
+          <label class="chk-row" for="chkEntBasicUpload" title="勾选后，上传调查表时自动补全平台「企业信息」里的空字段">
+            <input type="checkbox" id="chkEntBasicUpload">
+            <span>企业基本信息上传</span>
+          </label>
+          <div class="chk-hint">职卫管理部门空 → 办公室；职卫负责人/电话空 → 取联系人/联系电话；危害风险一般 → 兼职人数空补 1，严重 → 专职人数空补 1</div>
         </div>
 
         <div id="log"></div>

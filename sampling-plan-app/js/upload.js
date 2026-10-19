@@ -389,12 +389,81 @@
     return { onJobNum: v.onJobNum, hazardNum: '' };
   }
 
+  // ---------------- 企业基本信息自动补全（调查表上传时可选勾选，2026-10-20 用户需求） ----------------
+  // 规则（只补空，绝不覆盖已有值）：
+  //   ① 职卫管理部门 occupationalOrg 空 → 「办公室」
+  //   ② 职卫负责人 occupationalPerson 空 → 抄「联系人」connectPerson；
+  //      职卫负责人电话 occupationalPersonTel 空 → 抄「联系电话」connectTel
+  //   ③ 危害风险 hazardRisk：一般("1") → 职卫兼职人数 occupationalPartNum 空则填 1；
+  //                          严重("0") → 职卫专职人数 occupationalFullNum 空则填 1
+  // ⚠ 平台计数列的默认值是 0（不是 null），「0 人」与「没填」在平台里长得一样；
+  //   本模块默认把 0 也算「空」（opts.zeroAsEmpty=false 可关掉，改成只认 null/''）。
+  var ENT_BASIC_DEFAULT_ORG = '办公室';
+
+  function entValueBlank(v, zeroAsEmpty) {
+    if (v === undefined || v === null) return true;
+    if (typeof v === 'string' && v.trim() === '') return true;
+    if (zeroAsEmpty !== false && (v === 0 || (typeof v === 'string' && v.trim() === '0'))) return true;
+    return false;
+  }
+
+  // 纯函数（便于测试）：rec = 平台企业信息记录 → { patch:{字段:值}, notes:[说明…] }
+  //   notes 只用于日志/弹窗文案，patch 为空表示无需补全。
+  function buildEntBasicPatch(rec, opts) {
+    var r = rec || {};
+    var zero = !opts || opts.zeroAsEmpty !== false;
+    var blank = function (v) { return entValueBlank(v, zero); };
+    var patch = {};
+    var notes = [];
+
+    if (blank(r.occupationalOrg)) {
+      patch.occupationalOrg = ENT_BASIC_DEFAULT_ORG;
+      notes.push('职卫管理部门（空 → ' + ENT_BASIC_DEFAULT_ORG + '）');
+    }
+    if (blank(r.occupationalPerson)) {
+      if (!blank(r.connectPerson)) {
+        patch.occupationalPerson = String(r.connectPerson).trim();
+        notes.push('职卫负责人（空 → 联系人 ' + patch.occupationalPerson + '）');
+      } else {
+        notes.push('职卫负责人（空，但联系人也是空，无法补全）');
+      }
+    }
+    if (blank(r.occupationalPersonTel)) {
+      if (!blank(r.connectTel)) {
+        patch.occupationalPersonTel = String(r.connectTel).trim();
+        notes.push('职卫负责人电话（空 → 联系电话 ' + patch.occupationalPersonTel + '）');
+      } else {
+        notes.push('职卫负责人电话（空，但联系电话也是空，无法补全）');
+      }
+    }
+
+    var risk = String(r.hazardRisk == null ? '' : r.hazardRisk).trim();
+    if (risk === '1') {
+      if (blank(r.occupationalPartNum)) {
+        patch.occupationalPartNum = 1;
+        notes.push('职卫兼职人数（危害风险一般 → 空补 1）');
+      }
+    } else if (risk === '0') {
+      if (blank(r.occupationalFullNum)) {
+        patch.occupationalFullNum = 1;
+        notes.push('职卫专职人数（危害风险严重 → 空补 1）');
+      }
+    } else {
+      notes.push('危害风险未选，跳过兼职/专职人数补全');
+    }
+    return { patch: patch, notes: notes };
+  }
+
   // 上传流程调用：把输入框里的在职人数/接害人数写进平台企业信息。
-  // 两个都为空 → 跳过（不调任何接口）；失败不阻断上传主体，只返回说明文本供日志/弹窗展示。
-  async function applyEntInfoOnUpload(token, orgId, project, values, onSaved) {
+  // extraBuilder（可选）：function(rec) → { patch, notes }，用于「企业基本信息自动补全」，
+  //   与输入框补丁**合并成一次 PUT**（避免连写两次）；即使输入框都为空，只要给了 extraBuilder 也会读一次平台。
+  // 两个都为空且无 extraBuilder → 跳过（不调任何接口）；失败不阻断上传主体，只返回说明文本供日志/弹窗展示。
+  async function applyEntInfoOnUpload(token, orgId, project, values, onSaved, extraBuilder) {
     var built = buildEntInfoPatch(values);
-    if (built.empty) return '';
     if (built.error) return '企业信息未写入：' + built.error;
+    var hasInput = !built.empty;
+    var hasExtra = typeof extraBuilder === 'function';
+    if (!hasInput && !hasExtra) return '';
     var belongInspect = project && project.belongInspect;
     if (belongInspect === undefined || belongInspect === null || belongInspect === '') {
       return '企业信息未写入：项目未带受检单位标识（belongInspect）';
@@ -408,13 +477,35 @@
     if (!rec || rec.id === undefined || rec.id === null) {
       return '企业信息未写入：平台无该受检单位记录（id=' + belongInspect + '）';
     }
+    // 输入框补丁优先（用户显式填的值），企业基本信息补全只补还没被占用的字段
+    var patch = Object.assign({}, built.patch);
+    var notes = [];
+    if (hasExtra) {
+      var extra = null;
+      try {
+        extra = extraBuilder(rec) || {};
+      } catch (e) {
+        extra = { patch: {}, notes: ['企业基本信息补全计算异常：' + e.message] };
+      }
+      var ep = extra.patch || {};
+      Object.keys(ep).forEach(function (k) {
+        if (patch[k] === undefined) patch[k] = ep[k];
+      });
+      notes = extra.notes || [];
+    }
+    if (!Object.keys(patch).length) {
+      // 无需写入：只把「为什么没补」的说明带回去
+      return notes.length ? '企业基本信息未改动：' + notes.join('；') : '';
+    }
     try {
-      var r = await editEnterpriseInfo(token, orgId, Object.assign({}, rec, built.patch));
+      var r = await editEnterpriseInfo(token, orgId, Object.assign({}, rec, patch));
       if (r.status === 200 && r.data && r.data.code === '200') {
-        if (typeof onSaved === 'function') { try { onSaved(built.patch); } catch (e) {} }
-        var p = built.patch;
-        return '企业信息已更新（在职 ' + (p.enterpriseNum !== undefined ? p.enterpriseNum : '未改') +
-          ' 人，接害 ' + (p.hazardNum !== undefined ? p.hazardNum : '未改') + ' 人）';
+        if (typeof onSaved === 'function') { try { onSaved(patch); } catch (e) {} }
+        var msg = '企业信息已更新（在职 ' +
+          (patch.enterpriseNum !== undefined ? patch.enterpriseNum + ' 人' : '未改') +
+          '，接害 ' + (patch.hazardNum !== undefined ? patch.hazardNum + ' 人' : '未改') + '）';
+        if (notes.length) msg += '；企业基本信息补全：' + notes.join('；');
+        return msg;
       }
       return '企业信息未写入：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status));
     } catch (e) {
@@ -1103,6 +1194,7 @@
     const investigateDate = $('investigateDate');
     const entOnJobNum = $('entOnJobNum');
     const entHazardNum = $('entHazardNum');
+    const chkEntBasic = $('chkEntBasicUpload');   // 可选元素：老页面缓存里没有时不影响启动
     if (!unitInput || !codeInput || !yearSelect || !suggestBox || !$('searching') || !$('projectInfo') ||
         !memberSearch || !memberList || !memberTags || !btnMemberConfirm || !investigatorSelect || !reviewerSelect || !investigateDate ||
         !entOnJobNum || !entHazardNum) {
@@ -1117,6 +1209,20 @@
     // 企业信息（在职人数/接害人数）：输入框 ↔ localStorage 缓存 ↔ 平台现值
     const ENTINFO_KEY = 'xcdc_entinfo_v1';
     let entInfoSeq = 0;
+
+    // 「企业基本信息上传」勾选项（只在「上传调查表（6 合一）」时生效）：记住上次选择
+    const ENTBASIC_KEY = 'xcdc_entbasic_v1';
+    function entBasicChecked() {
+      return !!(chkEntBasic && chkEntBasic.checked);
+    }
+    function initEntBasicToggle() {
+      if (!chkEntBasic) return;
+      try { chkEntBasic.checked = localStorage.getItem(ENTBASIC_KEY) === '1'; } catch (e) {}
+      chkEntBasic.addEventListener('change', function () {
+        try { localStorage.setItem(ENTBASIC_KEY, chkEntBasic.checked ? '1' : '0'); } catch (e) {}
+      });
+    }
+    initEntBasicToggle();
 
     function entInfoCacheRead() {
       try { return JSON.parse(localStorage.getItem(ENTINFO_KEY)) || {}; } catch (e) { return {}; }
@@ -1644,8 +1750,10 @@
             syncMsg = '，团队信息同步失败：' + e.message;
           }
           // 企业信息：主表格上传带在职人数、调查表上传带接害人数（失败不影响上传主体）
+          // 勾选「企业基本信息上传」时，调查表上传额外补全职卫管理部门/负责人/兼职专职人数（见 buildEntBasicPatch）
           let entMsg = '';
           let entCleared = '';   // 本次上传后清空的输入框名（只用于提示文案）
+          const entBasicOn = isSurvey && entBasicChecked();
           try {
             entMsg = await applyEntInfoOnUpload(
               token, orgId, selectedProject,
@@ -1653,7 +1761,8 @@
               function (patch) {
                 // 平台已确认写入成功 → 清空本次写入的那个输入框及其缓存值（详见 clearEntInputsAfterUpload）
                 entCleared = clearEntInputsAfterUpload(patch, projectId);
-              }
+              },
+              entBasicOn ? function (rec) { return buildEntBasicPatch(rec); } : null
             );
             if (entMsg) {
               if (entCleared) entMsg += '；已清空「' + entCleared + '」输入框';
@@ -3957,6 +4066,11 @@
       buildEntInfoPatch: buildEntInfoPatch,
       entPayloadForUpload: entPayloadForUpload,
       applyEntInfoOnUpload: applyEntInfoOnUpload,
+      // 企业基本信息自动补全（勾选「企业基本信息上传」时随调查表上传写入）：
+      //   buildEntBasicPatch(rec) → { patch, notes }；entBasicChecked() = 当前勾选状态
+      buildEntBasicPatch: buildEntBasicPatch,
+      entValueBlank: entValueBlank,
+      entBasicChecked: entBasicChecked,
       // 上传成功后清空「本次写入」的输入框 + 其缓存值（供测试/复用）；
       // 入参 patch = { enterpriseNum } / { hazardNum }，返回被清空的名称（'' 表示没清）
       clearEntInputsAfterUpload: clearEntInputsAfterUpload,
@@ -4036,6 +4150,8 @@
       buildEntInfoPatch: buildEntInfoPatch,
       entPayloadForUpload: entPayloadForUpload,
       applyEntInfoOnUpload: applyEntInfoOnUpload,
+      buildEntBasicPatch: buildEntBasicPatch,
+      entValueBlank: entValueBlank,
       fetchUsers: fetchUsers,
       fetchProjectMembers: fetchProjectMembers,
       addProjectMembers: addProjectMembers,
