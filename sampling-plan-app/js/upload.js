@@ -2330,6 +2330,15 @@
       return one('检测底稿', jcdgNode) + ' ／ ' + one('检测结果报告单', jcbgNode);
     }
 
+    // 轮询间隔：**快起步 + 退避**。平台状态机通常在数百毫秒内就推进了，
+    // 原来固定 2s 会让每次「等流转」白等近 2s（一条审核链累计可达 8~10s）。
+    // 这里首轮 250ms 起、逐轮退避到 1.5s 封顶；opts.intervalMs 显式指定时用固定间隔（自动化测试用）。
+    const POLL_RAMP = [250, 400, 600, 800, 1000, 1500];
+    function pollDelay(round, opts) {
+      if (opts && opts.intervalMs) return opts.intervalMs;
+      return POLL_RAMP[Math.min(round, POLL_RAMP.length - 1)];
+    }
+
     // ★ 提交审复核后，**检测底稿(jcdg) 与 检测报告单(jcbg) 是「一起提交」的**
     //   （前端点一次「提交审复核」，平台返回 body.msg 形如
     //    「检测底稿提交成功！;检测报告提交成功」——两条一起）。
@@ -2337,25 +2346,28 @@
     //   否则等到后面 ③ 用 jcbg 审批时会报「该流程已无待审的检测记录」。
     //   本函数轮询等待：jcdg 与 jcbg 的 getAffix **都**出现 type（即都存在待审记录）。
     //   返回 { ready, jcdg, jcbg, waited }；超时未齐则 ready=false（附带各自最新节点，便于提示）。
+    // ★ 两条流程**并行**读（原来串行 → 每轮多一个 RTT）
     async function pollBothNodesReady(bearer, org, projectId, opts) {
       opts = opts || {};
       const maxWait = opts.maxWaitMs || 60000;
-      const interval = opts.intervalMs || 2000;
       const jcdgAffix = auditPaths('jcdg').affix;
       const jcbgAffix = auditPaths('jcbg').affix;
       const start = Date.now();
-      let jn = null, bn = null;
+      let jn = null, bn = null, round = 0;
       while (true) {
-        // 两个流程各自读一次；任一读失败不致命（当作还没就绪）
-        try { jn = await readAffixNode(bearer, org, jcdgAffix, projectId); } catch (e) { jn = null; }
-        try { bn = await readAffixNode(bearer, org, jcbgAffix, projectId); } catch (e) { bn = null; }
+        // 任一读失败不致命（当作还没就绪）
+        const pair = await Promise.all([
+          readAffixNode(bearer, org, jcdgAffix, projectId).catch(function () { return null; }),
+          readAffixNode(bearer, org, jcbgAffix, projectId).catch(function () { return null; }),
+        ]);
+        jn = pair[0]; bn = pair[1];
         if (jn && bn) {
           return { ready: true, jcdg: jn, jcbg: bn, waited: Date.now() - start };
         }
         if (Date.now() - start >= maxWait) {
           return { ready: false, jcdg: jn, jcbg: bn, waited: Date.now() - start };
         }
-        await new Promise(function (res) { setTimeout(res, interval); });
+        await new Promise(function (res) { setTimeout(res, pollDelay(round++, opts)); });
       }
     }
 
@@ -2363,8 +2375,8 @@
     async function pollNodeChange(bearer, org, affixPath, projectId, oldType, opts) {
       opts = opts || {};
       const maxWait = opts.maxWaitMs || 30000;
-      const interval = opts.intervalMs || 2000;
       const start = Date.now();
+      let round = 0;
       while (Date.now() - start < maxWait) {
         const node = await readAffixNode(bearer, org, affixPath, projectId);
         if (!node) {
@@ -2377,7 +2389,7 @@
         if (String(node.type) !== String(oldType)) {
           return { changed: true, gone: false, newType: node.type, waited: Date.now() - start };
         }
-        await new Promise(function (res) { setTimeout(res, interval); });
+        await new Promise(function (res) { setTimeout(res, pollDelay(round++, opts)); });
       }
       return { changed: false, waited: Date.now() - start };
     }
@@ -3012,8 +3024,13 @@
       try {
         // ── 第一步：读「两个流程的当下节点快照」→ 规划本次需要执行的步骤（断点续审的核心）──
         if (el.status) el.status.textContent = '正在读取当前审批节点…';
-        const jcdgNode = await safeReadAffixNode(token, orgId, auditPaths('jcdg').affix, selectedProject.id);
-        const jcbgNode = await safeReadAffixNode(token, orgId, auditPaths('jcbg').affix, selectedProject.id);
+        // ★ 两条流程**并行**读（原来串行，白白多一个 RTT）
+        const firstPair = await Promise.all([
+          safeReadAffixNode(token, orgId, auditPaths('jcdg').affix, selectedProject.id),
+          safeReadAffixNode(token, orgId, auditPaths('jcbg').affix, selectedProject.id),
+        ]);
+        const jcdgNode = firstPair[0];
+        const jcbgNode = firstPair[1];
         const plan = planAuditSteps({ jcdg: jcdgNode, jcbg: jcbgNode });
         if (plan.unknowns.length) {
           const msg = '该项目当前审批节点不在本工具可审范围内：\n\n· ' + plan.unknowns.join('\n· ')
@@ -3061,8 +3078,12 @@
           if (++guard > maxSteps) { msgs.push('⚠ 已达最大步数上限(' + maxSteps + ')，中止以防死循环'); break; }
           // 重新读当下节点（上一步通过后节点会前移；这也是「续跑到底」的关键）
           let curJcdg, curJcbg;
-          try { curJcdg = await safeReadAffixNode(token, orgId, auditPaths('jcdg').affix, selectedProject.id); } catch (e) { curJcdg = null; }
-          try { curJcbg = await safeReadAffixNode(token, orgId, auditPaths('jcbg').affix, selectedProject.id); } catch (e) { curJcbg = null; }
+          // ★ 两条流程**并行**读（原来串行）；这两条快照同时供下面「本步节点」直接复用
+          const pair = await Promise.all([
+            safeReadAffixNode(token, orgId, auditPaths('jcdg').affix, selectedProject.id),
+            safeReadAffixNode(token, orgId, auditPaths('jcbg').affix, selectedProject.id),
+          ]);
+          curJcdg = pair[0]; curJcbg = pair[1];
           const nx = nextAuditStep({ jcdg: curJcdg, jcbg: curJcbg });
           if (nx.unknowns.length) {
             msgs.push('⏹ 中止：' + nx.unknowns.join('；'));
@@ -3132,15 +3153,16 @@
               + (poll.waited / 1000).toFixed(1) + 's）');
           } else {
             const ap = auditPaths(step.kind);
-            // 当前节点号必须**每次重新读 getAffix**（上一步通过后节点会推进）
-            let node = await readAffixNode(tk.token, tk.orgId, ap.affix, selectedProject.id);
-            // 若暂未读到待审记录，先短轮询等待（最多 ~20s）——避免因平台状态机/提交流转延迟而误判
+            // ★ 直接复用本轮循环刚读到的节点快照（nextAuditStep 正是据此判定「该做这一步」的），
+            //   不再重复 getAffix —— 前置节点读取是审核链里最耗时的一环。
+            //   只有快照里该流程确实没有节点时，才回落到短轮询兜底（平台流转延迟/读取抖动）。
+            let node = step.kind === 'auditJcdg' ? curJcdg : curJcbg;
             if (!node) {
               const waitMs = pollOpts.nodeWaitMs || 20000;
-              const waitInt = pollOpts.intervalMs || 2000;
               const t0 = Date.now();
+              let round = 0;
               while (!node && Date.now() - t0 < waitMs) {
-                await new Promise(function (res) { setTimeout(res, waitInt); });
+                await new Promise(function (res) { setTimeout(res, pollDelay(round++, pollOpts)); });
                 try { node = await readAffixNode(tk.token, tk.orgId, ap.affix, selectedProject.id); } catch (e) { node = null; }
               }
             }
