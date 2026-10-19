@@ -723,6 +723,154 @@
     return { xml: out, changed: changed };
   }
 
+  // ---------------- 报告后处理⑧：表3-6 个人使用的职业病防护用品「同规格行合并」 ----------------
+  // 用户要求（2026-10-20）：表3-6「个人使用的职业病防护用品配置及使用情况」里，若多行的
+  //   「分类 / 类别 / 生产厂家 / 型号或规格 / 防护性能参数」五列内容**分别相同**，就把这些行合并成一行：
+  //   · 「配置岗位（工种）」：把各行「/」**前**的部分（车间）提取在一起、去重后用「,」连接；
+  //     「/」**后**的部分（岗位）同样提取、去重后用「,」连接；两者之间再用「/」连接
+  //     （例：`车间A/岗位1` + `车间B/岗位2,岗位3` → `车间A,车间B/岗位1,岗位2,岗位3`）；
+  //   · 其余列（佩戴情况 / 更换周期 / 备注…）：合并相同值去重（逗号连接）。
+  // 实现：保留组内第一行并改写其单元格文本，组内其余行删除后按原顺序重建表体
+  //   （表3-6 的数据行没有纵向合并，删除安全；表头两行的 vMerge/gridSpan 原样保留）。
+  const PPE_KEY_HEADS = ['分类', '类别', '生产厂家', '型号', '防护性能'];
+  const PPE_JOB_HEAD = '配置岗位';
+
+  function splitListItems(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .split(/[,，、;；]/)
+      .map(function (x) { return x.trim(); })
+      .filter(function (x) { return x !== ''; });
+  }
+  function pushUniq(arr, v) {
+    const s = String(v === null || v === undefined ? '' : v).trim();
+    if (s && arr.indexOf(s) < 0) arr.push(s);
+  }
+  // 合并「配置岗位（工种）」：前段（车间）/ 后段（岗位）各自去重后用「,」连接，中间用「/」
+  function mergePpeJobText(values) {
+    const before = [];
+    const after = [];
+    for (const v of values) {
+      const s = String(v === null || v === undefined ? '' : v).trim();
+      if (!s || isNoHazardText(s)) continue;              // 空 / 「-」/「/」视为无内容
+      let i = s.indexOf('/');
+      const j = s.indexOf('／');
+      if (i < 0 || (j >= 0 && j < i)) i = j;
+      if (i < 0) {
+        splitListItems(s).forEach(function (x) { pushUniq(before, x); });
+        continue;
+      }
+      splitListItems(s.slice(0, i)).forEach(function (x) { pushUniq(before, x); });
+      splitListItems(s.slice(i + 1)).forEach(function (x) { pushUniq(after, x); });
+    }
+    if (before.length && after.length) return before.join(',') + '/' + after.join(',');
+    return before.length ? before.join(',') : after.join(',');
+  }
+  // 其余列：合并相同值去重（占位值「-」「/」不参与合并，整列都是占位值时原样保留）
+  function mergePpePlainText(values) {
+    const out = [];
+    let firstRaw = '';
+    for (const v of values) {
+      const s = String(v === null || v === undefined ? '' : v).trim();
+      if (!s) continue;
+      if (!firstRaw) firstRaw = s;
+      if (isNoHazardText(s)) continue;
+      if (out.indexOf(s) < 0) out.push(s);
+    }
+    return out.length ? out.join(',') : firstRaw;
+  }
+
+  // 返回 { xml, changed }；changed = 被合并掉的行数
+  function mergePpeRows(xml) {
+    if (xml.indexOf(PPE_JOB_HEAD) < 0) return { xml: xml, changed: 0 };
+    let changed = 0;
+    const out = mapTables(xml, function (tbl) {
+      // 只处理表3-6：表头必含「生产厂家」「型号」「防护性能」与「配置岗位」
+      if (tbl.indexOf('生产厂家') < 0 || tbl.indexOf('防护性能') < 0) return tbl;
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 3) return tbl;
+      const head0 = rowCells(rows[0]);
+      const head1 = rowCells(rows[1]);
+      // 数据行的列数（取各行最大值，容忍个别行少格）
+      let nCol = Math.max(head0.length, head1.length);
+      const dataStart = (cellText(head1[0] || '').indexOf('分类') >= 0
+        || cellText(head1[1] || '').indexOf('类别') >= 0) ? 2 : 1;
+      for (let ri = dataStart; ri < rows.length; ri++) {
+        nCol = Math.max(nCol, rowCells(rows[ri]).length);
+      }
+      // 列名：子表头（分类/类别）优先，其余按表头的 gridSpan 占槽位补空
+      const names = new Array(nCol).fill('');
+      for (let i = 0; i < head1.length && i < nCol; i++) {
+        const t = cellText(head1[i]);
+        if (t && !names[i]) names[i] = t;
+      }
+      let p = 0;
+      for (const c of head0) {
+        const spanM = /<w:gridSpan w:val="(\d+)"/.exec(c);
+        const span = spanM ? parseInt(spanM[1], 10) : 1;
+        const t = cellText(c);
+        for (let k = 0; k < span; k++) {
+          if (p + k < nCol && !names[p + k] && t) names[p + k] = t;
+        }
+        p += span;
+      }
+      const findCol = function (kw) {
+        const want = normKey(kw);
+        for (let i = 0; i < names.length; i++) if (normKey(names[i]).indexOf(want) >= 0) return i;
+        return -1;
+      };
+      const iJob = findCol(PPE_JOB_HEAD);
+      const keyIdx = PPE_KEY_HEADS.map(findCol);
+      if (iJob < 0 || keyIdx.some(function (i) { return i < 0; })) return tbl;
+
+      // 按「五列关键列」归组（保持首次出现顺序）
+      const groups = [];
+      const map = new Map();
+      for (let ri = dataStart; ri < rows.length; ri++) {
+        const cs = rowCells(rows[ri]);
+        if (cs.length !== nCol) continue;                 // 非标准行（含合并格）不参与
+        const texts = cs.map(cellText);
+        const key = keyIdx.map(function (i) { return normKey(texts[i]); }).join('\u0001');
+        let g = map.get(key);
+        if (!g) { g = { rows: [], texts: [] }; map.set(key, g); groups.push(g); }
+        g.rows.push(ri);
+        g.texts.push(texts);
+      }
+
+      const drop = new Set();
+      const keep = new Map();                             // ri -> 改写后的行 XML
+      for (const g of groups) {
+        if (g.rows.length < 2) continue;
+        const first = g.rows[0];
+        const firstXml = rows[first];
+        const cells = rowCells(firstXml);
+        let newXml = firstXml;
+        for (let ci = 0; ci < nCol && ci < cells.length; ci++) {
+          if (keyIdx.indexOf(ci) >= 0) continue;           // 关键列本来就相同，不动
+          const col = g.texts.map(function (t) { return t[ci]; });
+          const val = (ci === iJob) ? mergePpeJobText(col) : mergePpePlainText(col);
+          if (!val || val === cellText(cells[ci])) continue;
+          newXml = newXml.replace(cells[ci], setCellText(cells[ci], xmlEsc(val)));
+        }
+        if (newXml !== firstXml) keep.set(first, newXml);
+        for (let k = 1; k < g.rows.length; k++) drop.add(g.rows[k]);
+        changed += g.rows.length - 1;
+      }
+      if (!drop.size) return tbl;
+      // 按原顺序重建表体（表头/表格属性/tblGrid 原样保留）
+      const firstRowXml = rows[0];
+      const lastRowXml = rows[rows.length - 1];
+      const headXml = tbl.slice(0, tbl.indexOf(firstRowXml));
+      const tailXml = tbl.slice(tbl.lastIndexOf(lastRowXml) + lastRowXml.length);
+      let body = '';
+      for (let ri = 0; ri < rows.length; ri++) {
+        if (drop.has(ri)) continue;
+        body += keep.has(ri) ? keep.get(ri) : rows[ri];
+      }
+      return headXml + body + tailXml;
+    });
+    return { xml: out, changed: changed };
+  }
+
   // ---------------- 报告后处理③：正文措辞替换 ----------------
   // 平台模板里的几处说法要改成规范表述（用户要求，2026-10-12）。
   // ⚠ 目标文字常被拆到多个 run（如「7.2物理有害因素检测结果分析与评价」= ['7.2','物理','有害因素…']），
@@ -2038,6 +2186,10 @@
       const r7 = markShiftNoteRed(xml);
       xml = r7.xml; changed += r7.changed;
       if (r7.changed) console.info('[检评报告] 「两班制」作息说明句已标红，共 ' + r7.changed + ' 处');
+      // ⑧ 表3-6「个人使用的职业病防护用品配置及使用情况」：同「分类/类别/厂家/型号/参数」的多行合并
+      const r8 = mergePpeRows(xml);
+      xml = r8.xml; changed += r8.changed;
+      if (r8.changed) console.info('[检评报告] 表3-6 防护用品合并同规格行，共合并 ' + r8.changed + ' 行');
       if (!changed) return buf;
       zip.file('word/document.xml', xml);
       // 说明（2026-10-18 实测）：这一步是整条链路最贵的（真实报告 ~500ms，占一半）。
@@ -2469,6 +2621,8 @@
     fixNonNoiseHazards: fixNonNoiseHazards,
     fixQuietPointHazards: fixQuietPointHazards,
     fixNitrogenOxide: fixNitrogenOxide,
+    mergePpeRows: mergePpeRows,
+    mergePpeJobText: mergePpeJobText,
     fixReportText: fixReportText,
     fixHazardNote: fixHazardNote,
     collectHazardMarks: collectHazardMarks,
