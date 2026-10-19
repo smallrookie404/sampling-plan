@@ -1334,13 +1334,35 @@
       filterMemberList();
     }
 
+    // 人员选项框：平时收起，只有搜索框里有内容时才浮出（2026-10-20 用户需求）
+    function setMemberEmptyHint(show) {
+      let el = memberList.querySelector('.member-empty');
+      if (show && !el) {
+        el = document.createElement('div');
+        el.className = 'member-empty';
+        el.textContent = '无匹配人员';
+        memberList.appendChild(el);
+      } else if (!show && el) {
+        el.parentNode.removeChild(el);
+      }
+    }
+    function closeMemberList() {
+      memberList.classList.remove('open');
+    }
     function filterMemberList() {
       const kw = memberSearch.value.trim().toLowerCase();
+      let visible = 0;
       Array.from(memberList.children).forEach(function (label) {
+        if (!label.classList || !label.classList.contains('member-item')) return; // 跳过「无匹配」提示行
         const cb = label.querySelector('input');
         const text = ((cb.dataset.name || '') + (cb.dataset.code || '')).toLowerCase();
-        label.classList.toggle('hidden', !!kw && text.indexOf(kw) < 0);
+        const hit = !kw || text.indexOf(kw) >= 0;
+        label.classList.toggle('hidden', !hit);
+        if (hit) visible++;
       });
+      // 只在「搜索中」显示选项框；搜索框清空 → 收起
+      memberList.classList.toggle('open', !!kw);
+      setMemberEmptyHint(!!kw && visible === 0);
     }
 
     function checkedMemberIds() {
@@ -1674,6 +1696,16 @@
     document.addEventListener('click', function (e) {
       if (e.target !== unitInput && e.target !== codeInput && !suggestBox.contains(e.target)) {
         suggestBox.classList.add('hidden');
+      }
+      // 点搜索框/选项框以外的地方 → 收起人员选项框
+      if (!memberSearch.contains(e.target) && !memberList.contains(e.target)) closeMemberList();
+    });
+    // Esc：清空搜索并收起选项框
+    memberSearch.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' || e.key === 'Esc') {
+        memberSearch.value = '';
+        filterMemberList();
+        closeMemberList();
       }
     });
 

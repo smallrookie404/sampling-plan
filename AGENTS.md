@@ -137,6 +137,7 @@ sampling-plan/
   node tests/report.smoke.mjs    # 「数据报告处理」页签（回退/审核/断点续审/报告显示/面板缓存）
   node tests/entinfo.smoke.mjs   # 在职人数/接害人数：输入框预填、写入分工、上传成功后清空输入框与缓存（Playwright）
   node tests/entbasic.smoke.mjs  # 「企业基本信息上传」勾选项：三条补全规则（办公室/抄联系人/兼职专职1）、合并成一次 PUT、端到端上传调查表（Playwright）
+  node tests/memberpicker.smoke.mjs # 项目组成员「人员选项框」：默认收起、搜索才出现、无匹配提示、Esc/点外部收起、不遮挡「确认成员」（Playwright）
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
@@ -275,6 +276,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 改在职人数/接害人数（企业信息） | upload.js `entInputValues`/`validateEntInputs`/`entPayloadForUpload`/`buildEntInfoPatch`/`applyEntInfoOnUpload`/`clearEntInputsAfterUpload`/`prefillEntInfo` + index.html `#entOnJobNum`/`#entHazardNum`；测试 `tests/entinfo.smoke.mjs` |
 | 改「企业基本信息上传」勾选项（调查表上传补全） | upload.js `buildEntBasicPatch`/`entValueBlank`/`entBasicChecked`/`applyEntInfoOnUpload`（第 6 参 extraBuilder，合并成一次 PUT）+ index.html `#chkEntBasicUpload`；勾选状态**随团队配置**一起存（`saveTeamSettings` 的 `entBasicUpload` 字段 → 本地 `xcdc_team_v1_<账号>` 兜底 + Pages 版 `/api/team` 写 KV `team:<账号>`），`applyTeamSettings` 回填，缺省不勾；测试 `tests/entbasic.smoke.mjs` |
 | 改团队配置 | upload.js `loadTeamSettings`/`saveTeamSettings`/`loadProjectTeam` + `functions/api/team.js`（KV key、64KB 上限） |
+| 改「项目组成员」人员选项框 | upload.js `filterMemberList`/`closeMemberList`/`setMemberEmptyHint`（搜索框有内容才加 `.open`）+ index.html `.member-picker`/`.member-list`（默认 `display:none`，选项框位于搜索框与「确认成员」之间）；测试 `tests/memberpicker.smoke.mjs` |
 | 改样式/主题 | 主界面 `css/styles.css`（CSS 变量）；登录/上传视图是 index.html 内联 `.xcdc`（老内核兼容写法勿改成 `inset` 简写等新语法） |
 
 ## 常见任务速查
