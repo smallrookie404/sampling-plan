@@ -397,18 +397,20 @@ export function rsaEncrypt(plain) {
 // ---------------------------------------------------------------- 登录
 
 /**
- * 取验证码 → OCR（置信度门控换图）→ 登录。
+ * 只做「取验证码 → OCR（置信度门控换图）」，**不登录、不涉及任何账号口令**。
+ * 供登录页「验证码自动填写」使用：后端给出 uuid + 识别结果，前端仍用用户手输的
+ * 账号密码自己调 /auth/login（密码不离开浏览器）。
  * @param {object} opts
  *   apiBase    平台根地址（如 http://223.93.144.122:27800 或同源代理 /api/platform）
- *   username/password
  *   fetchImpl  自定义 fetch（Worker 里走 socket 转发）
- *   confThreshold / maxTries / onLog
- * @returns {object|null} { token, via, conf, user } 或 null
+ *   templates  字符模板（不传则懒加载内置模板）
+ *   confThreshold / maxTries / onLog / onCaptcha
+ * @returns {object|null} { uuid, answer, expr, conf, img, attempt } 或 null
  */
-export async function loginAccount(opts) {
+export async function solveCaptcha(opts) {
   const {
-    apiBase, username, password, fetchImpl = fetch,
-    templates, confThreshold = 0.25, maxTries = 4, onLog = () => {}, onCaptcha = null,
+    apiBase, fetchImpl = fetch, templates,
+    confThreshold = 0.25, maxTries = 4, onLog = () => {}, onCaptcha = null,
   } = opts;
   const tpl = templates || (await import('./_captcha-templates.mjs')).CAPTCHA_TEMPLATES;
 
@@ -438,6 +440,41 @@ export async function loginAccount(opts) {
       onLog('第 ' + attempt + ' 张置信度 ' + (rec ? rec.conf.toFixed(2) : 'n/a') + ' 低于门限，换图');
       continue;
     }
+    return {
+      uuid: code.uuid,
+      answer: rec.answer,
+      expr: rec.expr,
+      conf: rec.conf,
+      img: code.img,          // 原样回传（data:image/png;base64,…），前端仍可显示供用户核对
+      attempt: attempt,
+    };
+  }
+  return null;
+}
+
+/**
+ * 取验证码 → OCR（置信度门控换图）→ 登录。
+ * @param {object} opts
+ *   apiBase    平台根地址（如 http://223.93.144.122:27800 或同源代理 /api/platform）
+ *   username/password
+ *   fetchImpl  自定义 fetch（Worker 里走 socket 转发）
+ *   confThreshold / maxTries / onLog
+ * @returns {object|null} { token, via, conf, user } 或 null
+ */
+export async function loginAccount(opts) {
+  const {
+    apiBase, username, password, fetchImpl = fetch,
+    templates, confThreshold = 0.25, maxTries = 4, onLog = () => {}, onCaptcha = null,
+  } = opts;
+  const tpl = templates || (await import('./_captcha-templates.mjs')).CAPTCHA_TEMPLATES;
+
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    // 每轮只取 1 张验证码：被平台拒（OCR 猜错）就换新图重试，故 maxTries 传 1
+    const sol = await solveCaptcha({
+      apiBase, fetchImpl, templates: tpl, confThreshold, maxTries: 1, onLog, onCaptcha,
+    });
+    if (!sol) continue;
+    const rec = { answer: sol.answer, expr: sol.expr, conf: sol.conf };
     let d = null;
     try {
       const r = await fetchImpl(apiBase + '/auth/login', {
@@ -447,7 +484,7 @@ export async function loginAccount(opts) {
           username,
           password: rsaEncrypt(password),
           code: rec.answer,
-          uuid: code.uuid,
+          uuid: sol.uuid,
         }),
       });
       d = await r.json();
@@ -457,7 +494,25 @@ export async function loginAccount(opts) {
     }
     if (d && d.token) {
       const u = d.user && typeof d.user === 'object' ? d.user : {};
-      return { token: d.token, via: rec.expr, conf: Math.round(rec.conf * 100) / 100, user: u.userName || null };
+      // 平台登录响应的 user 可能是 {user:{…}}，也可能直接就是用户对象，两种都兼容
+      const uo = (u.user && typeof u.user === 'object') ? u.user : u;
+      const orgId = (uo && uo.organizationId)
+        || (uo && uo.organization && uo.organization.organizationId)
+        || (u && u.organizationId) || null;
+      return {
+        token: d.token,
+        via: rec.expr,
+        conf: Math.round(rec.conf * 100) / 100,
+        user: u.userName || (uo && uo.userName) || null,
+        // 只回传最小画像：完整用户对象含身份证号/手机号等，没必要经桥再传一遍；
+        // 浏览器拿到 token 后可自己调 /auth/info 取权威信息。
+        profile: {
+          userName: (uo && uo.userName) || u.userName || null,
+          userCode: (uo && uo.userCode) || u.userCode || null,
+          organizationId: orgId,
+        },
+        orgId: orgId,
+      };
     }
     onLog('第 ' + attempt + ' 张被拒：' + String((d && (d.message || d.msg)) || '').slice(0, 80));
   }

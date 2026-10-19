@@ -552,6 +552,15 @@
 
     let session = loadSession();
     let uuid = null;
+    // 登录方式：默认「云端代登录」——浏览器只提交账号密码，验证码由 CF 账号桥取图 + OCR + 提交，
+    // 界面不显示验证码。captchaMode = true 仅在云端登录失败、用户点「改用验证码登录」后启用（兜底）。
+    let captchaMode = false;
+    // 验证码自动填写（仅 captchaMode 下用）：captchaAutoFilled = 输入框里的码是自动填入的（用户没改过）；
+    //   captchaAutoFails = 连续失败次数；captchaAutoOff = 本次页面会话内已停用自动填写。
+    let captchaAutoFilled = false;
+    let captchaAutoFails = 0;
+    let captchaAutoOff = false;
+    const CAPTCHA_AUTO_MAX_FAILS = 2;
     let token = session ? session.token : null;
     let orgId = session ? session.orgId : null;
     let userInfo = session ? session.userInfo : null;
@@ -703,7 +712,8 @@
     function showLogin() {
       if (loginOverlay) loginOverlay.classList.remove('hidden');
       if (uploadOverlay) uploadOverlay.classList.add('hidden');
-      refreshCaptcha();
+      // 默认云端代登录，界面不显示验证码 → 不需要预先取图；兜底模式才取
+      if (captchaMode) refreshCaptcha();
     }
 
     // 上传视图：打开/关闭
@@ -771,13 +781,115 @@
     // 注入给顶层的 apiRequest：任何接口返回 401 都会走到这里
     authExpiredHandler = notifyAuthExpired;
 
-    async function refreshCaptcha() {
+    // 账号池验证码 OCR 端点：与 /token 同源同级（把结尾的 /token 换成 /code）。
+    // bridgeBase() 在下面定义（函数声明会提升），返回 /api/bridge/token 或 http://127.0.0.1:8787/token。
+    function bridgeSibling(suffix) {
+      return bridgeBase().then(function (b) {
+        const s = String(b).replace(/\/+$/, '');
+        // 正常返回 …/token（同源或直连）；xcdc_bridge_url 覆盖时可能只给到根地址，两种都兼容
+        return /\/token$/.test(s) ? s.replace(/\/token$/, '/' + suffix) : s + '/' + suffix;
+      });
+    }
+    async function bridgeCodeUrl() { return bridgeSibling('code'); }
+
+    // 云端代登录：把账号密码 POST 给账号桥，桥在服务端取图 + OCR + 调 /auth/login，
+    // 只把 token（及用户信息）回给浏览器。验证码不出现在界面上、也不回传。
+    // 成功返回 { ok, token, user, orgId, via, conf }；失败抛错（消息可直接展示）。
+    async function loginViaBridge(user, pass) {
+      const url = await bridgeSibling('login');
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 30000) : null;
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: user, password: pass }),
+          cache: 'no-store',
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+        let d = null;
+        try { d = await r.json(); } catch (e) { d = null; }
+        if (!d) throw new Error('账号桥返回异常（HTTP ' + r.status + '）');
+        if (!d.ok || !d.token) throw new Error(d.message || ('HTTP ' + r.status));
+        return d;
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw new Error('云端登录超时（30 秒），请重试');
+        throw e;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    // 云端登录失败后露出「改用验证码登录」入口（正常情况界面不显示验证码）
+    function showCaptchaFallback() {
+      const link = $('btnCaptchaFallback');
+      if (link) link.hidden = false;
+    }
+    function enableCaptchaMode() {
+      captchaMode = true;
+      const field = $('captchaField');
+      if (field) field.hidden = false;
+      const link = $('btnCaptchaFallback');
+      if (link) link.hidden = true;
+      loginMsg.textContent = '已切换为验证码登录';
+      refreshCaptcha();
+    }
+
+    // 走账号池 OCR 取一张验证码：返回 { ok, uuid, code, conf, img } 或 null（桥不可用/识别失败）。
+    // 只取「验证码答案」，账号密码仍由浏览器带着用户手输值去登录。
+    async function fetchCaptchaViaBridge() {
+      let url;
+      try { url = await bridgeCodeUrl(); } catch (e) { return null; }
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 8000) : null;
+      try {
+        const r = await fetch(url, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+        if (!r.ok) return null;
+        const d = await r.json();
+        if (!d || !d.ok || !d.uuid || !d.code) return null;
+        return d;
+      } catch (e) {
+        return null;   // 桥未启动 / 跨域被拒 / 超时 → 静默回退手输
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    // 刷新验证码：优先账号池 OCR 自动填写；桥不可用或连续失败则回退「浏览器取图 + 手输」。
+    // opts.forceManual = true 时跳过 OCR，直接给一张干净的手输图。
+    // 返回 true 表示已拿到一张验证码（uuid 有效）。
+    async function refreshCaptcha(opts) {
+      opts = opts || {};
+      const useAuto = !opts.forceManual && !captchaAutoOff;
+
+      // ① 账号池 OCR：拿到 uuid + 识别结果 + 图片，自动填入输入框
+      if (useAuto) {
+        // 识别需要 1~3 秒，给个提示，避免用户以为验证码加载失败
+        if (loginMsg) loginMsg.textContent = '正在自动识别验证码…';
+        const auto = await fetchCaptchaViaBridge();
+        if (auto) {
+          uuid = auto.uuid;
+          if (auto.img) captchaImg.src = auto.img;
+          $('captcha').value = auto.code;
+          captchaAutoFilled = true;
+          captchaAutoFails = 0;
+          loginMsg.textContent = '';
+          return true;
+        }
+        // OCR 不可用/失败：累计失败，到上限就本次会话内停用，避免每次开页都白等
+        captchaAutoFails++;
+        if (captchaAutoFails >= CAPTCHA_AUTO_MAX_FAILS) captchaAutoOff = true;
+      }
+
+      // ② 回退：浏览器直取图，用户手输
+      captchaAutoFilled = false;
       try {
         const d = await fetchCaptcha();
         uuid = d.uuid;
         captchaImg.src = d.img;
         $('captcha').value = '';
         loginMsg.textContent = '';
+        return true;
       } catch (e) {
         let msg = e.message;
         // GitHub Pages 等 HTTPS 静态托管无法直连平台 HTTP 接口，给出明确指引
@@ -787,11 +899,23 @@
           }
         } catch (e2) {}
         loginMsg.textContent = msg;
+        return false;
       }
     }
 
-    $('btnRefresh').addEventListener('click', refreshCaptcha);
-    captchaImg.addEventListener('click', refreshCaptcha);
+    // 手动刷新 = 明确要换一张（仍优先走 OCR 自动填；OCR 已停用时自然回退手输）
+    $('btnRefresh').addEventListener('click', function () { refreshCaptcha(); });
+    captchaImg.addEventListener('click', function () { refreshCaptcha(); });
+    // 用户自己改了验证码 → 视为手输，登录失败时不再自动换图重试
+    (function () {
+      const el = $('captcha');
+      if (el) el.addEventListener('input', function () { captchaAutoFilled = false; });
+    })();
+    // 云端登录失败后的兜底入口：切到「手输验证码」模式
+    (function () {
+      const link = $('btnCaptchaFallback');
+      if (link) link.addEventListener('click', function (e) { e.preventDefault(); enableCaptchaMode(); });
+    })();
 
     // 打开页面时自动填充已保存的账号密码
     try {
@@ -813,19 +937,50 @@
     $('btnLogin').addEventListener('click', async function () {
       const user = $('username').value.trim();
       const pass = $('password').value;
-      const code = $('captcha').value.trim();
-      if (!user || !pass || !code) { loginMsg.textContent = '请填写账号、密码和验证码'; return; }
+      if (!user || !pass) { loginMsg.textContent = '请填写账号和密码'; return; }
+      // 兜底模式才需要验证码；默认云端代登录，界面没有验证码输入框
+      const code = captchaMode ? $('captcha').value.trim() : '';
+      if (captchaMode && !code) { loginMsg.textContent = '请填写验证码'; return; }
       const btn = $('btnLogin');
       btn.disabled = true;
       btn.textContent = '登录中...';
+      let nextToken = null;
+      let nextUser = null;
+      let nextOrgId = null;
       try {
-        const r = await login(user, pass, code, uuid);
-        if (r.status !== 200 || !r.data || !r.data.token) {
-          const msg = (r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status);
-          throw new Error(msg);
+        if (!captchaMode) {
+          // ① 云端代登录：账号密码发到账号桥，桥取图 + OCR + 调 /auth/login，只回 token
+          loginMsg.textContent = '正在云端识别验证码并登录…';
+          const br = await loginViaBridge(user, pass);
+          nextToken = br.token;
+          nextUser = br.user;
+          nextOrgId = br.orgId;
+        } else {
+          // ② 兜底：浏览器自己取图 + 手输验证码
+          let r = await login(user, pass, code, uuid);
+          // 验证码是自动填入且用户没改过 → 失败极可能是 OCR 认错了：换一张自动再试一次。
+          // 手输的验证码不自动重试（避免把「密码错」掩盖成「验证码错」而反复提交）。
+          if ((r.status !== 200 || !r.data || !r.data.token) && captchaAutoFilled) {
+            const fresh = await refreshCaptcha();
+            const code2 = $('captcha').value.trim();
+            if (fresh && captchaAutoFilled && code2) {
+              loginMsg.textContent = '验证码自动识别可能有误，已换一张重试…';
+              r = await login(user, pass, code2, uuid);
+            } else {
+              captchaAutoFails++;
+              if (captchaAutoFails >= CAPTCHA_AUTO_MAX_FAILS) captchaAutoOff = true;
+            }
+          }
+          if (r.status !== 200 || !r.data || !r.data.token) {
+            const msg = (r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status);
+            throw new Error(msg);
+          }
+          nextToken = r.data.token;
+          nextUser = r.data.user;
         }
-        token = r.data.token;
-        userInfo = r.data.user.user || {};
+        token = nextToken;
+        // 平台登录响应的 user 可能是 {user:{…}}，也可能直接是用户对象，两种都兼容
+        userInfo = (nextUser && nextUser.user && typeof nextUser.user === 'object') ? nextUser.user : (nextUser || {});
         // 登录后调用 auth/info 获取权威用户信息（与平台网站一致），解析真实机构
         try {
           const full = await fetchAuthInfo(token);
@@ -835,7 +990,7 @@
             if (full.userCode) userInfo.userCode = full.userCode;
           }
         } catch (e) {}
-        orgId = resolveOrgId(userInfo) || (userInfo.organization && userInfo.organization.organizationId) || null;
+        orgId = nextOrgId || resolveOrgId(userInfo) || (userInfo.organization && userInfo.organization.organizationId) || null;
         session = { token: token, orgId: orgId, userInfo: userInfo };
         saveSession();
         teamSaved = await loadTeamSettings(); // 按登录账号恢复已确认的团队设置（云端优先）
@@ -852,6 +1007,7 @@
             localStorage.removeItem(PWD_KEY);
           }
         } catch (e) { }
+        loginMsg.textContent = '';          // 清掉「正在云端识别…」，下次登出回来不残留
         $('greeting').textContent = greetingText();
         syncGhButton();
         syncUserMenu();
@@ -867,7 +1023,18 @@
         warmAccountPool(); // 后台补齐池内其余账号（已有缓存的跳过，不重复登录）
       } catch (e) {
         loginMsg.textContent = '登录失败：' + e.message;
-        refreshCaptcha();
+        if (!captchaMode) {
+          // 云端代登录失败：露出兜底入口（正常界面不显示验证码）
+          showCaptchaFallback();
+        } else {
+          // 这次提交的是自动填入的验证码 → 记为一次 OCR 失败；到上限就停用自动填写，
+          // 并直接给一张干净的手输图（否则用户会被反复自动填错值卡住）。
+          if (captchaAutoFilled) {
+            captchaAutoFails++;
+            if (captchaAutoFails >= CAPTCHA_AUTO_MAX_FAILS) captchaAutoOff = true;
+          }
+          refreshCaptcha({ forceManual: captchaAutoOff });
+        }
       } finally {
         btn.disabled = false;
         btn.textContent = '登 录';

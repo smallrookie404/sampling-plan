@@ -6,29 +6,42 @@
 // 「账号池 + 验证码 OCR + RSA 加密 + 登录」整体移植到本 Function（见 js/captcha-core.mjs）。
 //
 // 路由（与本地 server.mjs 的同源路由保持一致，网页端无需区分环境）：
-//   GET /api/bridge/ping                 → { ok, autoStart, up, cloud }
-//   GET /api/bridge/token/<账号>          → { token, orgId, ... }
+//   GET  /api/bridge/ping                 → { ok, autoStart, up, cloud }
+//   POST /api/bridge/login                → { ok, token, user, orgId, via, conf }（登录页：云端代登录）
+//   GET  /api/bridge/code                 → { ok, uuid, code, conf, expr, img }（备用：只 OCR 回传）
+//   GET  /api/bridge/token/<账号>          → { token, orgId, ... }
 //
 // 安全：
-//   · 调用方必须带自己的平台会话令牌（Authorization 头），本接口会用它调 /auth/info 校验；
+//   · /token 的调用方必须带自己的平台会话令牌（Authorization 头），本接口会用它调 /auth/info 校验；
 //     校验不通过一律 401 —— 避免这个公开接口被任意人拿去换 btc-gxz/btc-wcy 的令牌。
+//   · /login 面向**未登录**的登录页（浏览器只有账号密码、没有会话），故不做会话校验，改为
+//     「同源校验 + 每日用量上限」。密码仅在本次请求内存中使用（转成 RSA 密文发上游），
+//     **不落 KV、不写日志、不回显**。
+//   · /code 备用接口：只返回一次性 uuid 与 OCR 结果，不含任何账号信息。
 //   · 账号口令只来自 Pages 加密变量 BRIDGE_ACCOUNTS 或 KV bridge:accounts，**不进前端代码**。
 //   · 令牌与验证码用量存 KV（binding: SAMPLING_RECORDS）。
 //
 // 平台访问：复用现成的同源代理 /api/platform（cloudflare:sockets 原始 TCP），
 // 所以这里的 apiBase 就是 /api/platform。
-import { loginAccount } from "./_captcha-core.mjs";
+import { loginAccount, solveCaptcha } from "./_captcha-core.mjs";
 import { CAPTCHA_TEMPLATES } from "./_captcha-templates.mjs";
 
 const TOKEN_PREFIX = "bridge:token:";
 const BUDGET_PREFIX = "bridge:captcha:";
+const LOGIN_BUDGET_PREFIX = "bridge:login:";
 const KV_ACCOUNTS_KEY = "bridge:accounts";
 const CONF_THRESHOLD = 0.25;
 const MAX_TRIES = 4;
+// 登录页验证码：单次请求最多换几张图（比 token 登录少，控制平台与 CPU 开销）
+const CODE_MAX_TRIES = 3;
+// 每日上限（防被当成免费打码接口滥用）；KV 免费额度写 1000/天，这里留足余量
+const CODE_DAILY_CAP = 300;
+// 登录页代登录的每日上限（每次登录都会消耗 1~N 张验证码 + 1 次 KV 写）
+const LOGIN_DAILY_CAP = 200;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, organizationId, Content-Type",
   "Access-Control-Max-Age": "86400",
 };
@@ -83,6 +96,149 @@ async function sessionValid(base, token, orgId) {
   }
 }
 
+/**
+ * 同源校验：允许「无 Origin 头」（同源 GET 通常不带）或 Origin/Referer 的 host 与本站一致。
+ * 目的只是挡住别的站点把这接口当免费打码服务用，不是强鉴权。
+ */
+function sameOrigin(request) {
+  const self = new URL(request.url).host;
+  const org = request.headers.get("origin");
+  const ref = request.headers.get("referer");
+  const hostOf = (u) => {
+    try { return new URL(u).host; } catch (e) { return ""; }
+  };
+  if (org && org !== "null") return hostOf(org) === self;
+  if (ref) return hostOf(ref) === self;
+  return true;
+}
+
+/**
+ * GET /api/bridge/code —— 登录页「验证码自动填写」。
+ * 只取图 + OCR，返回一次性 uuid 与识别结果；**不碰账号口令**，登录仍由浏览器发起。
+ */
+async function handleCode(context, base) {
+  const { request, env } = context;
+  if (!sameOrigin(request)) {
+    return json({ ok: false, message: "仅允许本站页面调用" }, 403);
+  }
+  const kv = env && env.SAMPLING_RECORDS;
+  const budgetKey = BUDGET_PREFIX + today();
+
+  // 每日上限（读一次、成功后写一次；KV 免费额度有限，故不在每次取图时都写）
+  if (kv) {
+    try {
+      const used = Number(await kv.get(budgetKey) || 0);
+      if (used >= CODE_DAILY_CAP) {
+        return json({ ok: false, message: "今日验证码识别次数已用完（" + CODE_DAILY_CAP + " 次），请手动输入验证码" }, 429);
+      }
+    } catch (e) { /* 读不到就不限流，保证可用性 */ }
+  }
+
+  const logs = [];
+  const sol = await solveCaptcha({
+    apiBase: base,
+    templates: CAPTCHA_TEMPLATES,
+    confThreshold: CONF_THRESHOLD,
+    maxTries: CODE_MAX_TRIES,
+    onLog: (m) => logs.push(m),
+  });
+
+  if (!sol) {
+    return json({ ok: false, message: "验证码识别失败（已尝试 " + CODE_MAX_TRIES + " 张），请手动输入", logs }, 502);
+  }
+
+  if (kv) {
+    try {
+      const used = Number(await kv.get(budgetKey) || 0) + 1;
+      await kv.put(budgetKey, String(used));
+    } catch (e) { /* 用量统计失败不影响返回 */ }
+  }
+
+  return json({
+    ok: true,
+    uuid: sol.uuid,
+    code: String(sol.answer),
+    conf: Math.round(sol.conf * 100) / 100,
+    expr: sol.expr,
+    img: sol.img,
+    tries: sol.attempt,
+  });
+}
+
+/**
+ * POST /api/bridge/login —— 登录页「云端代登录」。
+ * 浏览器只提交账号密码（HTTPS）；验证码完全在云端取图 + OCR + 提交，**不返回给浏览器**，
+ * 浏览器拿到的只有最终 token。密码仅存在于本次请求内存（转 RSA 密文发上游），
+ * 不写 KV、不打日志、不回显。
+ */
+async function handleLogin(context, base) {
+  const { request, env } = context;
+  if (request.method !== "POST") {
+    return json({ ok: false, message: "请使用 POST" }, 405);
+  }
+  if (!sameOrigin(request)) {
+    return json({ ok: false, message: "仅允许本站页面调用" }, 403);
+  }
+  let body = null;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return json({ ok: false, message: "请求体不是合法 JSON" }, 400);
+  }
+  const username = String((body && body.username) || "").trim();
+  const password = String((body && body.password) || "");
+  if (!username || !password) {
+    return json({ ok: false, message: "请填写账号和密码" }, 400);
+  }
+
+  const kv = env && env.SAMPLING_RECORDS;
+  const budgetKey = LOGIN_BUDGET_PREFIX + today();
+  if (kv) {
+    try {
+      const used = Number(await kv.get(budgetKey) || 0);
+      if (used >= LOGIN_DAILY_CAP) {
+        return json({ ok: false, message: "今日云端登录次数已用完（" + LOGIN_DAILY_CAP + " 次），请改用验证码登录" }, 429);
+      }
+    } catch (e) { /* 读不到就不限流，保证可用性 */ }
+  }
+
+  const logs = [];
+  const got = await loginAccount({
+    apiBase: base,
+    username,
+    password,
+    templates: CAPTCHA_TEMPLATES,
+    confThreshold: CONF_THRESHOLD,
+    maxTries: MAX_TRIES,
+    onLog: (m) => logs.push(m),
+  });
+
+  if (!got) {
+    return json({
+      ok: false,
+      message: "云端登录失败（已尝试 " + MAX_TRIES + " 张验证码），请重试或改用验证码登录",
+      logs,
+    }, 502);
+  }
+
+  if (kv) {
+    try {
+      const used = Number(await kv.get(budgetKey) || 0) + 1;
+      await kv.put(budgetKey, String(used));
+    } catch (e) { /* 用量统计失败不影响登录 */ }
+  }
+
+  // ⚠ 不写 TOKEN_PREFIX 缓存：这是任意用户凭据换来的令牌，不做持久化
+  return json({
+    ok: true,
+    token: got.token,
+    user: got.profile || null,   // 最小画像（userName/userCode/organizationId），不含敏感字段
+    orgId: got.orgId || 1,
+    via: got.via,
+    conf: got.conf,
+  });
+}
+
 export async function onRequest(context) {
   const { request, env, params } = context;
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
@@ -93,6 +249,14 @@ export async function onRequest(context) {
 
   if (head === "ping") {
     return json({ ok: true, autoStart: false, up: true, cloud: true });
+  }
+
+  if (head === "login") {
+    return await handleLogin(context, base);
+  }
+
+  if (head === "code") {
+    return await handleCode(context, base);
   }
 
   if (head !== "token") {

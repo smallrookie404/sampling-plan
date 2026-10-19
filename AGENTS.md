@@ -41,7 +41,7 @@ sampling-plan/
     ├── functions/api/              # Cloudflare Pages Functions（编译为 Worker）
     │   ├── records.js / library.js # KV 数据读写（binding: SAMPLING_RECORDS）
     │   ├── team.js                 # 团队配置云端存取（按账号分 key team:<账号>）
-    │   ├── bridge/[[path]].js      # 云端账号桥（验证码 OCR + RSA + 登录 + 令牌缓存）
+    │   ├── bridge/[[path]].js      # 云端账号桥（OCR + RSA + 登录 + 令牌缓存；`/login` 供登录页云端代登录、`/code` 备用只 OCR）
     │   └── platform/[[path]].js    # 平台接口同源代理（cloudflare:sockets 原始 TCP 转发）
     ├── scripts/extract-data.mjs    # 从原 Excel 生成 js/data.js + data-core.js + data-library.js
     └── tests/                      # 自动化测试（Node + Playwright）；另有 _browser.mjs、check_shots.py、validate_export.py
@@ -132,7 +132,8 @@ sampling-plan/
   node tests/survey.edit.mjs     # 调查表编辑交互（Playwright）
   node tests/cloudflare.test.mjs # Cloudflare Functions 接口（索引 + 分条 KV）
   node tests/captcha.test.mjs    # 验证码 OCR（JS 移植）准确率 + RSA 自检
-  node tests/bridge-cloudflare.test.mjs # 云端账号桥（假 KV + 假平台，真跑 OCR 与登录）
+  node tests/bridge-cloudflare.test.mjs # 云端账号桥（假 KV + 假平台，真跑 OCR 与登录；含 `/login` 代登录、`/code` 契约）
+  node tests/login.ui.mjs        # 登录界面默认不显示验证码 + 「改用验证码登录」兜底可展开（Playwright）
   node tests/report.smoke.mjs    # 「数据报告处理」页签（回退/审核/断点续审/报告显示/面板缓存）
   node tests/entinfo.smoke.mjs   # 在职人数/接害人数：输入框预填、写入分工、上传成功后清空输入框与缓存（Playwright）
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）

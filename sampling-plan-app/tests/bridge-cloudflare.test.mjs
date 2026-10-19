@@ -35,7 +35,7 @@ function loadAsModule(file) {
 const SAMPLE_B64 = fs.readFileSync(SAMPLE).toString("base64");
 const CALLER_TOKEN = "Bearer CALLER-SESSION";
 const ISSUED_TOKEN = "Bearer ISSUED-GXZ";
-const platform = { code: 0, login: 0, info: 0 };
+const platform = { code: 0, login: 0, info: 0, brokenCode: false, rejectLogin: false };
 
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url);
@@ -44,12 +44,15 @@ globalThis.fetch = async (url, init = {}) => {
   const ok = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
   if (u.endsWith("/auth/code")) {
     platform.code++;
+    if (platform.brokenCode) return ok({ message: "平台取验证码异常" }, 500);
     return ok({ uuid: "u-" + platform.code, img: "data:image/png;base64," + SAMPLE_B64 });
   }
   if (u.endsWith("/auth/login")) {
     platform.login++;
     const body = JSON.parse(init.body);
-    if (body.code === 35) return ok({ user: { userName: "高循洲" }, token: ISSUED_TOKEN });  // 0000.png = 7×5=35
+    if (!platform.rejectLogin && body.code === 35) {
+      return ok({ user: { userName: "高循洲", userCode: "BTC-GXZ", organizationId: 7 }, token: ISSUED_TOKEN });
+    }
     return ok({ message: "验证码错误" }, 400);
   }
   if (u.endsWith("/auth/info")) {
@@ -74,6 +77,16 @@ const env = {
 };
 const ctx = (path, headers = {}, method = "GET") => ({
   request: new Request("https://sampling-plan.pages.dev/api/bridge/" + path, { method, headers }),
+  env,
+  params: { path: path.split("/") },
+});
+// POST 版本（带 JSON body）
+const ctxPost = (path, body, headers = {}) => ({
+  request: new Request("https://sampling-plan.pages.dev/api/bridge/" + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  }),
   env,
   params: { path: path.split("/") },
 });
@@ -126,7 +139,93 @@ check("验证码用量写入 KV（bridge:captcha:<日期>）",
   Number(store.get("bridge:captcha:" + new Date().toISOString().slice(0, 10)) || 0) > 0,
   String(store.get("bridge:captcha:" + new Date().toISOString().slice(0, 10))));
 
-// 9) 未知路径
+// 9) 登录页验证码自动填写：/code 只取图+OCR，不登录、不需会话
+const budgetKey = "bridge:captcha:" + new Date().toISOString().slice(0, 10);
+platform.login = 0; platform.code = 0;
+r = await mod.onRequest(ctx("code"));
+j = await r.json();
+check("/code 无需 Authorization 即返回 uuid+code",
+  r.status === 200 && j.ok === true && !!j.uuid && j.code === "35",
+  "HTTP " + r.status + " ／ " + JSON.stringify({ uuid: j.uuid, code: j.code, conf: j.conf, expr: j.expr }));
+check("/code 回传图片供用户核对", typeof j.img === "string" && j.img.startsWith("data:image/png;base64,"));
+check("/code 不做登录（login=0）", platform.login === 0, "login=" + platform.login);
+
+// 10) /code 不涉及账号：即使未配置 BRIDGE_ACCOUNTS 也能用
+const r3 = await mod.onRequest({ ...ctx("code"), env: { SAMPLING_RECORDS: kv } });
+const j3 = await r3.json();
+check("/code 未配置账号时仍可用（不读账号池）", r3.status === 200 && j3.ok === true && j3.code === "35", "HTTP " + r3.status);
+
+// 11) /code 计入每日用量
+check("/code 计入验证码用量（bridge:captcha:<日期>）", Number(store.get(budgetKey) || 0) > 0, String(store.get(budgetKey)));
+
+// 12) /code 跨站调用 → 403
+r = await mod.onRequest(ctx("code", { Origin: "https://evil.example" }));
+check("/code 跨站 Origin → 403", r.status === 403, "HTTP " + r.status);
+
+// 13) /code 达到每日上限 → 429，且提示改手输
+store.set(budgetKey, "300");
+r = await mod.onRequest(ctx("code"));
+j = await r.json();
+check("/code 达到每日上限 → 429 并提示手动输入",
+  r.status === 429 && /手动输入/.test(j.message || ""), "HTTP " + r.status + " ／ " + j.message);
+store.delete(budgetKey);
+
+// 14) 平台取验证码一直异常 → /code 返回 502（前端据此回退手输）
+platform.brokenCode = true; platform.code = 0;
+r = await mod.onRequest(ctx("code"));
+j = await r.json();
+check("/code 识别失败 → 502 并提示手动输入",
+  r.status === 502 && /手动输入/.test(j.message || ""), "HTTP " + r.status + " ／ " + j.message);
+check("/code 失败时按 CODE_MAX_TRIES 换图重试（3 次）", platform.code === 3, "code=" + platform.code);
+platform.brokenCode = false;
+
+// 15) 登录页云端代登录：POST /login（账号密码来自浏览器，验证码全程在云端）
+const loginKey = "bridge:login:" + new Date().toISOString().slice(0, 10);
+platform.login = 0; platform.code = 0;
+r = await mod.onRequest(ctxPost("login", { username: "btc-wf", password: "pw-123" }));
+j = await r.json();
+check("/login 无需 Authorization 即完成登录",
+  r.status === 200 && j.ok === true && j.token === ISSUED_TOKEN,
+  "HTTP " + r.status + " ／ " + JSON.stringify({ ok: j.ok, via: j.via, conf: j.conf }));
+check("/login 回传用户与机构（供前端解析组织）",
+  !!(j.user && j.user.userName === "高循洲") && j.orgId === 7,
+  JSON.stringify({ user: j.user, orgId: j.orgId }));
+check("/login 真跑 OCR 且只登录 1 次", platform.login === 1 && platform.code === 1,
+  "login=" + platform.login + " code=" + platform.code);
+check("/login 不回传验证码答案（uuid/code 都不出现）",
+  !("code" in j) && !("uuid" in j), JSON.stringify(Object.keys(j)));
+check("/login 不写令牌缓存到 KV（凭据换来的令牌不持久化）", !store.has("bridge:token:btc-wf"));
+check("/login 计入登录用量（bridge:login:<日期>）", Number(store.get(loginKey) || 0) === 1, String(store.get(loginKey)));
+
+// 16) /login 参数与协议校验
+r = await mod.onRequest(ctxPost("login", { username: "btc-wf" }));
+check("/login 缺密码 → 400", r.status === 400, "HTTP " + r.status);
+r = await mod.onRequest(ctxPost("login", "not-json"));
+check("/login 请求体非 JSON → 400", r.status === 400, "HTTP " + r.status);
+r = await mod.onRequest(ctxPost("login", { username: "a", password: "b" }, { Origin: "https://evil.example" }));
+check("/login 跨站 Origin → 403", r.status === 403, "HTTP " + r.status);
+r = await mod.onRequest(ctx("login"));
+check("/login 用 GET → 405", r.status === 405, "HTTP " + r.status);
+
+// 17) 平台一直拒绝（OCR 猜错/密码错）→ 502，并提示可改用验证码登录
+platform.rejectLogin = true; platform.login = 0; platform.code = 0;
+r = await mod.onRequest(ctxPost("login", { username: "btc-wf", password: "pw" }));
+j = await r.json();
+check("/login 平台拒绝 → 502 且提示改用验证码登录",
+  r.status === 502 && /改用验证码登录/.test(j.message || ""), "HTTP " + r.status + " ／ " + j.message);
+check("/login 失败按 MAX_TRIES 重试（4 次换图）", platform.login === 4 && platform.code === 4,
+  "login=" + platform.login + " code=" + platform.code);
+platform.rejectLogin = false;
+
+// 18) /login 每日上限 → 429
+store.set(loginKey, "200");
+r = await mod.onRequest(ctxPost("login", { username: "btc-wf", password: "pw" }));
+j = await r.json();
+check("/login 达每日上限 → 429 并提示改用验证码登录",
+  r.status === 429 && /改用验证码登录/.test(j.message || ""), "HTTP " + r.status + " ／ " + j.message);
+store.delete(loginKey);
+
+// 19) 未知路径
 r = await mod.onRequest(ctx("nope"));
 check("未知路径 → 404", r.status === 404, "HTTP " + r.status);
 

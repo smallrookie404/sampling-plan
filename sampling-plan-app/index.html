@@ -147,6 +147,8 @@
     }
     .xcdc .footer { margin-top: 18px; color: #94a3b8; font-size: 12px; }
     .xcdc .hidden { display: none; }
+    /* hidden 属性必须压过内联 display，否则「默认不显示验证码」会被样式覆盖 */
+    .xcdc [hidden] { display: none !important; }
     /* ===== 老内核兼容（360极速等 Chromium<84 不支持 flex gap）：以 margin 模拟间距，支持 gap 的内核不受影响 ===== */
     @supports not (gap: 1px) {
       .xcdc .xcdc-brand .logo { margin-right: 12px; }
@@ -463,7 +465,9 @@
           <label for="password">密码</label>
           <input type="password" id="password" placeholder="请输入密码">
         </div>
-        <div class="field">
+        <!-- 验证码默认隐藏：登录时由云端（CF 账号桥）取图 + OCR + 代登录，浏览器只提交账号密码。
+             仅在云端登录失败时，点下方「改用验证码登录」才显示本行，作为兜底。 -->
+        <div class="field" id="captchaField" hidden>
           <label for="captcha">验证码</label>
           <div class="captcha-row">
             <input type="text" id="captcha" placeholder="计算结果" autocomplete="off">
@@ -476,6 +480,8 @@
         </div>
         <button class="btn" id="btnLogin" style="width:100%; margin-top:6px;">登 录</button>
         <div class="msg" id="loginMsg"></div>
+        <div class="link" id="btnCaptchaFallback" hidden
+             style="text-align:center; margin-top:8px; font-size:12px; opacity:.75;">云端验证码不可用？改用验证码登录</div>
       </div>
     </div>
   </div>

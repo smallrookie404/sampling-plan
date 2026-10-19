@@ -207,6 +207,57 @@ export function createServer(opts = {}) {
         return sendJson(res, 200, { ok: true, autoStart: true, up: await bridgeHealth() });
       }
 
+      // 登录页「云端代登录」：浏览器只发账号密码，桥取图 + OCR + 登录，只回 token
+      if (pathname === "/api/bridge/login") {
+        if (req.method !== "POST") return sendJson(res, 405, { ok: false, message: "请使用 POST" });
+        if (!(await bridgeHealth())) {
+          const ok = await ensureBridge();
+          if (!ok) {
+            return sendJson(res, 502, {
+              ok: false,
+              message: "账号桥未能自动启动。请确认已安装 Python 3，且 " + BRIDGE_SCRIPT + " 可运行"
+                + "（也可手动执行 captcha-ocr/start-bridge.bat）。",
+            });
+          }
+        }
+        try {
+          const bodyText = await readBody(req);
+          const r = await fetch(BRIDGE_BASE + "/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: bodyText && bodyText.trim() ? bodyText : "{}",
+            cache: "no-store",
+          });
+          const text = await r.text();
+          res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          return res.end(text);
+        } catch (e) {
+          return sendJson(res, 502, { ok: false, message: "账号桥请求失败：" + (e && e.message ? e.message : e) });
+        }
+      }
+
+      // 登录页验证码自动填写：桥取图 + OCR，返回 {uuid, code, conf, img}（不涉及账号口令）
+      if (pathname === "/api/bridge/code") {
+        if (!(await bridgeHealth())) {
+          const ok = await ensureBridge();
+          if (!ok) {
+            return sendJson(res, 502, {
+              ok: false,
+              message: "账号桥未能自动启动。请确认已安装 Python 3，且 " + BRIDGE_SCRIPT + " 可运行"
+                + "（也可手动执行 captcha-ocr/start-bridge.bat）。",
+            });
+          }
+        }
+        try {
+          const r = await fetch(BRIDGE_BASE + "/code", { cache: "no-store" });
+          const text = await r.text();
+          res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          return res.end(text);
+        } catch (e) {
+          return sendJson(res, 502, { ok: false, message: "账号桥请求失败：" + (e && e.message ? e.message : e) });
+        }
+      }
+
       // 取账号令牌（btc-gxz / btc-wcy）：桥没起就先自动拉起，再转发
       if (pathname.startsWith("/api/bridge/token/")) {
         const account = pathname.slice("/api/bridge/token/".length);
