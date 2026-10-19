@@ -1964,6 +1964,7 @@
     // 前三个列表均为「按车间合并」后的数组：[{ unit, jobs:[岗位, ...] }]（顺序=首次出现）
     // quietPoints：「噪声岗位（LEX 最大值 ≥ 80 dB）内 3 个测量值全部 < 80 dB 的点位」，
     //   形如 [{ unit, job, point }]，供报告后处理②c 按点位删「噪声」危害（见 noiseInfoFromRows）。
+    //   ⚠ 仅在「多个点位挤在同一单元格（多行）」的形态下判定；单点位单行不参与。
     function buildNoiseSummary(display) {
       const out = { nonNoise: [], noiseWorkshop: [], overWorkshop: [], groupCount: 0, quietPoints: [] };
       if (!display || display.length < 2) return out;
@@ -1999,11 +2000,12 @@
         // ★ 行内多点位（2026-10-19）：报告有时把同一岗位的多个点位挤在**同一个单元格**里（单元格多行），
         //   「测量结果[dB(A)」单元格同样多行，且每个点位固定 3 个测量值、按点位顺序排列
         //   （第 1 个点位 = 前 3 行，第 2 个点位 = 第 4~6 行，依次类推）。
-        //   这里只在「点位数 = 结果行数 / 3」口径明确时才记录点位级测量值，否则整行跳过（保守）。
+        //   ⚠ 只在「**多行挤在一格**」（点位数 n > 1 且点数 = 结果行数 / 3）时才做点位级判断；
+        //     单点位单行的报告形态（n = 1）**不参与**（用户 2026-10-19 明确要求），整行跳过。
         const points = cPoint >= 0 ? splitLines(src[cPoint]) : [];
         const results = cResult >= 0 ? splitLines(src[cResult]) : [];
         const n = Math.max(units.length, jobs.length, points.length);
-        const perPoint = (n > 0 && points.length === n && results.length === n * 3);
+        const perPoint = (n > 1 && points.length === n && results.length === n * 3);
         for (let i = 0; i < n; i++) {
           const unit = pickLine(units, i);
           const job = beforeSlash(pickLine(jobs, i));

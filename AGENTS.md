@@ -182,10 +182,11 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
 10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，顺序跑 6 步、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）。
    - ②c **低噪点位**（用户 2026-10-19）：岗位 LEX 最大值 ≥ 80 dB（噪声岗位，② 不整体删）时，噪声表常把同一岗位的多个点位挤在**一个单元格**内（单元格多行），`测量结果[dB(A)` 同样多行且**每个点位固定 3 个测量值**（第 1 个点位=前 3 行，第 2 个=4~6 行…）。某点位 3 个测量值**全部 < 80 dB** → 该点位不接触噪声 → 表4-1 里「车间+岗位+点位」那一行的「职业病危害因素」列删掉「噪声」（删空填 `-`）。
+     · ⚠ **只在「多行挤在一格」时生效**（`n > 1` 且点数 = 结果行数/3）；**单点位单行不参与**（用户 2026-10-19 明确要求）。实测单点位单行的报告（每点位一行）→ `quietPointPairs` 恒为空、表4-1 不动。
      · 数据侧：upload.js `buildNoiseSummary` 额外产出 `quietPoints:[{unit,job,point}]`（经 `noiseInfoFromXml/Buf` 的 `quietPointPairs` 传给 blf）；**前提**同岗位至少有一个点位 3 个测量值全部 ≥ 80 dB，否则不判定（不能把整岗位噪声删光，那种情况走 ②）。
      · 匹配侧：只在**表4-1**（表头同时含「职业病危害因素」+「工作地点…」列）动手，表5-1 检测项目确认表不碰；点位取「工作地点及内容」首个 `/`（兼容全角 `／`）前的部分；该单元格多行时**全部点位都低噪才删**。行键与列号平移同 ②。
      · 无 `quietPointPairs`（页面缓存了旧版 upload.js）时自动跳过；无低噪点位时零成本返回。
-     · 专项测试：`tests/pjbg.quietpoint.test.mjs`（22 项）+ `pjbg.noiseapi.smoke.mjs` G 段（行内多点位切分）。
+     · 专项测试：`tests/pjbg.quietpoint.test.mjs`（22 项）+ `pjbg.noiseapi.smoke.mjs` G 段（行内多点位切分 + 单点位单行守门，16 项）。
    - ⑥ 依据（用户 2026-10-17，2026-10-17 晚修正）：**噪声车间岗位为空**（`SamplingUpload.noiseWorkshopGroupsFromBuf` 返回 `[]`）→ 删 1.2.3 评价依据下 GB 23466-2025 条目、9.2 下「产生噪声的工作场所设置…」；**取「检测项目确认表」的「职业病危害因素」列**（`collectConfirmColTexts`）→ 按危害因素库**「系统名称」列**（字段 `name`）匹配（`lookupHazardField`）→ 判三组：
      · **粉尘**：`dust`「粉尘性质」列（总尘/呼尘）非空 **或** `physchem` 含「粉尘」→ 有粉尘；两者皆无 → 删粉尘组。
      · **毒物**：`physchem` 含「毒物」→ 有毒物；`physchem` 整列为空 → **未知，不删**（保守）；确认无毒物 → 删毒物组。
