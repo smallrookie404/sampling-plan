@@ -579,6 +579,92 @@
     return { xml: out, changed: changed };
   }
 
+  // ---------------- 报告后处理②c：噪声岗位内「低噪点位」单独删掉「噪声」危害 ----------------
+  // 用户要求（2026-10-19）：某「车间+岗位」的噪声 LEX 最大值 ≥ 80 dB（属噪声作业岗位，② 不整体删噪声）时，
+  // 噪声表里该岗位常把多个点位挤在**同一个单元格**里（单元格多行），「测量结果[dB(A)」同样多行，
+  // 且每个点位固定 3 个测量值、按点位顺序排列（第 1 个点位 = 前 3 行，第 2 个 = 第 4~6 行…）。
+  // 逐点位判断：某点位 3 个测量值**全部 < 80 dB** → 该点位实际不接触噪声 →
+  // 表4-1 里「车间+岗位+点位」那一行的「职业病危害因素」列也把「噪声」删掉。
+  //
+  // 前提（由 upload.js 侧算好并保证）：同岗位**至少有一个点位 3 个测量值全部 ≥ 80 dB**，
+  //   否则整个岗位的噪声会被删光——那种情况本就该走 ② 的整岗位规则。
+  // 匹配口径：
+  //   · 只在**表4-1**（表头同时含「职业病危害因素」和「工作地点…」列）上动手，表5-1 检测项目确认表不碰；
+  //   · 行键 = 单元/工作场所(第1列) + 岗位（工种）(第2列) + 点位；
+  //     表4-1 的点位在「工作地点及内容」列里、取首个「/」前的部分（如「针车2/操作设备针车作业」→ 针车2）；
+  //   · 该行「工作地点及内容」可能也是多行（多个点位共用一行/一个危害因素单元格），
+  //     此时只有**全部点位**都是低噪点位才删（否则该行仍需保留噪声）。
+  const WORKPLACE_COL_HEAD = '工作地点';   // 表4-1「工作地点及内容」列（点位在首个「/」前）
+
+  // 单元格文本按软换行拆行（去掉空行）；点位取首个「/」（兼容全角「／」）前的部分
+  function cellLines(text) {
+    return String(text === null || text === undefined ? '' : text)
+      .split('\n')
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s !== ''; });
+  }
+  function beforeSlashText(text) {
+    const s = String(text === null || text === undefined ? '' : text);
+    let i = s.indexOf('/');
+    const j = s.indexOf('／');
+    if (i < 0 || (j >= 0 && j < i)) i = j;
+    return (i < 0 ? s : s.slice(0, i)).trim();
+  }
+
+  // quietPoints: [{ unit, job, point }]
+  function fixQuietPointHazards(xml, quietPoints) {
+    if (!quietPoints || !quietPoints.length) return { xml: xml, changed: 0 };
+    if (xml.indexOf(HAZARD_COL_HEAD) < 0) return { xml: xml, changed: 0 };
+    const set = {};
+    quietPoints.forEach(function (p) {
+      set[normKey(p.unit) + '\u0001' + normKey(p.job) + '\u0001' + normKey(p.point)] = 1;
+    });
+    let changed = 0;
+    const out = mapTables(xml, function (tbl) {
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return tbl;
+      const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+      let hIdx = -1;
+      let pIdx = -1;
+      for (let i = 0; i < headCells.length; i++) {
+        const t = cellText(headCells[i]);
+        if (hIdx < 0 && t.indexOf(HAZARD_COL_HEAD) >= 0) hIdx = i;
+        if (pIdx < 0 && t.indexOf(WORKPLACE_COL_HEAD) >= 0) pIdx = i;
+      }
+      // 只处理表4-1（有「工作地点及内容」列）；表5-1 检测项目确认表没有该列 → 不动
+      if (hIdx < 0 || pIdx < 0) return tbl;
+      let newTbl = tbl;
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+        if (cells.length < 3) continue;
+        const unit = cellText(cells[0]);
+        const job = cellText(cells[1]);
+        if (!unit && !job) continue;   // 表头续行（只有「总数 / 数/班」那行）
+        // 表头可能因合并单元格比数据行少若干格（本项目「人数」表头 1 格 / 数据行 2 格），按差值平移
+        const shift = cells.length - headCells.length;
+        const pi = pIdx + shift;
+        const ci = hIdx + shift;
+        if (pi < 0 || pi >= cells.length || ci < 0 || ci >= cells.length) continue;
+        const pts = cellLines(cellText(cells[pi]))
+          .map(beforeSlashText)
+          .filter(function (s) { return s !== ''; });
+        if (!pts.length) continue;
+        const base = normKey(unit) + '\u0001' + normKey(job) + '\u0001';
+        const allQuiet = pts.every(function (pt) { return !!set[base + normKey(pt)]; });
+        if (!allQuiet) continue;
+        const text = cellText(cells[ci]);
+        if (text.indexOf(NOISE_HAZARD) < 0) continue;   // 兜底：列对不上 / 已删过
+        const next = dropNoiseItem(text);
+        if (next === null) continue;
+        const newRow = rows[ri].replace(cells[ci], setCellText(cells[ci], next));
+        newTbl = newTbl.replace(rows[ri], newRow);
+        changed++;
+      }
+      return newTbl;
+    });
+    return { xml: out, changed: changed };
+  }
+
   // ---------------- 报告后处理②b：表4-1 职业病危害因素列「氮氧化物」措辞精简 ----------------
   // 用户要求（2026-10-16）：表4-1「职业病危害因素」列里若出现
   //   氮氧化物(一氧化氮和二氧化氮):氮氧化物(以二氧化氮计)
@@ -1786,6 +1872,11 @@
         xml = r2.xml; changed += r2.changed;
         if (r2.changed) console.info('[检评报告] 非噪声岗位删除「噪声」危害，共修正 ' + r2.changed + ' 处');
         nonNoiseText = noiseInfo.nonNoiseText || '';
+        // ②c 噪声岗位（LEX 最大值 ≥ 80 dB）内「3 个测量值全部 < 80 dB」的点位，单独删掉「噪声」危害
+        //   （前提：同岗位至少有一个点位 3 个测量值全部 ≥ 80 dB，由 upload.js 侧算好）
+        const r2c = fixQuietPointHazards(xml, noiseInfo.ok ? noiseInfo.quietPointPairs : null);
+        xml = r2c.xml; changed += r2c.changed;
+        if (r2c.changed) console.info('[检评报告] 低噪点位删除「噪声」危害，共修正 ' + r2c.changed + ' 处');
       } else if (u && typeof u.noiseNonNoiseFromBuf === 'function') {
         // 兜底：老接口（页面缓存了旧版 upload.js 时）
         const pairs = await u.noiseNonNoiseFromBuf(buf);
@@ -2282,6 +2373,7 @@
     genPjbgDocx: genPjbgDocx,
     fixHighToxColumn: fixHighToxColumn,
     fixNonNoiseHazards: fixNonNoiseHazards,
+    fixQuietPointHazards: fixQuietPointHazards,
     fixNitrogenOxide: fixNitrogenOxide,
     fixReportText: fixReportText,
     fixHazardNote: fixHazardNote,

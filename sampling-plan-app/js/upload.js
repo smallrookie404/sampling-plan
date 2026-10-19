@@ -1959,10 +1959,13 @@
     }
     function noiseNorm(s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ''); }
 
-    // 由「展示用噪声行」计算筛选结果，返回 { nonNoise, noiseWorkshop, overWorkshop, groupCount }
-    // 三个列表均为「按车间合并」后的数组：[{ unit, jobs:[岗位, ...] }]（顺序=首次出现）
+    // 由「展示用噪声行」计算筛选结果，返回
+    //   { nonNoise, noiseWorkshop, overWorkshop, groupCount, quietPoints }
+    // 前三个列表均为「按车间合并」后的数组：[{ unit, jobs:[岗位, ...] }]（顺序=首次出现）
+    // quietPoints：「噪声岗位（LEX 最大值 ≥ 80 dB）内 3 个测量值全部 < 80 dB 的点位」，
+    //   形如 [{ unit, job, point }]，供报告后处理②c 按点位删「噪声」危害（见 noiseInfoFromRows）。
     function buildNoiseSummary(display) {
-      const out = { nonNoise: [], noiseWorkshop: [], overWorkshop: [], groupCount: 0 };
+      const out = { nonNoise: [], noiseWorkshop: [], overWorkshop: [], groupCount: 0, quietPoints: [] };
       if (!display || display.length < 2) return out;
       const head = display[0];
       const findCol = function (name) {
@@ -1975,6 +1978,8 @@
       const cUnit = findCol('单元/工作场所');
       const cJob = findCol('岗位/工种/测量点/对象');
       if (cUnit < 0 || cJob < 0) return out;
+      const cPoint = findCol('测量点/对象');     // buildNoiseDisplay 从「岗位/工种/测量点/对象」拆出来的点位列
+      const cResult = findCol('测量结果');       // 「测量结果[dB(A)]」，每个点位 3 个测量值（多行）
       const lexCols = [];
       for (let i = 0; i < head.length; i++) if (noiseNorm(head[i]).indexOf('LEX') >= 0) lexCols.push(i);
 
@@ -1991,17 +1996,32 @@
         if (jobRaw.trim() !== '') prevJob = jobRaw;
         const units = splitLines(prevUnit);
         const jobs = splitLines(prevJob);
-        const n = Math.max(units.length, jobs.length);
+        // ★ 行内多点位（2026-10-19）：报告有时把同一岗位的多个点位挤在**同一个单元格**里（单元格多行），
+        //   「测量结果[dB(A)」单元格同样多行，且每个点位固定 3 个测量值、按点位顺序排列
+        //   （第 1 个点位 = 前 3 行，第 2 个点位 = 第 4~6 行，依次类推）。
+        //   这里只在「点位数 = 结果行数 / 3」口径明确时才记录点位级测量值，否则整行跳过（保守）。
+        const points = cPoint >= 0 ? splitLines(src[cPoint]) : [];
+        const results = cResult >= 0 ? splitLines(src[cResult]) : [];
+        const n = Math.max(units.length, jobs.length, points.length);
+        const perPoint = (n > 0 && points.length === n && results.length === n * 3);
         for (let i = 0; i < n; i++) {
           const unit = pickLine(units, i);
           const job = beforeSlash(pickLine(jobs, i));
           if (!unit && !job) continue;
           const key = noiseNorm(unit) + '\u0001' + noiseNorm(job);
           let g = groups.get(key);
-          if (!g) { g = { unit: unit, job: job, max: 0 }; groups.set(key, g); }
+          if (!g) { g = { unit: unit, job: job, max: 0, pts: [] }; groups.set(key, g); }
           for (let k = 0; k < lexCols.length; k++) {
             const num = toNum(pickLine(splitLines(src[lexCols[k]]), i));
             if (num !== null && num > g.max) g.max = num;
+          }
+          if (perPoint) {
+            const point = beforeSlash(pickLine(points, i));
+            if (point) {
+              const vals = [];
+              for (let k = 0; k < 3; k++) vals.push(toNum(results[i * 3 + k]));
+              g.pts.push({ point: point, vals: vals });
+            }
           }
         }
       }
@@ -2019,6 +2039,25 @@
         if (g.max < NOISE_NON_LIMIT) addGroup(out.nonNoise, nonIdx, g);
         else addGroup(out.noiseWorkshop, noiseIdx, g);   // 噪声车间岗位：LEX 最大值 ≥ 80 dB
         if (g.max >= NOISE_OVER_LIMIT) addGroup(out.overWorkshop, overIdx, g);
+        // ★ 低噪点位（2026-10-19）：岗位整体属噪声岗位（LEX 最大值 ≥ 80 dB）时，逐点位看
+        //   「测量结果[dB(A)」的 3 个测量值：全部 < 80 dB → 该点位实际不接触噪声，
+        //   报告表4-1 里该点位那一行也应删掉「噪声」危害。
+        //   前提：同岗位**至少有一个点位 3 个测量值全部 ≥ 80 dB**，否则不删——
+        //   否则整岗位的噪声会被删光（那种情况本就该走②的整岗位规则）。
+        if (g.max >= NOISE_NON_LIMIT && g.pts.length) {
+          let hasNoisePoint = false;
+          const low = [];
+          for (const p of g.pts) {
+            if (p.vals.length !== 3 || p.vals.some(function (v) { return v === null; })) continue;
+            if (p.vals.every(function (v) { return v >= NOISE_NON_LIMIT; })) hasNoisePoint = true;
+            else if (p.vals.every(function (v) { return v < NOISE_NON_LIMIT; })) low.push(p);
+          }
+          if (hasNoisePoint) {
+            low.forEach(function (p) {
+              out.quietPoints.push({ unit: g.unit, job: g.job, point: p.point });
+            });
+          }
+        }
       });
       return out;
     }
@@ -2030,10 +2069,13 @@
     //   同一份报告被完整解析 3 次（浏览器实测 300ms+）。
     // 现在统一由 noiseInfoFromXml / noiseInfoFromBuf 算一次，各调用方共享结果。
     //
-    // 信息对象结构：{ rows, nonNoiseGroups, nonNoiseText, nonNoisePairs, noiseWorkshopGroups, ok }
+    // 信息对象结构：{ rows, nonNoiseGroups, nonNoiseText, nonNoisePairs, noiseWorkshopGroups,
+    //                 quietPointPairs, ok }
     //   · nonNoiseGroups / noiseWorkshopGroups：按车间合并后的 [{ unit, jobs:[...] }]
     //   · nonNoisePairs：展开成 [{ unit, job }]（② 删除噪声危害用）
     //   · nonNoiseText：'车间岗位、岗位；车间岗位'（⑤ 注段落拼接用），空列表为 ''
+    //   · quietPointPairs：噪声岗位内「3 个测量值全部 < 80 dB」的点位 [{ unit, job, point }]
+    //     （②c 按点位删除噪声危害用；point 取噪声表「测量点/对象」列，即「岗位/点位」里「/」后的部分）
     //   · ok：是否成功解析（false 时各字段为空，调用方按「缺数据」保守处理）
 
     // 由「已解析出的噪声表行」构造噪声信息（noiseInfoFromXml / noiseInfoFromBuf /
@@ -2054,6 +2096,7 @@
         nonNoiseText: text,
         nonNoisePairs: pairs,
         noiseWorkshopGroups: noiseWorkshopGroups,
+        quietPointPairs: (s && s.quietPoints) || [],
         ok: true,
       };
     }
@@ -2063,7 +2106,7 @@
         const data = parseTableAfterHeadingFromXml(xml, '噪声检测结果分析与评价', '噪声检测结果分析与评价');
         return noiseInfoFromRows(data.rows);
       } catch (e) {
-        return { rows: [], nonNoiseGroups: [], nonNoiseText: '', nonNoisePairs: [], noiseWorkshopGroups: [], ok: false };
+        return { rows: [], nonNoiseGroups: [], nonNoiseText: '', nonNoisePairs: [], noiseWorkshopGroups: [], quietPointPairs: [], ok: false };
       }
     }
 
@@ -2077,7 +2120,7 @@
         const xml = await readDocxDocumentXml(buf);
         info = noiseInfoFromXml(xml);
       } catch (e) {
-        info = { rows: [], nonNoiseGroups: [], nonNoiseText: '', nonNoisePairs: [], noiseWorkshopGroups: [], ok: false };
+        info = { rows: [], nonNoiseGroups: [], nonNoiseText: '', nonNoisePairs: [], noiseWorkshopGroups: [], quietPointPairs: [], ok: false };
       }
       noiseInfoCache = { buf: buf, info: info };
       return info;
@@ -3887,7 +3930,7 @@
       // 从检评报告 docx 算出「噪声车间岗位」（LEX 最大值 ≥ 80）分组（供后处理⑥判断是否为空）
       noiseWorkshopGroupsFromBuf: noiseWorkshopGroupsFromBuf,
       // ★ 一次性取全部噪声信息（②⑤⑥ 共用，避免同一份 docx 被解析多次）：
-      //   { nonNoiseGroups, nonNoiseText, nonNoisePairs, noiseWorkshopGroups, ok }
+      //   { nonNoiseGroups, nonNoiseText, nonNoisePairs, noiseWorkshopGroups, quietPointPairs, ok }
       //   noiseInfoFromXml(xml) —— 复用上层已解压的 document.xml（最省，推荐）
       //   noiseInfoFromBuf(buf) —— 自行解压（同一 buf 只解析一次，带记忆）
       noiseInfoFromXml: noiseInfoFromXml,

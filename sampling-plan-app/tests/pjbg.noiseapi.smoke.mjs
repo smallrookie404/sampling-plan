@@ -83,6 +83,37 @@ const docXmlNoNoise =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
   + "<w:document " + W + "><w:body>" + p("1 概述") + p("正文内容") + "</w:body></w:document>";
 
+// ---- 多点位挤在同一单元格 + 有「测量结果[dB(A)]」列的噪声表（用于 G）----
+// 每个点位固定 3 个测量值：第 1 个点位=前 3 行，第 2 个=第 4~6 行…
+const cellLines = (lines) => "<w:tc>" + lines.map((t, i) =>
+  (i ? "<w:r><w:br/></w:r>" : "") + "<w:r><w:t xml:space=\"preserve\">" + esc(t) + "</w:t></w:r>"
+).join("") + "</w:tc>";
+const rowCells = (cells) => "<w:tr>" + cells.map((c) =>
+  (Array.isArray(c) ? cellLines(c) : "<w:tc>" + p(c) + "</w:tc>")).join("") + "</w:tr>";
+
+const PTS_HDR = ["测量编号", "单元/工作场所", "岗位/工种/测量点/对象", "接触时间",
+  "测量结果[dB(A)]", "LEX,8h", "LEX,W", "接触限值", "单项结论"];
+const PTS_ROWS = [
+  // 针车岗位：两点位挤在一个单元格 → 针车1 三个值都 ≥80（噪声点位），针车2 三个值都 <80（低噪点位）
+  ["1", "车间A", ["针车岗位/针车1", "针车岗位/针车2"], "7h/d",
+    ["84.2", "83.6", "83.1", "78.1", "77.7", "77.4"], "-", "83.9", "85", "符合"],
+  // 压机岗位：压机1 全 <80（低噪），压机2 全 ≥80（噪声）→ 只删压机1
+  ["2", "车间A", ["压机岗位/压机1", "压机岗位/压机2"], "7h/d",
+    ["79.5", "79.1", "78.8", "80.2", "80.5", "80.1"], "-", "80.5", "85", "符合"],
+  // 装配岗位：LEX ≥ 80 但两个点位的测量值都全 <80 → 没有「3 值全 ≥80」的点位 → 不判定（前提不成立）
+  ["3", "车间C", ["装配岗位/装配1", "装配岗位/装配2"], "7h/d",
+    ["79.0", "78.0", "77.0", "76.0", "75.0", "74.0"], "-", "80.5", "85", "符合"],
+  // 打磨岗位：整岗位 LEX < 80 → 走②的整岗位规则，不进低噪点位列表
+  ["4", "车间A", "打磨岗位/打磨", "4h", ["75.0", "74.5", "74.8"], "-", "74.8", "85", "符合"],
+];
+const docXmlPoints =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + "<w:document " + W + "><w:body>"
+  + p("7.3 噪声检测结果分析与评价")
+  + "<w:tbl>" + rowCells(PTS_HDR) + PTS_ROWS.map(rowCells).join("") + "</w:tbl>"
+  + p("7.4 结束")
+  + "</w:body></w:document>";
+
 await page.goto(APP_URL, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(600);
 await page.evaluate(() => document.querySelector("#xcdc-login")?.remove());
@@ -138,6 +169,32 @@ const bad = await page.evaluate((xml) => {
 }, docXmlNoNoise);
 check(bad.threw === false, "不抛异常");
 check(bad.ok === false && bad.n === 0 && bad.w === 0, "ok=false 且各列表为空", JSON.stringify(bad));
+
+console.log("\n[G] 行内多点位：按「每点位 3 个测量值」切分，3 值全 < 80 的点位进 quietPointPairs");
+{
+  const r = await page.evaluate((xml) => {
+    const info = window.SamplingUpload.noiseInfoFromXml(xml);
+    return {
+      ok: info.ok,
+      quiet: info.quietPointPairs,
+      nonNoise: info.nonNoiseGroups,
+      noise: info.noiseWorkshopGroups,
+    };
+  }, docXmlPoints);
+  console.log("   ->", JSON.stringify(r));
+  check(r.ok === true, "解析成功（ok=true）");
+  check(JSON.stringify(r.nonNoise) === JSON.stringify([
+    { unit: "车间A", jobs: ["打磨岗位"] },
+  ]), "非噪声车间岗位仍只含打磨岗位（低噪点位不影响整岗位归类）", JSON.stringify(r.nonNoise));
+  check(JSON.stringify(r.noise) === JSON.stringify([
+    { unit: "车间A", jobs: ["针车岗位", "压机岗位"] },
+    { unit: "车间C", jobs: ["装配岗位"] },
+  ]), "噪声车间岗位 = 车间A 针车/压机 + 车间C 装配", JSON.stringify(r.noise));
+  check(JSON.stringify(r.quiet) === JSON.stringify([
+    { unit: "车间A", job: "针车岗位", point: "针车2" },
+    { unit: "车间A", job: "压机岗位", point: "压机1" },
+  ]), "低噪点位 = 车间A针车岗位针车2 + 车间A压机岗位压机1", JSON.stringify(r.quiet));
+}
 
 console.log("\n[F] 页面无 JS 错误");
 check(pageErrors.length === 0, "无页面错误", pageErrors.join(" | "));
