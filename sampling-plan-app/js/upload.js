@@ -2217,17 +2217,12 @@
       if (!jn && !bn) {
         // ⚠ 判「全部完结」必须**报告单有明确完结证据**（与 nextAuditStep 同源规则）：
         //   · 两条都 isOver=1 → 完结；· 报告单 isOver=1、底稿无记录 → 完结；
-        //   · **底稿 isOver=1、报告单无记录 → 不能推定完结**（报告单多半尚未提交，
-        //     实测 BTC26-SZJC0722 就是被误报「审批链全部完结」）。
+        //   · **底稿 isOver=1、报告单无记录 → 不判完结**，而是标记「需补提交报告单」
+        //     （实测 BTC26-SZJC0722：底稿审完后报告单根本没有记录，被误报「审批链全部完结」）。
         const jo = over(nodes.jcdg), bo = over(nodes.jcbg);
         if (jo && bo) return { indices: [], unknowns: [], completed: true };
         if (bo) return { indices: [], unknowns: [], completed: true }; // 报告单已完结
-        if (jo) {
-          return { indices: [], completed: false, unknowns: [
-            '检测底稿已完结，但检测结果报告单没有待审记录 —— 它很可能尚未提交'
-            + '（也可能已完结但记录已清空）。请到平台「检测报告单」页核对/提交后再执行',
-          ] };
-        }
+        if (jo) return { indices: [], unknowns: [], completed: false, needSubmitJcbg: true };
         return { indices: AUDIT_STEPS.map(function (_, i) { return i; }), unknowns: [], completed: false };
       }
       // 链路外的节点 → 记入 unknowns（调用方据此中止）
@@ -2273,17 +2268,12 @@
         // ⚠ 判「全部完结」必须**报告单有明确完结证据**：
         //   · 两条都 isOver=1 → 完结；
         //   · 报告单 isOver=1、底稿无记录 → 完结（底稿必然早已审完，其记录被清属正常）；
-        //   · **底稿 isOver=1、报告单无记录 → 不能推定完结**：报告单多半**尚未提交**
-        //     （实测 BTC26-SZJC0722：底稿审完后报告单根本没有记录，却被误报「审批链全部完结」）。
+        //   · **底稿 isOver=1、报告单无记录 → 不判完结**，标记 needSubmitJcbg →
+        //     由调用方「补提交检测报告单」后继续跑（实测 BTC26-SZJC0722 即此情形）。
         const jo = over(nodes.jcdg), bo = over(nodes.jcbg);
         if (jo && bo) return { index: null, unknowns: [], done: true, why: '已全部完结' };
         if (bo) return { index: null, unknowns: [], done: true, why: '已全部完结' }; // 报告单已完结
-        if (jo) {
-          return { index: null, done: false, unknowns: [
-            '检测底稿已完结，但检测结果报告单没有待审记录 —— 它很可能尚未提交'
-            + '（也可能已完结但记录已清空）。请到平台「检测报告单」页核对/提交后再执行',
-          ] };
-        }
+        if (jo) return { index: null, unknowns: [], done: false, needSubmitJcbg: true };
         return { index: 0, unknowns: [], done: false, why: '未提交' }; // 从未提交 → 从头
       }
       const unknowns = [];
@@ -2426,6 +2416,20 @@
         await new Promise(function (res) { setTimeout(res, pollDelay(round++, opts)); });
       }
       return { changed: false, waited: Date.now() - start };
+    }
+
+    // 轮询等待某流程**出现待审记录**（补提交检测报告单后使用）。
+    // 间隔与其它轮询一致（pollDelay：快起步 + 退避）。
+    async function pollNodeReady(bearer, org, affixPath, projectId, opts) {
+      opts = opts || {};
+      const maxWait = opts.maxWaitMs || 60000;
+      const start = Date.now();
+      let round = 0;
+      while (true) {
+        try { if (await readAffixNode(bearer, org, affixPath, projectId)) return true; } catch (e) { /* 读失败当作还没就绪 */ }
+        if (Date.now() - start >= maxWait) return false;
+        await new Promise(function (res) { setTimeout(res, pollDelay(round++, opts)); });
+      }
     }
 
     const ACCOUNT_BRIDGE_URL = 'http://127.0.0.1:8787';
@@ -3083,7 +3087,7 @@
           alert(msg);
           return;
         }
-        if (!plan.indices.length) {
+        if (!plan.indices.length && !plan.needSubmitJcbg) {
           const msg = plan.completed
             ? '该项目的「检测底稿 + 检测报告单」审批链**已全部完结**，无需再审。\n\n' + reportProjectLabel()
             : '该项目在当前节点已无可执行的审核步骤。\n\n' + reportProjectLabel();
@@ -3093,10 +3097,17 @@
           return;
         }
         // 断点续审提示（初始规划，仅用于确认框说明；实际执行是动态续跑到底）
-        const skipped = AUDIT_STEPS.map(function (s, i) { return i; })
-          .filter(function (i) { return plan.indices.indexOf(i) === -1; });
-        const heading = skipped.length
-          ? '（断点续审：从当前节点续跑，跳过 ' + skipped.length + ' 步已完成项）'
+        // ⚠ 需补提交报告单时，链路上那 4 步都还没做，不能算「已跳过」。
+        const skipped = plan.needSubmitJcbg ? []
+          : AUDIT_STEPS.map(function (s, i) { return i; })
+            .filter(function (i) { return plan.indices.indexOf(i) === -1; });
+        const heading = plan.needSubmitJcbg
+          ? '（检测底稿已完结，但检测报告单没有待审记录 → 先补提交报告单，再一路审到签发完结）'
+          : (skipped.length
+            ? '（断点续审：从当前节点续跑，跳过 ' + skipped.length + ' 步已完成项）'
+            : '');
+        const repairLine = plan.needSubmitJcbg
+          ? '0. ' + AUDIT_STEPS[0].account + ' → 补提交检测报告单（当前无待审记录）\n'
           : '';
         const chain = plan.indices.map(function (i, n) {
           return (n + 1) + '. ' + AUDIT_STEPS[i].account + ' → ' + AUDIT_STEPS[i].label;
@@ -3110,7 +3121,9 @@
           + (heading ? '\n' + heading : '')
           + skipNote
           + '\n\n本次将从当前节点**一路审到链路终点（签发完结）**。'
-          + '预计执行 ' + plan.indices.length + ' 步起（各步用各自账号，动态推进）：\n' + chain)) return;
+          + (plan.needSubmitJcbg
+            ? '先补提交检测报告单，再动态推进：\n' + repairLine + chain
+            : '预计执行 ' + plan.indices.length + ' 步起（各步用各自账号，动态推进）：\n' + chain))) return;
 
         let done = 0;
         let abortMsg = ''; // 非空 = 中途判定无法继续（区别于「正常跑到终点」）
@@ -3119,6 +3132,7 @@
         //   maxSteps 兜底（=AUDIT_STEPS 长度 + 余量），防止极端情况下死循环。
         const maxSteps = AUDIT_STEPS.length + 4;
         let guard = 0;
+        let jcbgRepaired = false; // 「补提交检测报告单」只做一次，避免死循环
         while (true) {
           if (++guard > maxSteps) { msgs.push('⚠ 已达最大步数上限(' + maxSteps + ')，中止以防死循环'); break; }
           // 重新读当下节点（上一步通过后节点会前移；这也是「续跑到底」的关键）
@@ -3144,6 +3158,40 @@
             msgs.push('⏹ 中止：' + abortMsg);
             if (el.status) el.status.textContent = '⏹ ' + abortMsg;
             break;
+          }
+          if (nx.needSubmitJcbg) {
+            // ★ 底稿已完结、报告单无待审记录（多半从未提交）→ **补提交报告单**后继续跑完
+            if (jcbgRepaired) {
+              abortMsg = '已补提交过检测报告单，但仍无待审记录，无法继续';
+              msgs.push('⏹ 中止：' + abortMsg);
+              if (el.status) el.status.textContent = '⏹ ' + abortMsg;
+              break;
+            }
+            jcbgRepaired = true;
+            const sub = AUDIT_STEPS[0]; // 提交审复核用 btc-jyg（与第①步同账号）
+            if (btn) btn.textContent = '补提交报告单… ' + sub.account;
+            if (el.status) el.status.textContent = '检测报告单无待审记录，正在以 ' + sub.account + ' 补提交…';
+            const tks = await fetchBridgeToken(sub.account);
+            await ensurePoolTokenFresh(sub.account, tks);
+            const rr = await poolApiRequest('POST', '/api/reportFile/submitJcbgReview', {
+              token: tks.token, orgId: tks.orgId, timeout: 60000,
+              json: { belongProject: selectedProject.id },
+            });
+            if (!(rr.status === 200 && rr.data && String(rr.data.code) === '200')) {
+              throw new Error('补提交「检测报告单」（' + sub.account + '）失败：'
+                + ((rr.data && (rr.data.message || rr.data.msg)) || ('HTTP ' + rr.status + ' ' + String(rr.text || '').slice(0, 120))));
+            }
+            const rb = rr.data && rr.data.body;
+            msgs.push('补提交检测报告单：' + ((rb && (rb.msg || rb.message)) || '已提交'));
+            if (el.status) el.status.textContent = '已补提交检测报告单，等待待审记录出现…';
+            const ready = await pollNodeReady(tks.token, tks.orgId, auditPaths('jcbg').affix, selectedProject.id, pollOpts);
+            if (!ready) {
+              throw new Error('补提交后 ' + Math.round((pollOpts.maxWaitMs || 60000) / 1000)
+                + 's 内检测报告单仍无待审记录，已中止');
+            }
+            done++;
+            ranAccounts.push(sub.account);
+            continue;
           }
           if (nx.index === null) {
             // 已无可执行步骤：正常收尾
