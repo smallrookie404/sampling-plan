@@ -2214,10 +2214,20 @@
       const jcdgStep = jn ? JCDG_NODE_STEP[String(jn.type)] : undefined;
       const jcbgStep = bn ? JCBG_NODE_STEP[String(bn.type)] : undefined;
       // 两条都无待审节点：
-      const anyOver = over(nodes.jcdg) || over(nodes.jcbg);
       if (!jn && !bn) {
-        // 有任一流程已完结 ⇒ 整条链已走完（不做任何事）；否则项目从未提交 ⇒ 从头走
-        if (anyOver) return { indices: [], unknowns: [], completed: true };
+        // ⚠ 判「全部完结」必须**报告单有明确完结证据**（与 nextAuditStep 同源规则）：
+        //   · 两条都 isOver=1 → 完结；· 报告单 isOver=1、底稿无记录 → 完结；
+        //   · **底稿 isOver=1、报告单无记录 → 不能推定完结**（报告单多半尚未提交，
+        //     实测 BTC26-SZJC0722 就是被误报「审批链全部完结」）。
+        const jo = over(nodes.jcdg), bo = over(nodes.jcbg);
+        if (jo && bo) return { indices: [], unknowns: [], completed: true };
+        if (bo) return { indices: [], unknowns: [], completed: true }; // 报告单已完结
+        if (jo) {
+          return { indices: [], completed: false, unknowns: [
+            '检测底稿已完结，但检测结果报告单没有待审记录 —— 它很可能尚未提交'
+            + '（也可能已完结但记录已清空）。请到平台「检测报告单」页核对/提交后再执行',
+          ] };
+        }
         return { indices: AUDIT_STEPS.map(function (_, i) { return i; }), unknowns: [], completed: false };
       }
       // 链路外的节点 → 记入 unknowns（调用方据此中止）
@@ -2260,7 +2270,20 @@
       function live(n) { return n && !over(n) ? n : null; }
       const jn = live(nodes.jcdg), bn = live(nodes.jcbg);
       if (!jn && !bn) {
-        if (over(nodes.jcdg) || over(nodes.jcbg)) return { index: null, unknowns: [], done: true, why: '已全部完结' };
+        // ⚠ 判「全部完结」必须**报告单有明确完结证据**：
+        //   · 两条都 isOver=1 → 完结；
+        //   · 报告单 isOver=1、底稿无记录 → 完结（底稿必然早已审完，其记录被清属正常）；
+        //   · **底稿 isOver=1、报告单无记录 → 不能推定完结**：报告单多半**尚未提交**
+        //     （实测 BTC26-SZJC0722：底稿审完后报告单根本没有记录，却被误报「审批链全部完结」）。
+        const jo = over(nodes.jcdg), bo = over(nodes.jcbg);
+        if (jo && bo) return { index: null, unknowns: [], done: true, why: '已全部完结' };
+        if (bo) return { index: null, unknowns: [], done: true, why: '已全部完结' }; // 报告单已完结
+        if (jo) {
+          return { index: null, done: false, unknowns: [
+            '检测底稿已完结，但检测结果报告单没有待审记录 —— 它很可能尚未提交'
+            + '（也可能已完结但记录已清空）。请到平台「检测报告单」页核对/提交后再执行',
+          ] };
+        }
         return { index: 0, unknowns: [], done: false, why: '未提交' }; // 从未提交 → 从头
       }
       const unknowns = [];
@@ -2317,9 +2340,20 @@
       return { type: rows[0].type, isOver: rows[0].isOver, id: rows[0].id };
     }
 
-    // 读节点但**不抛错**（断点续审规划阶段用：读不到就当作「无待审记录」，交由 planAuditSteps 判定）
-    async function safeReadAffixNode(bearer, org, affixPath, projectId) {
-      try { return await readAffixNode(bearer, org, affixPath, projectId); } catch (e) { return null; }
+    // ★ 读节点（三态：有记录 / 无记录 / **读取失败**）。
+    //   「读取失败」绝不能当成「无待审记录」——否则会被下一步判定推成「审批链已全部完结」
+    //   （实测 BTC26-SZJC0722：报告单无记录时，底稿一审完就误报全部完结）。
+    //   失败重试一次（平台偶发抖动），仍失败返回 { failed:true }，由调用方中止并提示。
+    async function readNodeState(bearer, org, affixPath, projectId) {
+      let lastMsg = '';
+      for (let i = 0; i < 2; i++) {
+        try { return { node: await readAffixNode(bearer, org, affixPath, projectId) }; }
+        catch (e) {
+          lastMsg = (e && e.message) || String(e);
+          if (i === 0) await new Promise(function (res) { setTimeout(res, 300); });
+        }
+      }
+      return { failed: true, message: lastMsg };
     }
 
     // 人类可读描述两个流程的当下节点（用于确认框/提示），如「检测底稿：理化复核 ／ 检测结果报告单：理化审核」
@@ -3024,13 +3058,23 @@
       try {
         // ── 第一步：读「两个流程的当下节点快照」→ 规划本次需要执行的步骤（断点续审的核心）──
         if (el.status) el.status.textContent = '正在读取当前审批节点…';
-        // ★ 两条流程**并行**读（原来串行，白白多一个 RTT）
+        // ★ 两条流程**并行**读（原来串行，白白多一个 RTT）；读取失败必须中止，不能当成「无记录」
         const firstPair = await Promise.all([
-          safeReadAffixNode(token, orgId, auditPaths('jcdg').affix, selectedProject.id),
-          safeReadAffixNode(token, orgId, auditPaths('jcbg').affix, selectedProject.id),
+          readNodeState(token, orgId, auditPaths('jcdg').affix, selectedProject.id),
+          readNodeState(token, orgId, auditPaths('jcbg').affix, selectedProject.id),
         ]);
-        const jcdgNode = firstPair[0];
-        const jcbgNode = firstPair[1];
+        if (firstPair[0].failed || firstPair[1].failed) {
+          const which = [firstPair[0].failed ? '检测底稿' : '', firstPair[1].failed ? '检测结果报告单' : '']
+            .filter(Boolean).join(' / ');
+          const why = (firstPair[0].failed && firstPair[0].message)
+            || (firstPair[1].failed && firstPair[1].message) || '未知错误';
+          if (el.status) el.status.textContent = '❌ 读取审批节点失败：' + why;
+          alert('读取「' + which + '」当前审批节点失败：' + why
+            + '\n\n为避免误判平台状态，本次未执行任何审批操作。请稍后重试。');
+          return;
+        }
+        const jcdgNode = firstPair[0].node;
+        const jcbgNode = firstPair[1].node;
         const plan = planAuditSteps({ jcdg: jcdgNode, jcbg: jcbgNode });
         if (plan.unknowns.length) {
           const msg = '该项目当前审批节点不在本工具可审范围内：\n\n· ' + plan.unknowns.join('\n· ')
@@ -3069,6 +3113,7 @@
           + '预计执行 ' + plan.indices.length + ' 步起（各步用各自账号，动态推进）：\n' + chain)) return;
 
         let done = 0;
+        let abortMsg = ''; // 非空 = 中途判定无法继续（区别于「正常跑到终点」）
         const ranAccounts = []; // 本次实际执行过的账号（按顺序）
         // ★★ 动态循环：每步开始前重新读节点 → nextAuditStep 求「下一步」→ 执行 → 再循环。
         //   maxSteps 兜底（=AUDIT_STEPS 长度 + 余量），防止极端情况下死循环。
@@ -3078,16 +3123,26 @@
           if (++guard > maxSteps) { msgs.push('⚠ 已达最大步数上限(' + maxSteps + ')，中止以防死循环'); break; }
           // 重新读当下节点（上一步通过后节点会前移；这也是「续跑到底」的关键）
           let curJcdg, curJcbg;
-          // ★ 两条流程**并行**读（原来串行）；这两条快照同时供下面「本步节点」直接复用
+          // ★ 两条流程**并行**读（原来串行）；这两条快照同时供下面「本步节点」直接复用。
+          //   ⚠ 读取失败必须中止：若当成「无待审记录」，会直接推出「审批链已全部完结」。
           const pair = await Promise.all([
-            safeReadAffixNode(token, orgId, auditPaths('jcdg').affix, selectedProject.id),
-            safeReadAffixNode(token, orgId, auditPaths('jcbg').affix, selectedProject.id),
+            readNodeState(token, orgId, auditPaths('jcdg').affix, selectedProject.id),
+            readNodeState(token, orgId, auditPaths('jcbg').affix, selectedProject.id),
           ]);
-          curJcdg = pair[0]; curJcbg = pair[1];
+          if (pair[0].failed || pair[1].failed) {
+            const which = [pair[0].failed ? '检测底稿' : '', pair[1].failed ? '检测结果报告单' : '']
+              .filter(Boolean).join(' / ');
+            const why = (pair[0].failed && pair[0].message)
+              || (pair[1].failed && pair[1].message) || '未知错误';
+            throw new Error('读取「' + which + '」当前审批节点失败（' + why
+              + '）；已中止，未继续审批，以免误判平台状态。请稍后重试。');
+          }
+          curJcdg = pair[0].node; curJcbg = pair[1].node;
           const nx = nextAuditStep({ jcdg: curJcdg, jcbg: curJcbg });
           if (nx.unknowns.length) {
-            msgs.push('⏹ 中止：' + nx.unknowns.join('；'));
-            if (el.status) el.status.textContent = '⏹ ' + nx.unknowns.join('；');
+            abortMsg = nx.unknowns.join('；');
+            msgs.push('⏹ 中止：' + abortMsg);
+            if (el.status) el.status.textContent = '⏹ ' + abortMsg;
             break;
           }
           if (nx.index === null) {
@@ -3226,6 +3281,16 @@
         }
         const tail = msgs.length ? ' · ' + msgs.join('；') : '';
         const acctChain = ranAccounts.join(' → ');
+        // ★ 中途因「无法判定后续节点」而停止 → **不能**说「审核完成」
+        if (abortMsg) {
+          if (el.status) el.status.textContent = '⏹ 已中止（本次 ' + done + ' 步）：' + abortMsg;
+          alert('数据报告审核已中止。\n' + reportProjectLabel()
+            + '\n本次执行 ' + done + ' 步' + (acctChain ? '：' + acctChain : '') + '。'
+            + '\n\n' + abortMsg);
+          invalidateReportCache();
+          try { await loadReportStatus(); } catch (e) {}
+          return;
+        }
         if (el.status) el.status.textContent = '✅ 审核链全部完成（本次 ' + done + ' 步'
           + (skipped.length ? '，跳过已完成 ' + skipped.length + ' 步' : '') + '）· ' + reportProjectLabel() + tail;
         // ★ 弹窗只保留**极简摘要**（用户反馈：弹窗文字太多）——项目 + 步数 + 账号链，明细走状态栏。
