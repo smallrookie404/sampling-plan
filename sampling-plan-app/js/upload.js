@@ -2308,7 +2308,7 @@
     // 读某流程「当前节点号」：GET getAffix {belongProject} → body[0].type（+ isOver）
     // 返回 {type, isOver, id}；body 为空时返回 null（说明该流程已完结/无待审记录）。
     async function readAffixNode(bearer, org, affixPath, projectId) {
-      const r = await apiRequest('GET',
+      const r = await poolApiRequest('GET',
         affixPath + '?belongProject=' + encodeURIComponent(String(projectId)),
         { token: bearer, orgId: org, timeout: 60000 });
       if (r.status !== 200) throw new Error('读取当前审批节点失败(HTTP ' + r.status + ')');
@@ -2470,9 +2470,82 @@
       return /未登录|登录失效|登录已过期|令牌|token|未认证|认证失败/i.test(String(x.message || ''));
     }
 
+    // ---------- 池账号「失效 → 自动重登 → 原地重试」----------
+    // ★ 不变量：同一账号始终只有**一份令牌对象**——调用方持有的 entry 与 poolTokens[account]
+    //   是同一个对象，重登只就地改写它的 token/orgId，持有者无需重新取令牌即可用上新令牌。
+    const POOL_RELOGIN_BRIDGE_TRIES = 2; // 桥重登自身也可能因验证码识别失败而失败 → 重试
+    const POOL_RELOGIN_RETRIES = 1;      // 单次调用最多重试 1 次（共 2 次尝试）
+
+    // 该账号作废缓存 → 经账号桥**强制重登** → 就地刷新同一个 entry
+    async function reloginPoolAccount(account) {
+      const prev = poolTokens[account];
+      let lastErr = null;
+      for (let i = 1; i <= POOL_RELOGIN_BRIDGE_TRIES; i++) {
+        try {
+          const ne = await fetchBridgeToken(account, { force: true }); // force：绕过缓存真正重登
+          const target = prev || ne;
+          target.token = ne.token;
+          target.orgId = ne.orgId;
+          poolTokens[account] = target; // 统一回同一对象，引用保持稳定
+          if (i > 1) log('「' + account + '」重新登录成功（第 ' + i + ' 次尝试）');
+          return target;
+        } catch (e) {
+          lastErr = e;
+          log('「' + account + '」重新登录失败（第 ' + i + '/' + POOL_RELOGIN_BRIDGE_TRIES + ' 次）：' + e.message);
+          if (i < POOL_RELOGIN_BRIDGE_TRIES) await new Promise(function (res) { setTimeout(res, 800 * i); });
+        }
+      }
+      if (prev) poolTokens[account] = prev; // 全部失败：恢复原引用，不留下半残状态
+      throw lastErr || new Error('账号「' + account + '」重新登录失败');
+    }
+
+    // 按令牌反查所属池账号（失效后据此决定重登哪个账号）
+    function poolAccountOfToken(tk) {
+      if (!tk) return null;
+      for (const acc in poolTokens) {
+        const e = poolTokens[acc];
+        if (e && e.token === tk) return acc;
+      }
+      return null;
+    }
+
+    // ★★ 池账号专用请求入口（任务「中途不终止」的关键）★★
+    // 1) 一律 skipAuthExpired：池令牌失效**与用户主会话无关**，绝不能触发
+    //    authExpiredHandler() → notifyAuthExpired() → logout() + 弹「登录已失效」，
+    //    那会把主会话和整条回退/审核任务一起打掉。
+    // 2) 调用**返回或抛出**鉴权失败 → 该账号经桥自动重登 → 用新令牌**原地重试**
+    //    （最多 POOL_RELOGIN_RETRIES 次）：令牌在「探针之后、真正调用之前」过期也不会中断任务。
+    // 3) 非鉴权错误（业务报错 / 网络抖动 / 超时）原样返回或抛出，不做无意义重登。
+    // ⚠ 判定与重登都只作用于**该账号**，其他步骤、其他账号完全不受影响。
+    async function poolApiRequest(method, path, opts) {
+      const o = Object.assign({}, opts || {});
+      o.skipAuthExpired = true;
+      let r = null;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          r = await apiRequest(method, path, o);
+        } catch (e) {
+          const acc = poolAuthFailed(e) ? poolAccountOfToken(o.token) : null;
+          if (!acc || attempt >= POOL_RELOGIN_RETRIES) throw e;
+          log('「' + acc + '」调用异常疑似令牌失效（' + e.message + '），账号桥重新登录后重试…');
+          await reloginPoolAccount(acc);
+          o.token = poolTokens[acc].token;
+          o.orgId = poolTokens[acc].orgId;
+          continue;
+        }
+        if (!poolAuthFailed(r)) return r; // 正常业务响应（含业务失败）→ 交上层判断
+        const acc = poolAccountOfToken(o.token);
+        if (!acc || attempt >= POOL_RELOGIN_RETRIES) return r; // 反查不到 / 重登后仍失效 → 交上层报错
+        log('「' + acc + '」令牌已失效（HTTP ' + r.status + '），账号桥重新登录后重试…');
+        await reloginPoolAccount(acc);
+        o.token = poolTokens[acc].token;
+        o.orgId = poolTokens[acc].orgId;
+      }
+    }
+
     // 调用前校验池令牌：用轻量已鉴权 GET（auth/info）探测；失效（401/403/登录
-    // 失效文案）→ 作废该账号缓存 → 账号桥重登 → 就地刷新 entry（共享缓存同步
-    // 更新）。网络抖动等非鉴权错误不触发重登，按原令牌继续。
+    // 失效文案）→ 该账号经桥重登 → 就地刷新 entry（共享缓存同步更新）。
+    // 网络抖动等非鉴权错误不触发重登，按原令牌继续。
     async function ensurePoolTokenFresh(account, entry) {
       if (!entry || !entry.token) return entry;
       let probe = null;
@@ -2490,10 +2563,7 @@
       }
       if (!poolAuthFailed(probe)) return entry;
       log('「' + account + '」令牌已失效，账号桥重新登录…');
-      const ne = await fetchBridgeToken(account, { force: true });
-      entry.token = ne.token;
-      entry.orgId = ne.orgId;
-      return entry;
+      return await reloginPoolAccount(account);
     }
 
     // 账号池后台预热：进入软件后静默补齐池内账号令牌。
@@ -2881,7 +2951,7 @@
           if (el.status) el.status.textContent = '正在以 ' + step.account + ' 身份重置「' + step.label + '」（' + (i + 1) + '/' + RESET_STEPS.length + '）…';
           const tk = await fetchBridgeToken(step.account);
           await ensurePoolTokenFresh(step.account, tk); // 调用前校验：失效即经桥重登刷新
-          const r = await apiRequest('POST', '/api/projectXccyLastAffix/resetProjectApprovalProcess', {
+          const r = await poolApiRequest('POST', '/api/projectXccyLastAffix/resetProjectApprovalProcess', {
             token: tk.token, orgId: tk.orgId, timeout: 60000,
             json: { belongProject: target.id, projectProcess: step.process },
           });
@@ -3020,7 +3090,7 @@
             //     导致后面对 jcbg 的审批报「该流程已无待审的检测记录」。）
             //   因此本步先用当前账号（btc-jyg）提交检测底稿，再提交检测报告单，然后等两条流程都就绪。
             if (el.status) el.status.textContent = '正在提交「检测底稿」…' + tag + '（' + step.account + '）';
-            const r = await apiRequest('POST', '/api/projectJcdgLastAffixNew/submitJcdgReview', {
+            const r = await poolApiRequest('POST', '/api/projectJcdgLastAffixNew/submitJcdgReview', {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
               json: { belongProject: selectedProject.id },
             });
@@ -3034,7 +3104,7 @@
 
             // ★ 再提交「检测报告单」（独立接口）——这是原实现遗漏的关键一步
             if (el.status) el.status.textContent = '正在提交「检测报告单」…' + tag + '（' + step.account + '）';
-            const r2 = await apiRequest('POST', '/api/reportFile/submitJcbgReview', {
+            const r2 = await poolApiRequest('POST', '/api/reportFile/submitJcbgReview', {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
               json: { belongProject: selectedProject.id },
             });
@@ -3092,7 +3162,7 @@
                 + '\n上一步（' + nodeName(oldType) + '）已由该账号（用户ID ' + acctId + '）经手，'
                 + '本步需换其他人审批。\n当前节点：' + describeNodes(curJcdg, curJcbg));
             }
-            const r = await apiRequest('POST', ap.audit, {
+            const r = await poolApiRequest('POST', ap.audit, {
               token: tk.token, orgId: tk.orgId, timeout: 60000,
               // ⚠ 单个对象（不是数组）；jcbg 的 type 必须为数字
               json: {
