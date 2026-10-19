@@ -133,7 +133,7 @@ sampling-plan/
   node tests/cloudflare.test.mjs # Cloudflare Functions 接口（索引 + 分条 KV）
   node tests/captcha.test.mjs    # 验证码 OCR（JS 移植）准确率 + RSA 自检
   node tests/bridge-cloudflare.test.mjs # 云端账号桥（假 KV + 假平台，真跑 OCR 与登录；含 `/login` 代登录、`/code` 契约）
-  node tests/login.ui.mjs        # 登录界面默认不显示验证码 + 「改用验证码登录」兜底可展开（Playwright）
+  node tests/login.ui.mjs        # 登录界面：云端不显示验证码 / 本地沿用原手输步骤 / 密码框「眼睛」（Playwright）
   node tests/report.smoke.mjs    # 「数据报告处理」页签（回退/审核/断点续审/报告显示/面板缓存）
   node tests/entinfo.smoke.mjs   # 在职人数/接害人数：输入框预填、写入分工、上传成功后清空输入框与缓存（Playwright）
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）

@@ -712,6 +712,8 @@
     function showLogin() {
       if (loginOverlay) loginOverlay.classList.remove('hidden');
       if (uploadOverlay) uploadOverlay.classList.add('hidden');
+      // 密码框复位为密文（上次可能点过「眼睛」切成明文）
+      try { resetPwdEye(); } catch (e) {}
       // 默认云端代登录，界面不显示验证码 → 不需要预先取图；兜底模式才取
       if (captchaMode) refreshCaptcha();
     }
@@ -915,6 +917,35 @@
     (function () {
       const link = $('btnCaptchaFallback');
       if (link) link.addEventListener('click', function (e) { e.preventDefault(); enableCaptchaMode(); });
+    })();
+
+    // 密码框右侧「眼睛」：点击在明文/密文之间切换（图标与提示同步）
+    let resetPwdEye = function () {};
+    (function () {
+      const btn = $('btnPwdEye');
+      const pwd = $('password');
+      if (!btn || !pwd) return;
+      const sync = function (shown) {
+        btn.dataset.shown = shown ? 'true' : 'false';
+        const label = shown ? '隐藏密码' : '显示密码';
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
+      };
+      sync(false);
+      // 回到登录界面时复位为密文，避免上次切成明文后密码裸露在登录页
+      resetPwdEye = function () { pwd.type = 'password'; sync(false); };
+      btn.addEventListener('click', function () {
+        const shown = pwd.type === 'text';
+        pwd.type = shown ? 'password' : 'text';
+        sync(!shown);
+        // 切换后保持焦点与光标在末尾，方便继续输入
+        try {
+          pwd.focus({ preventScroll: true });
+          const n = pwd.value.length;
+          pwd.setSelectionRange(n, n);
+        } catch (e) { /* 老内核忽略 */ }
+      });
     })();
 
     // 打开页面时自动填充已保存的账号密码
@@ -2607,21 +2638,48 @@
     //     本地服务(server.mjs)会在首次使用时**自动拉起** captcha-ocr/bridge.py，
     //     所以点「回退」不需要任何人工启动步骤；
     //  3) 其它情况（直接双击 index.html / 静态部署）→ 直连 127.0.0.1:8787。
-    let bridgeBasePromise = null;
-    function bridgeBase() {
-      if (bridgeBasePromise) return bridgeBasePromise;
-      bridgeBasePromise = (async function () {
+    // 同时记录 cloud：Cloudflare Pages Function 的 ping 会带 cloud:true（登录方式据此区分）。
+    let bridgeInfoPromise = null;
+    function bridgeInfo() {
+      if (bridgeInfoPromise) return bridgeInfoPromise;
+      bridgeInfoPromise = (async function () {
         try {
           const ov = (typeof localStorage !== 'undefined') && localStorage.getItem('xcdc_bridge_url');
-          if (ov) return String(ov).replace(/\/+$/, '');
+          if (ov) return { url: String(ov).replace(/\/+$/, ''), same: false, cloud: false };
         } catch (e) {}
         try {
           const r = await fetch('/api/bridge/ping', { cache: 'no-store' });
-          if (r.ok) return '/api/bridge/token';
+          if (r.ok) {
+            let d = null;
+            try { d = await r.json(); } catch (e) {}
+            return { url: '/api/bridge/token', same: true, cloud: !!(d && d.cloud) };
+          }
         } catch (e) {}
-        return ACCOUNT_BRIDGE_URL + '/token';
+        return { url: ACCOUNT_BRIDGE_URL + '/token', same: false, cloud: false };
       })();
-      return bridgeBasePromise;
+      return bridgeInfoPromise;
+    }
+    function bridgeBase() {
+      return bridgeInfo().then(function (i) { return i.url; });
+    }
+
+    // 登录方式按运行环境区分（只判定一次）：
+    //   · Cloudflare 部署（桥 ping 返回 cloud:true）→ 云端代登录，界面**不显示验证码**；
+    //   · 本地打开（file:// / 本地服务）→ **沿用原来的步骤**：浏览器取图 + 手输验证码，
+    //     不调云端 /login，也不用 /code 自动填。
+    // ⚠ 必须在 bridgeInfo / ACCOUNT_BRIDGE_URL 定义之后调用（否则 let/const 处于 TDZ，
+    //   异常会被 try/catch 吞掉，导致永远判成本地）。
+    async function initLoginMode() {
+      let info = { cloud: false };
+      try { info = await bridgeInfo(); } catch (e) {}
+      if (info.cloud) return;              // 云端：保持默认（无验证码 UI）
+      captchaMode = true;
+      captchaAutoOff = true;               // 原步骤：纯手输，不做 OCR 自动填
+      const field = $('captchaField');
+      if (field) field.hidden = false;
+      const link = $('btnCaptchaFallback');
+      if (link) link.hidden = true;        // 本地本来就是手输，不需要兜底入口
+      if (!uuid) refreshCaptcha();         // showLogin 可能已先取过图，避免重复请求
     }
 
     // ---------- 账号池共享令牌缓存 ----------
@@ -3881,8 +3939,9 @@
       searchProjectsFor: runProjectSearch
     };
 
-    // 启动：有会话直接进入（登录遮罩保持隐藏），否则显示登录
+    // 启动：先定登录方式（云端代登录 / 本地手输验证码），再决定是否取图
     (async function () {
+      await initLoginMode();
       if (session && token) {
         teamSaved = await loadTeamSettings(); // 云端优先恢复本账号团队配置
         teamDirty = !!teamSaved;
