@@ -35,7 +35,14 @@ await page.addInitScript(() => {
 });
 
 const errors = [];
-const IGNORE = /401|Failed to load resource|auth\/info/i;   // 假 token 会被平台拒绝，属测试环境预期
+// 忽略项（均属测试环境预期，非应用代码缺陷）：
+//  · 401 / Failed to load resource / auth/info —— 假 token 会被平台拒绝
+//  · reading 'setItem' —— Chrome 内置 PDF 查看器扩展 frame 自己抛的
+//    （chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai，该 frame 里 storage 为 null）。
+//    已实证：同一 URL 返回 text/plain 不触发、返回 application/pdf 必触发；有头/无头都复现；
+//    异常不在主 frame（CDP 主会话 0 条），不影响应用，PDF 照常内嵌显示。
+//    但 Playwright 的 pageerror 会跨 frame 汇总 → 必须在此过滤，否则「无控制台错误」恒红。
+const IGNORE = /401|Failed to load resource|auth\/info|reading 'setItem'/i;
 page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(m.text()); });
 page.on("pageerror", (e) => { if (!IGNORE.test(e.message)) errors.push("pageerror: " + e.message); });
 
