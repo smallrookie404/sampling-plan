@@ -54,12 +54,21 @@ const buf = fs.readFileSync(SAMPLE);
 const zip = await JSZip.loadAsync(buf);
 const xml = await zip.file("word/document.xml").async("string");
 
-console.log("\n[1] sumExposedWorkers（表8-1 作业人数去重合计）");
+console.log("\n[1] sumExposedWorkers（表8-1 作业人数去重合计；现为兜底口径）");
 const sum = blf.sumExposedWorkers(xml);
 console.log("   ->", JSON.stringify(sum));
 check("能定位表8-1", !!sum);
 check("去重合计为 91", sum && sum.total === 91, sum && String(sum.total));
 check("去重后 20 个岗位", sum && sum.groups === 20, sum && String(sum.groups));
+
+console.log("\n[1b] sumExposedFromT41（表4-1「人数/总数」按岗位去重合计；★ 2026-10-19 新口径）");
+const t41 = blf.sumExposedFromT41(xml);
+console.log("   ->", JSON.stringify(t41));
+check("能定位表4-1", !!t41);
+// 表4-1 覆盖全部 29 个岗位（表8-1 只有 20 个），合计 159 人
+check("合计 = 159 人（含表8-1 漏掉的岗位）", t41 && t41.total === 159, t41 && String(t41.total));
+check("人数单元格按岗位去重（多点位行不重复计）", t41 && t41.groups === 29, t41 && String(t41.groups));
+check("没有整组为「-」的岗位（本样例）", t41 && t41.skipped === 0, t41 && String(t41.skipped));
 
 console.log("\n[2] readBasicInfoTable（表3-1 两个人数）");
 const basic = blf.readBasicInfoTable(xml);
@@ -72,8 +81,8 @@ const JOBS = "金工成型车间打磨岗位、焊接岗位；连接器车间总
 const r = blf.fixNoteAndContactCount(xml, JOBS);
 check("有改动", r.changed > 0, String(r.changed));
 check("staffVal=410人", r.staffVal === "410人", r.staffVal);
-check("contactVal=91人", r.contactVal === "91人", r.contactVal);
-check("表8-1 合计=91", r.total === 91, String(r.total));
+check("contactVal=159人（表4-1 人数合计）", r.contactVal === "159人", r.contactVal);
+check("total=159 且来源=表4-1", r.total === 159 && r.totalFrom === "t41", String(r.total) + "/" + r.totalFrom);
 check("jobs 原样透传", r.jobs === JOBS, r.jobs);
 
 const outXml = r.xml;
@@ -104,7 +113,7 @@ console.log("   段落数 =", paras.length);
 paras.forEach((p, i) => console.log("   [" + i + "]", p.slice(0, 60) + (p.length > 60 ? "…" : "")));
 check("注段落拆成 2 段", paras.length === 2, String(paras.length));
 check("第1段含「职工总数410人」", paras[0] && paras[0].includes("职工总数410人"));
-check("第1段含「接触职业病危害人数91人」", paras[0] && paras[0].includes("接触职业病危害人数91人"));
+check("第1段含「接触职业病危害人数159人」", paras[0] && paras[0].includes("接触职业病危害人数159人"));
 check("第1段含「12:30～17:00。」结尾", paras[0] && paras[0].trim().endsWith("12:30～17:00。"), paras[0] && paras[0].slice(-20));
 check("第1段不含「M车间A岗位」", paras[0] && !paras[0].includes("M车间A岗位"));
 check("第1段不含「接触的噪声经过验证性检测」", paras[0] && !paras[0].includes("接触的噪声经过验证性检测"));
@@ -157,7 +166,7 @@ const pprB = pPrOf(rawParas[1] || "").replace(/\sw14:paraId="[^"]*"/g, "");
 check("第2段 pPr 与第1段一致（剔除 paraId 后）", !!pprB && pprA === pprB);
 check("第2段 pPr 不含 paraId（不与第1段冲突）", !/w14:paraId/.test(pPrOf(rawParas[1] || "")));
 
-// 表3-1 接触职业病危害人数单元格 = 91人
+// 表3-1 接触职业病危害人数单元格 = 159人（表4-1 人数/总数合计）
 function basicRows(x) {
   const tbls = x.match(/<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>/g) || [];
   for (const t of tbls) {
@@ -172,7 +181,7 @@ function basicRows(x) {
 const rows = basicRows(outXml);
 const contactRow = rows.find((r) => r.includes("接触职业病危害人数")) || [];
 const staffRow = rows.find((r) => r.includes("在册职工人数")) || [];
-check("表3-1 接触职业病危害人数右邻 = 91人", contactRow[1] === "91人", JSON.stringify(contactRow));
+check("表3-1 接触职业病危害人数右邻 = 159人", contactRow[1] === "159人", JSON.stringify(contactRow));
 check("表3-1 在册职工人数右邻 保持 410人", staffRow[1] === "410人", JSON.stringify(staffRow));
 
 console.log("\n[3b] 非噪声岗位为空 → 第二段整段删除");
@@ -186,7 +195,7 @@ check("只剩 1 段（第二段已删除）", parasEmpty.length === 1, String(pa
 check("保留段含「职工总数410人」", parasEmpty[0] && parasEmpty[0].includes("职工总数410人"));
 check("已无「接触的噪声经过验证性检测」", !rEmpty.xml.includes("接触的噪声经过验证性检测"));
 check("已无「非噪声作业岗位」", !rEmpty.xml.includes("非噪声作业岗位"));
-check("表3-1 接触人数仍写入 91人", (basicRows(rEmpty.xml).find((x) => x.includes("接触职业病危害人数")) || [])[1] === "91人");
+check("表3-1 接触人数仍写入 159人", (basicRows(rEmpty.xml).find((x) => x.includes("接触职业病危害人数")) || [])[1] === "159人");
 
 console.log("\n[4] patchPjbgDocx（整链路；沙箱无 SamplingUpload → 第二段删除分支）");
 const patched = await blf.patchPjbgDocx(buf);
@@ -194,7 +203,7 @@ check("返回新 buffer", patched !== buf && patched.byteLength > 0, String(patc
 const z2 = await JSZip.loadAsync(patched);
 const xml2 = await z2.file("word/document.xml").async("string");
 check("重打包后仍含「职工总数410人」", xml2.includes("职工总数410人"));
-check("重打包后仍含「接触职业病危害人数91人」", xml2.includes("接触职业病危害人数91人"));
+check("重打包后仍含「接触职业病危害人数159人」", xml2.includes("接触职业病危害人数159人"));
 check("其它文件仍在（styles.xml）", !!z2.file("word/styles.xml"));
 
 // ---- [5] fixNitrogenOxide：表4-1 职业病危害因素列 氮氧化物措辞精简 ----

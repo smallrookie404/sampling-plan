@@ -1020,6 +1020,88 @@
     return null;
   }
 
+  // ---------------- 接触职业病危害人数：从表4-1「人数 / 总数」列统计（2026-10-19 口径变更） ----------------
+  // 用户要求：接触职业病危害人数 = **表4-1「岗位（工种）设置、劳动者作业情况及职业病危害因素识别情况」**
+  //   「人数」列下「总数」子列的数字合计；某个「人数」单元格所对应的行（同一岗位的多个点位行、
+  //   含纵向合并的续行）里「职业病危害因素」列**全部为空或「-」**时，该人数不纳入统计。
+  // ⚠ 关键（1121 样例实测）：同一岗位的多个点位行会把**同一个人数**重复写在每行
+  //   （包装工 20 / 20 / 20、压机工 30×4…），所以必须**按「车间+岗位」去重后只计一次**，
+  //   否则会把人数成倍放大（1121 逐格相加得 231，按岗位去重才是 77，与报告表3-1 的 77 人一致）。
+  // ⚠ 必须在 ②/②c 删完噪声之后执行：被删空的单元格已填「-」，自然被排除在外。
+  // ⚠ 表4-1 找不到（或没有人数列）时返回 null，调用方退回旧的表8-1 去重合计（保守兜底）。
+  const NO_HAZARD_TEXTS = ['', '-', '—', '–', '/', '／', '无'];
+  function isNoHazardText(t) {
+    const k = normKey(t);
+    for (const p of NO_HAZARD_TEXTS) if (k === normKey(p)) return true;
+    return false;
+  }
+
+  // 返回 { total, groups, counted, skipped } 或 null
+  //   · groups ：表4-1 里不同「车间+岗位」的个数（= 人数单元格去重后的个数）
+  //   · counted：实际纳入统计的岗位数
+  //   · skipped：因危害因素列全为空/「-」被整组排除的岗位数
+  function sumExposedFromT41(xml) {
+    const t = findTableByHead(xml, function (heads) {
+      const has = function (n) {
+        const want = normKey(n);
+        return heads.some(function (h) { return normKey(h).indexOf(want) >= 0; });
+      };
+      return has('职业病危害因素') && has('人数') && has('岗位');
+    }, ['岗', '数', '危']);
+    if (!t) return null;
+    const hNum = headIndexOf(t.heads, '人数');
+    const hHaz = headIndexOf(t.heads, '职业病危害因素');
+    if (hNum < 0 || hHaz < 0) return null;
+    // 「人数」在数据行里被拆成「总数 / 数/班」两格：先按表头下方那行子表头定位「总数」列；
+    // 找不到子表头时退回表头「人数」列号（多出来的那格在人数列之后，故列号不变）。
+    let cTotal = hNum;
+    if (t.rows.length > 1) {
+      const sub = rowCells(t.rows[1]).map(cellText);
+      if (!normKey(sub[0]) && !normKey(sub[1])) {          // 只有子表头行才前两格为空
+        for (let i = 0; i < sub.length; i++) {
+          if (normKey(sub[i]) === normKey('总数')) { cTotal = i; break; }
+        }
+      }
+    }
+    // 按「车间+岗位」归组：同一岗位的多行（不同点位 / 纵向合并续行）只保留一个人数，
+    // 但把**每一行**的危害因素都收进该组，供「整组都为 -/空」判定。
+    const map = new Map();
+    const order = [];
+    for (let ri = 1; ri < t.rows.length; ri++) {
+      const cs = rowCells(t.rows[ri]);
+      if (cs.length < 3) continue;
+      const unit = cellText(cs[0]);
+      const job = cellText(cs[1]);
+      if (!unit && !job) continue;                        // 子表头 / 空行
+      const kUnit = normKey(unit);
+      const kJob = normKey(job);
+      if (kUnit.indexOf('合计') >= 0 || kJob.indexOf('合计') >= 0) continue;
+      const hi = hHaz + (cs.length - t.head.length);      // 合并单元格导致的列号平移（同②）
+      const hazard = (hi >= 0 && hi < cs.length) ? cellText(cs[hi]) : '';
+      const numText = (cTotal >= 0 && cTotal < cs.length) ? cellText(cs[cTotal]) : '';
+      const num = parseFloat(pickNumber(numText));
+      const key = kUnit + '\u0001' + kJob;
+      let g = map.get(key);
+      if (numText !== '' && isFinite(num)) {
+        if (!g) { g = { num: num, hazards: [] }; map.set(key, g); order.push(key); }
+        g.hazards.push(hazard);
+      } else if (g) {
+        g.hazards.push(hazard);                           // 人数格为空（纵向合并/续行）→ 沿用该岗位的人数
+      }
+    }
+    if (!order.length) return null;
+    let total = 0, counted = 0, skipped = 0;
+    for (const key of order) {
+      const g = map.get(key);
+      let hasHaz = false;
+      for (const h of g.hazards) { if (!isNoHazardText(h)) { hasHaz = true; break; } }
+      if (!hasHaz) { skipped++; continue; }               // 整组危害因素都是「-」/空 → 不纳入统计
+      total += g.num;
+      counted++;
+    }
+    return { total: total, groups: order.length, counted: counted, skipped: skipped };
+  }
+
   // 表8-1：作业人数列按「单元/工作场所 + 岗位/工种」去重后求和；返回 { total, groups } 或 null
   // ★ 性能：预筛单字「数」（作业人数）与「论」（评价结论），跳过无关表。
   function sumExposedWorkers(xml) {
@@ -1166,7 +1248,10 @@
   //   空串 → 第二段（M车间A岗位那段）整段删除。
   function fixNoteAndContactCount(xml, nonNoiseText) {
     const basic = readBasicInfoTable(xml);
-    const sum = sumExposedWorkers(xml);
+    // ★ 2026-10-19 口径变更：接触职业病危害人数优先取**表4-1「人数/总数」列合计**
+    //   （危害因素列全为「-」/空的行不纳入）；表4-1 找不到时退回表8-1 去重合计（兜底）。
+    const t41 = sumExposedFromT41(xml);
+    const sum = t41 || sumExposedWorkers(xml);
     if (!basic && !sum) return { xml: xml, changed: 0 };
     let changed = 0;
     let out = xml;
@@ -1190,6 +1275,9 @@
     return {
       xml: out, changed: changed, staffVal: staffVal, contactVal: contactVal2,
       total: sum ? sum.total : null, jobs: jobs, noteTexts: texts,
+      // 口径来源：t41 = 表4-1 人数/总数合计（新口径）；t81 = 表8-1 去重合计（兜底）
+      totalFrom: t41 ? 't41' : (sum ? 't81' : 'none'),
+      t41: t41,
     };
   }
 
@@ -1906,7 +1994,12 @@
       if (r5.changed) {
         console.info('[检评报告] 注段落/接触人数联动，共修正 ' + r5.changed + ' 处'
           + '（在册职工人数=' + r5.staffVal + '，接触职业病危害人数=' + r5.contactVal
-          + (r5.total != null ? '，表8-1 作业人数去重合计=' + r5.total : '')
+          + (r5.total != null
+            ? '，来源=' + (r5.totalFrom === 't41' ? '表4-1 人数/总数合计' : '表8-1 作业人数去重合计')
+              + '=' + r5.total
+              + (r5.t41 ? '（岗位 ' + r5.t41.groups + ' 个：纳入 ' + r5.t41.counted
+                + '，危害因素列全为「-」/空而排除 ' + r5.t41.skipped + '）' : '')
+            : '')
           + '，非噪声岗位文本=' + (r5.jobs ? '有(' + r5.jobs.length + '字)' : '空→仅保留注段A') + '）');
         console.info('[检评报告] 注段落文本：' + (r5.noteTexts || []).length + ' 段 → '
           + (r5.noteTexts || []).map(function (t) { return '「' + String(t).slice(0, 20) + '…」'; }).join(' + '));
@@ -2393,6 +2486,8 @@
     // 测试用纯函数 / 常量
     fixNoteAndContactCount: fixNoteAndContactCount,
     sumExposedWorkers: sumExposedWorkers,
+    sumExposedFromT41: sumExposedFromT41,
+    isNoHazardText: isNoHazardText,
     readBasicInfoTable: readBasicInfoTable,
     fixNoteParagraph: fixNoteParagraph,
     NOX_FROM_HALF: NOX_FROM_HALF,
