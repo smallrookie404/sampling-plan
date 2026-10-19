@@ -109,7 +109,16 @@
       width: 100%; height: 36px; padding: 0 10px;
       border: 1px solid var(--line); border-radius: 6px; font-size: 14px; outline: none; margin-bottom: 8px;
     }
-    /* 人员选项框：平时不显示，只有搜索框里有内容时才出现（出现在搜索框与「确认成员」之间） */
+    /* 项目组成员：标题行（左「项目组成员（已勾选 N 人）」+ 右「确认成员」）在搜索框上方 */
+    .xcdc .member-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      margin-bottom: 6px;
+    }
+    .xcdc .member-head label { margin: 0; font-size: 13px; color: #374151; }
+    .xcdc .member-confirm {
+      height: 30px; padding: 0 14px; font-size: 13px; flex: 0 0 auto;
+    }
+    /* 人员选项框：平时不显示，点/聚焦搜索框或有输入时才出现（位于搜索框下方、已选成员标签上方） */
     .xcdc .member-picker { position: relative; }
     .xcdc .member-list {
       display: none;
@@ -581,13 +590,15 @@
         <div class="info" id="projectInfo"></div>
 
         <div class="field">
-          <label>项目组成员<span class="member-count" id="memberCount"></span></label>
+          <div class="member-head">
+            <label>项目组成员<span class="member-count" id="memberCount"></span></label>
+            <button class="btn btn-secondary member-confirm" id="btnMemberConfirm">确认成员</button>
+          </div>
           <div class="member-picker">
             <input type="text" id="memberSearch" class="member-search" placeholder="输入姓名/工号搜索，勾选后点“确认成员”" autocomplete="off">
             <div id="memberList" class="member-list"></div>
           </div>
           <div id="memberTags" class="member-tags"></div>
-          <button class="btn btn-secondary" id="btnMemberConfirm" style="margin-top:2px;">确认成员</button>
         </div>
         <div class="row-2">
           <div class="field">

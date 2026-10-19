@@ -99,10 +99,32 @@ const a1 = await state();
 check(a1.total === 4, "A1 人员已渲染（4 人）", JSON.stringify(a1));
 check(a1.open === false && a1.display === "none", "A2 未搜索时人员列表不显示", JSON.stringify(a1));
 
-// ---- B. 输入即出现，且只显示匹配项 ----
+// ---- A2b. 布局：「项目组成员」+「确认成员」在搜索框上方 ----
+const layout = await page.evaluate(() => {
+  const r = (sel) => { const e = document.querySelector(sel); return e ? e.getBoundingClientRect() : null; };
+  const head = r(".member-head"), btn = r("#btnMemberConfirm"), input = r("#memberSearch"), label = r(".member-head label");
+  const btnEl = document.getElementById("btnMemberConfirm");
+  return {
+    btnAboveInput: !!btn && !!input && btn.bottom <= input.top + 1,
+    sameRow: !!head && !!btn && head.top <= btn.top && btn.bottom <= head.bottom + 1,
+    labelLeftOfBtn: !!label && !!btn && label.right < btn.left,
+    btnInHead: !!btnEl && btnEl.parentElement === document.querySelector(".member-head"),
+  };
+});
+check(layout.btnAboveInput, "A5 「确认成员」按钮在搜索框上方", JSON.stringify(layout));
+check(layout.sameRow && layout.labelLeftOfBtn, "A6 「项目组成员」与「确认成员」同一行（左标题 / 右按钮）", JSON.stringify(layout));
+check(layout.btnInHead, "A7 按钮位于标题行容器内", JSON.stringify(layout));
+
+// ---- A3/A4. 点搜索框即展开（2026-10-20 追加需求）----
+await page.click("#memberSearch");
+const a3 = await state();
+check(a3.open === true && a3.display !== "none", "A3 点搜索框 → 选项框出现", JSON.stringify(a3));
+check(a3.visible.length === 4, "A4 未输入关键字时显示全部人员（4 人）", JSON.stringify(a3.visible));
+
+// ---- B. 输入即过滤，且只显示匹配项 ----
 await type("王");
 const b1 = await state();
-check(b1.open === true && b1.display !== "none", "B1 输入关键字 → 选项框出现", JSON.stringify(b1));
+check(b1.open === true && b1.display !== "none", "B1 输入关键字 → 选项框保持展开", JSON.stringify(b1));
 check(b1.visible.length === 2 && b1.visible.join(",").indexOf("金云龚") < 0,
   "B2 只显示匹配项（王飞/王慈媛）", JSON.stringify(b1.visible));
 
@@ -115,14 +137,17 @@ await type("zzz");
 const c1 = await state();
 check(c1.open === true && c1.visible.length === 0 && c1.empty === true, "C1 无匹配 → 选项框仍显示「无匹配人员」", JSON.stringify(c1));
 
-// ---- D. 清空搜索 → 收起 ----
+// ---- D. 清空搜索（仍在框内）→ 回到全部；点外部才收起 ----
 await type("");
 const d1 = await state();
-check(d1.open === false && d1.display === "none", "D1 清空搜索 → 选项框收起", JSON.stringify(d1));
-check(d1.empty === false, "D2 收起时移除「无匹配人员」提示", JSON.stringify(d1));
+check(d1.open === true && d1.visible.length === 4, "D1 清空搜索（仍聚焦）→ 保持展开并显示全部人员", JSON.stringify(d1));
+check(d1.empty === false, "D2 清空后移除「无匹配人员」提示", JSON.stringify(d1));
+await page.click("#projectInfo", { force: true });
+const d3 = await state();
+check(d3.open === false && d3.display === "none", "D3 点搜索框外部 → 收起", JSON.stringify(d3));
 
 // ---- E. Esc / 点外部 / 点内部 ----
-await type("王");
+await page.click("#memberSearch");
 await page.evaluate(() => document.getElementById("memberSearch").dispatchEvent(
   new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
 const e1 = await page.evaluate(() => ({

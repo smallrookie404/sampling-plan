@@ -1334,7 +1334,7 @@
       filterMemberList();
     }
 
-    // 人员选项框：平时收起，只有搜索框里有内容时才浮出（2026-10-20 用户需求）
+    // 人员选项框：默认收起；**点搜索框就展开**（显示全部人员），输入关键字则只留匹配项（2026-10-20 用户需求）
     function setMemberEmptyHint(show) {
       let el = memberList.querySelector('.member-empty');
       if (show && !el) {
@@ -1349,7 +1349,8 @@
     function closeMemberList() {
       memberList.classList.remove('open');
     }
-    function filterMemberList() {
+    // 只做过滤，不改展开状态；返回可见条数
+    function filterMemberItems() {
       const kw = memberSearch.value.trim().toLowerCase();
       let visible = 0;
       Array.from(memberList.children).forEach(function (label) {
@@ -1360,9 +1361,19 @@
         label.classList.toggle('hidden', !hit);
         if (hit) visible++;
       });
-      // 只在「搜索中」显示选项框；搜索框清空 → 收起
-      memberList.classList.toggle('open', !!kw);
       setMemberEmptyHint(!!kw && visible === 0);
+      return visible;
+    }
+    // 输入变化：有关键字 或 搜索框处于聚焦（刚点进来）→ 展开；否则收起
+    function filterMemberList() {
+      filterMemberItems();
+      const focused = typeof document !== 'undefined' && document.activeElement === memberSearch;
+      memberList.classList.toggle('open', !!memberSearch.value.trim() || focused);
+    }
+    // 点/聚焦搜索框：立即展开人员下拉（不受关键字限制）
+    function openMemberList() {
+      filterMemberItems();
+      memberList.classList.add('open');
     }
 
     function checkedMemberIds() {
@@ -1418,6 +1429,7 @@
         teamDirty = true;
         memberSearch.value = '';
         filterMemberList();
+        closeMemberList();   // 确认后收起人员下拉（此时搜索框可能仍聚焦）
         await saveTeamSettings(); // 确认后按当前登录账号保存（云端），不再清空
       }
       renderMemberTags();
@@ -1700,6 +1712,9 @@
       // 点搜索框/选项框以外的地方 → 收起人员选项框
       if (!memberSearch.contains(e.target) && !memberList.contains(e.target)) closeMemberList();
     });
+    // 点/聚焦搜索框 → 立即展开人员下拉（显示全部人员，便于直接勾选）
+    memberSearch.addEventListener('focus', openMemberList);
+    memberSearch.addEventListener('click', openMemberList);
     // Esc：清空搜索并收起选项框
     memberSearch.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' || e.key === 'Esc') {
