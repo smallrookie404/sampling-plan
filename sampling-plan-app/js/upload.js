@@ -687,7 +687,9 @@
 
     function normalizeTeamConfig(obj) {
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
-      const has = Array.isArray(obj.memberIds) || obj.investigatorId || obj.reviewerId || obj.investigateDate;
+      // entBasicUpload 单独存在时也算有效配置（用户可能只改过这个勾选项）
+      const has = Array.isArray(obj.memberIds) || obj.investigatorId || obj.reviewerId || obj.investigateDate
+        || typeof obj.entBasicUpload === 'boolean';
       return has ? obj : null;
     }
 
@@ -755,6 +757,8 @@
     function enterApp() {
       if (loginOverlay) loginOverlay.classList.add('hidden');
       authExpiredHandled = false; // 重新登录成功，允许再次提示
+      // 换账号登录后按新账号的团队配置回填「企业基本信息上传」勾选状态（配置里没有 → 不勾选）
+      try { if (chkEntBasic) chkEntBasic.checked = !!(teamSaved && teamSaved.entBasicUpload === true); } catch (e) {}
     }
 
     // ---------- 右上角用户菜单：按钮显示登录者姓名，点击展开菜单可选退出登录 ----------
@@ -818,6 +822,7 @@
       // 打开上传视图时从云端刷新，换电脑也能读到最新团队配置
       teamSaved = await loadTeamSettings();
       if (teamSaved) applyTeamSettings(teamSaved);
+      else if (chkEntBasic) chkEntBasic.checked = false;   // 本账号无配置 → 勾选项回到默认不勾
       generateExportFile();
       generateSurveyFile(); // 进入上传页面自动重新生成两个上传文件（主表 + 调查表 6 合一）
     }
@@ -1210,19 +1215,21 @@
     const ENTINFO_KEY = 'xcdc_entinfo_v1';
     let entInfoSeq = 0;
 
-    // 「企业基本信息上传」勾选项（只在「上传调查表（6 合一）」时生效）：记住上次选择
-    const ENTBASIC_KEY = 'xcdc_entbasic_v1';
+    // 「企业基本信息上传」勾选项（只在「上传调查表（6 合一）」时生效）
+    //   ★ 与「调查人/复核人/调查日期」**同一套保存方式**：随团队配置一起存
+    //     （saveTeamSettings → 本地 localStorage 兜底 + Cloudflare Pages 时 PUT /api/team 写 KV，
+    //      按登录账号 teamAccountKey() 隔离），打开时由 applyTeamSettings 回填。
+    //   配置里没有该字段（老配置 / 新账号）→ **默认不勾选**。
     function entBasicChecked() {
       return !!(chkEntBasic && chkEntBasic.checked);
     }
-    function initEntBasicToggle() {
-      if (!chkEntBasic) return;
-      try { chkEntBasic.checked = localStorage.getItem(ENTBASIC_KEY) === '1'; } catch (e) {}
+    // 勾选变化即保存（与 investigatorSelect/reviewerSelect 的 change 处理一致）
+    if (chkEntBasic) {
       chkEntBasic.addEventListener('change', function () {
-        try { localStorage.setItem(ENTBASIC_KEY, chkEntBasic.checked ? '1' : '0'); } catch (e) {}
+        teamDirty = true;
+        saveTeamSettings().catch(function () {});
       });
     }
-    initEntBasicToggle();
 
     function entInfoCacheRead() {
       try { return JSON.parse(localStorage.getItem(ENTINFO_KEY)) || {}; } catch (e) { return {}; }
@@ -1397,7 +1404,7 @@
       if (!quiet) log('已确认项目成员 ' + confirmedMemberIds.length + ' 人');
     }
 
-    // 按账号保存已确认的团队设置（成员/调查人/复核人/日期）：
+    // 按账号保存已确认的团队设置（成员/调查人/复核人/日期/「企业基本信息上传」勾选）：
     // 本地始终留一份兜底，部署在 Cloudflare Pages 时同步到云端（跨电脑读取）
     async function saveTeamSettings() {
       const data = {
@@ -1405,6 +1412,8 @@
         investigatorId: investigatorSelect ? investigatorSelect.value : '',
         reviewerId: reviewerSelect ? reviewerSelect.value : '',
         investigateDate: investigateDate ? investigateDate.value : '',
+        // 「企业基本信息上传」勾选项：与上面几项同存同取（KV team:<账号>）
+        entBasicUpload: entBasicChecked(),
         savedAt: Date.now()
       };
       teamSaved = data;
@@ -1442,6 +1451,8 @@
         reviewerSelect.value = data.reviewerId;
       }
       if (data.investigateDate) investigateDate.value = String(data.investigateDate).slice(0, 10);
+      // 「企业基本信息上传」勾选项：配置里没有该字段（老配置 / 新账号）→ 一律回到不勾选
+      if (chkEntBasic) chkEntBasic.checked = data.entBasicUpload === true;
       return true;
     }
 
@@ -4068,6 +4079,7 @@
       applyEntInfoOnUpload: applyEntInfoOnUpload,
       // 企业基本信息自动补全（勾选「企业基本信息上传」时随调查表上传写入）：
       //   buildEntBasicPatch(rec) → { patch, notes }；entBasicChecked() = 当前勾选状态
+      //   （勾选状态与调查人/复核人同存于团队配置 team:<账号>，缺省不勾）
       buildEntBasicPatch: buildEntBasicPatch,
       entValueBlank: entValueBlank,
       entBasicChecked: entBasicChecked,

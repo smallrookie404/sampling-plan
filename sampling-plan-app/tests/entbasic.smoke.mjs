@@ -45,9 +45,12 @@ page.on("dialog", (d) => d.accept());
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(e.message));
 await page.addInitScript(() => {
+  // 测试用：账号可由 localStorage.__test_acct 指定（addInitScript 每次导航都会重跑，
+  // 直接改 sessionStorage 会被覆盖，所以用 localStorage 传参）
+  const acct = localStorage.getItem("__test_acct") || "TEST";
   sessionStorage.setItem("xcdc_session_v1", JSON.stringify({
     token: "test-token", orgId: "1",
-    userInfo: { userName: "测试账号", userCode: "TEST", organization: { organizationId: "1" } },
+    userInfo: { userName: acct === "TEST" ? "测试账号" : "金云龚", userCode: acct, organization: { organizationId: "1" } },
   }));
   // 平台打桩：企业信息 GET 返回「有联系人、缺职卫字段、危害风险一般」的记录，PUT 记录请求体
   window.__ent = { calls: [], getMode: "ok", putMode: "ok" };
@@ -81,7 +84,9 @@ await page.addInitScript(() => {
     }
     if (url.indexOf("223.93.144.122") >= 0) {
       if (url.indexOf("/auth/info") >= 0) {
-        return json({ code: "200", user: { id: 49, userName: "王飞", userCode: "btc-wf", organization: { organizationId: 1 } } });
+        // 与上面 session 用同一个账号（否则 /auth/info 会把 userInfo 覆盖成固定账号）
+        const acct = localStorage.getItem("__test_acct") || "TEST";
+        return json({ code: "200", user: { id: 49, userName: acct === "TEST" ? "测试账号" : "金云龚", userCode: acct, organization: { organizationId: 1 } } });
       }
       if (url.indexOf("/api/reportData/findList") >= 0) {
         return json({ code: "200", message: "查询成功！", body: { records: [
@@ -135,25 +140,45 @@ check(dom.labelText.indexOf("企业基本信息上传") >= 0, "A4 勾选框文�
 check(dom.hasHint, "A5 勾选框下方有规则说明");
 check(dom.checked === false, "A6 默认未勾选（localStorage 无记忆时）", String(dom.checked));
 
-await setChk(true);
-const persisted = await page.evaluate(() => ({
-  ls: localStorage.getItem("xcdc_entbasic_v1"),
-  api: window.SamplingUpload.entBasicChecked(),
-}));
-check(persisted.ls === "1" && persisted.api === true, "A7 勾选后写入本地记忆且 entBasicChecked()=true", JSON.stringify(persisted));
-await setChk(false);
-const persisted2 = await page.evaluate(() => ({
-  ls: localStorage.getItem("xcdc_entbasic_v1"),
-  api: window.SamplingUpload.entBasicChecked(),
-}));
-check(persisted2.ls === "0" && persisted2.api === false, "A8 取消勾选后同步本地记忆", JSON.stringify(persisted2));
+// 勾选状态与「调查人/复核人」同一套保存：写进团队配置（KV team:<账号>；本地 localStorage 兜底同一份对象）
+const teamCfg = (acct) => page.evaluate((a) => {
+  try { return JSON.parse(localStorage.getItem("xcdc_team_v1_" + a) || "null"); } catch (e) { return null; }
+}, acct);
 
-// 记忆恢复：刷新后仍保持「未勾选」；手动置 1 再刷新 → 勾选
-await page.evaluate(() => localStorage.setItem("xcdc_entbasic_v1", "1"));
+await setChk(true);
+const persisted = await teamCfg("TEST");
+check(persisted && persisted.entBasicUpload === true,
+  "A7 勾选后写入团队配置（与调查人/复核人同一个对象）", JSON.stringify(persisted));
+check(persisted && "investigatorId" in persisted && "reviewerId" in persisted && "memberIds" in persisted,
+  "A8 团队配置仍含成员/调查人/复核人字段（未被覆盖）", JSON.stringify(persisted));
+const apiChecked = await page.evaluate(() => window.SamplingUpload.entBasicChecked());
+check(apiChecked === true, "A9 entBasicChecked() 反映当前勾选", String(apiChecked));
+
+await setChk(false);
+const persisted2 = await teamCfg("TEST");
+check(persisted2 && persisted2.entBasicUpload === false, "A10 取消勾选后同步写回团队配置", JSON.stringify(persisted2));
+
+// 同账号刷新 → 由 loadTeamSettings/applyTeamSettings 恢复勾选
+await setChk(true);
 await page.reload({ waitUntil: "load" });
 await page.waitForFunction(() => window.SamplingUpload && window.SamplingUpload.entBasicChecked, null, { timeout: 20000 });
 const restored = await page.evaluate(() => document.getElementById("chkEntBasicUpload").checked);
-check(restored === true, "A9 刷新后恢复上次勾选状态", String(restored));
+check(restored === true, "A11 同账号刷新后从团队配置恢复勾选", String(restored));
+
+// 换账号（btc-jyg）刷新 → 该账号没有团队配置 → 默认不勾选，不继承上一账号
+await page.evaluate(() => localStorage.setItem("__test_acct", "btc-jyg"));
+await page.reload({ waitUntil: "load" });
+await page.waitForFunction(() => window.SamplingUpload && window.SamplingUpload.entBasicChecked, null, { timeout: 20000 });
+const otherAcct = await page.evaluate(() => document.getElementById("chkEntBasicUpload").checked);
+check(otherAcct === false, "A12 换账号登录 → 默认不勾选（不继承上一账号）", String(otherAcct));
+
+// 老配置（团队配置里没有 entBasicUpload 字段）→ 默认不勾
+await page.evaluate(() => localStorage.setItem("xcdc_team_v1_btc-jyg",
+  JSON.stringify({ memberIds: [], investigatorId: "", reviewerId: "", investigateDate: "", savedAt: 1 })));
+await page.reload({ waitUntil: "load" });
+await page.waitForFunction(() => window.SamplingUpload && window.SamplingUpload.entBasicChecked, null, { timeout: 20000 });
+const legacy = await page.evaluate(() => document.getElementById("chkEntBasicUpload").checked);
+check(legacy === false, "A13 老团队配置（无该字段）→ 默认不勾选", String(legacy));
 
 // ---- B. buildEntBasicPatch 纯函数 ----
 const cases = await page.evaluate(() => {

@@ -273,7 +273,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 改登录/验证码/会话 | upload.js `API_BASE`/RSA 实现/`resolveOrgId`/`saveSession` + index.html 登录遮罩与内联隐藏脚本 |
 | 改上传流程或平台接口 | upload.js `apiRequest`/`runUploadFlow`/`syncProjectInfo`；代理侧 `functions/api/platform/[[path]].js`（目标 IP、头白名单） |
 | 改在职人数/接害人数（企业信息） | upload.js `entInputValues`/`validateEntInputs`/`entPayloadForUpload`/`buildEntInfoPatch`/`applyEntInfoOnUpload`/`clearEntInputsAfterUpload`/`prefillEntInfo` + index.html `#entOnJobNum`/`#entHazardNum`；测试 `tests/entinfo.smoke.mjs` |
-| 改「企业基本信息上传」勾选项（调查表上传补全） | upload.js `buildEntBasicPatch`/`entValueBlank`/`entBasicChecked`/`applyEntInfoOnUpload`（第 6 参 extraBuilder，合并成一次 PUT）+ index.html `#chkEntBasicUpload`；测试 `tests/entbasic.smoke.mjs` |
+| 改「企业基本信息上传」勾选项（调查表上传补全） | upload.js `buildEntBasicPatch`/`entValueBlank`/`entBasicChecked`/`applyEntInfoOnUpload`（第 6 参 extraBuilder，合并成一次 PUT）+ index.html `#chkEntBasicUpload`；勾选状态**随团队配置**一起存（`saveTeamSettings` 的 `entBasicUpload` 字段 → 本地 `xcdc_team_v1_<账号>` 兜底 + Pages 版 `/api/team` 写 KV `team:<账号>`），`applyTeamSettings` 回填，缺省不勾；测试 `tests/entbasic.smoke.mjs` |
 | 改团队配置 | upload.js `loadTeamSettings`/`saveTeamSettings`/`loadProjectTeam` + `functions/api/team.js`（KV key、64KB 上限） |
 | 改样式/主题 | 主界面 `css/styles.css`（CSS 变量）；登录/上传视图是 index.html 内联 `.xcdc`（老内核兼容写法勿改成 `inset` 简写等新语法） |
 
