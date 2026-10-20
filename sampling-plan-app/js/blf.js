@@ -2093,6 +2093,233 @@
     return { xml: out, changed: changed };
   }
 
+  // ---------------- ⑨ 表3-3「原辅材料情况」下方插入「注1~注4」（整段标红） ----------------
+  // 需求（用户 2026-10-21）：在表3-3 表格下面增加一段，说明「漆料主要成分」的取值口径，**文字标红**。
+  //   定位：先找含「表3-3」且含「原辅材料」的标题段落 → 取其后第一张 <w:tbl> → 在 </w:tbl> 之后插入新段落；
+  //         找不到标题时按表头（物料名称 + 主要成分 + 年用量）兜底找表。
+  //   格式：克隆「标题段落之前那一段正文」的 <w:pPr> 与首个 <w:r> 的 <w:rPr>（保持仿宋/字号/缩进一致），
+  //         并强制把字符颜色改成 FF0000；4 条注用 <w:br/> 分行（= 一段 4 行）。
+  //   幂等：文档里已出现「注1：本次检测对用人单位漆料」→ 直接跳过（重复导出不会叠加）。
+  const PJBG_MATERIAL_NOTES = [
+    '注1：本次检测对用人单位漆料进行有机组分定性分析，体现的“主要成分”指：定性结果中纳入《工作场所有害因素职业接触限值 第1部分：化学有害因素》（GBZ 2.1）和《职业病危害因素分类目录》（国卫疾控发〔2015〕92号）的化学组分。',
+    '注2：本次检测对用人单位漆料进行有机组分定性分析，定性结果中的有机组分均未纳入《工作场所有害因素职业接触限值 第1部分：化学有害因素》（GBZ 2.1）和《职业病危害因素分类目录》（国卫疾控发〔2015〕92号），故物料的主要成分按“/”体现。',
+    '注3：用人单位2025年度的《工作场所职业病危害因素检测报告》[报告编号：BTC（ZJ）250100]显示，漆料已进行有机组分定性分析，本次检测期间使用的漆料未发生变更，故漆料主要成分按照该报告的定性结果体现。',
+    '注4：漆料的主要成分根据用人单位提供的漆料SDS/物料成分说明等资料体现。',
+  ];
+  const PJBG_NOTE_RED = 'FF0000';
+
+  // 给 <w:rPr> 强制写入红色（保留其它字符格式）
+  function forceRedRPr(rPr) {
+    let out = rPr || '';
+    if (!out) return '<w:rPr><w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>';
+    out = out.replace(/<w:color\b[^>]*\/>/g, '');          // 去掉已有颜色
+    if (out.indexOf('</w:rPr>') >= 0) return out.replace('</w:rPr>', '<w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>');
+    return '<w:rPr><w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>';
+  }
+  // 取段落里第一个 run 的 <w:rPr>（先剔除 <w:pPr>，避免命中段落标记自带的 rPr）
+  function firstRunRPr(pXml) {
+    const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(pXml);
+    const pPr = pPrM ? pPrM[0] : '';
+    const body = pPr ? pXml.replace(pPr, '') : pXml;
+    const runM = /<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/.exec(body);
+    if (!runM) return '';
+    const rM = /<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/.exec(runM[0]);
+    return rM ? rM[0] : '';
+  }
+
+  function addMaterialNote(xml) {
+    // 幂等：已插入过就不再插
+    if (xml.indexOf('注1：本次检测对用人单位漆料') >= 0) return { xml: xml, changed: 0, skipped: true };
+    const paraRe = new RegExp(PARA_SRC, 'g');
+    let m;
+    let capStart = -1, capEnd = -1, prevPara = '';
+    while ((m = paraRe.exec(xml))) {
+      const t = cellText(m[0]);
+      if (t && t.indexOf('表3-3') >= 0 && t.indexOf('原辅材料') >= 0) {
+        capStart = m.index; capEnd = m.index + m[0].length;
+        break;
+      }
+      prevPara = m[0];                                  // 记下标题前一段（做格式模板）
+    }
+    let tblStart = -1, tblEnd = -1;
+    if (capStart >= 0) {
+      tblStart = xml.indexOf('<w:tbl', capEnd);
+      if (tblStart >= 0) {
+        const close = xml.indexOf('</w:tbl>', tblStart);
+        if (close >= 0) tblEnd = close + '</w:tbl>'.length;
+      }
+    }
+    if (tblEnd < 0) {
+      // 兜底：按表头找「原辅材料情况」表（物料名称 / 主要成分 / 年用量）
+      const tblRe = new RegExp(TBL_SRC, 'g');
+      let tm;
+      while ((tm = tblRe.exec(xml))) {
+        const tbl = tm[0];
+        if (tbl.indexOf('成') < 0 || tbl.indexOf('料') < 0) continue;
+        const rows = tableRows(tbl);
+        if (!rows.length) continue;
+        const heads = rowCells(rows[0]).map(cellText).map(normKey);
+        const has = function (kw) { return heads.some(function (h) { return h.indexOf(normKey(kw)) >= 0; }); };
+        if (has('主要成分') && (has('物料名称') || has('年用量'))) {
+          tblStart = tm.index; tblEnd = tm.index + tbl.length;
+          break;
+        }
+      }
+    }
+    if (tblEnd < 0) return { xml: xml, changed: 0 };
+
+    // 格式模板：优先用标题前一段（正文），否则用标题段本身
+    const src = prevPara || (capStart >= 0 ? xml.slice(capStart, capEnd) : '');
+    const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(src || '');
+    const pPr = pPrM ? pPrM[0] : '';
+    const rPr = forceRedRPr(firstRunRPr(src || ''));
+    const runs = PJBG_MATERIAL_NOTES.map(function (line, i) {
+      const br = i === 0 ? '' : '<w:r>' + rPr + '<w:br/></w:r>';
+      return br + '<w:r>' + rPr + '<w:t xml:space="preserve">' + xmlEsc(line) + '</w:t></w:r>';
+    }).join('');
+    const para = '<w:p>' + pPr + runs + '</w:p>';
+    return { xml: xml.slice(0, tblEnd) + para + xml.slice(tblEnd), changed: 1 };
+  }
+
+  // ---------------- ⑩ 表8-2「超标原因分析」按检测项目自动填「超标原因分析」列 ----------------
+  // 需求（用户 2026-10-21）：报告 8.2「不符合岗位/工种超标原因分析」章节若有表8-2，
+  //   逐行看「检测项目」列，按因素类型把对应模板写进「超标原因分析」列（多行，分号/句号分行）。
+  //   · 噪声（检测项目含「噪声」）→ 4 行
+  //   · 高温（检测项目含「高温」）→ 6 行
+  //   · 检测项目按危害因素库「系统名称」匹配后，物化性质 =「粉尘」或「粉尘、毒物」→ 粉尘 6 行
+  //   · 物化性质除「粉尘、毒物」外含「毒物」→ 毒物 5 行
+  //   只填**空 / 占位（-、—、/、无）**的单元格，已有内容不动（避免覆盖人工填写的分析）。
+  const PJBG_OVER_LIMIT_TEXTS = {
+    noise: [
+      'XX设备运行产生较大的机械性噪声（空气动力性噪声、电磁性噪声）；',
+      '设备敞开式作业，缺少隔音防护；',
+      '多台设备同时运转存在噪声叠加；',
+      '气动装置高压气体排气口未安装消音装置，或消音装置消音效果不佳。',
+    ],
+    heat: [
+      'XX设备运行存在生产性热源；',
+      '设备敞开式作业或未设置隔热措施，热辐射易扩散到设备外部；',
+      '环境温度较高；',
+      '未设置防暑降温设施；',
+      '工业风扇防暑降温效果欠佳；',
+      '车间整体通风效果欠佳，存在热量积聚。',
+    ],
+    dust: [
+      '打磨作业、搅拌作业为敞开式作业，易产生扬尘；',
+      '投料、出料作业落差较大，易产生扬尘；',
+      '高压吹扫物料表面易产生扬尘；',
+      '抛丸机密封不严，作业过程粉尘易扩散到外部环境；',
+      '打磨区除尘设施（罩口设置不合理、距离远、未设围挡）除尘效果欠佳，未能及时捕集逸散的粉尘；',
+      '现场设备表面、地面等存在明显积尘，易形成二次扬尘。',
+    ],
+    tox: [
+      '漆料中的甲苯含量较高，易挥发逸散至空气中；',
+      '现场水帘机的吸风排毒效果欠佳，未能有效捕集逸散的废气；',
+      '现场设备、管道存在跑冒滴漏现象，有废气的逸散；',
+      '车间整体通风效果欠佳，导致废气蓄积；',
+      '打磨区未与喷漆区进行物理隔离，导致喷漆区废气扩散到周边区域。',
+    ],
+  };
+
+  // 把一个单元格的所有段落替换成「一段 N 行」（沿用首段的 pPr / 首个 run 的 rPr）
+  function setCellLines(tcXml, lines) {
+    const paraRe = new RegExp(PARA_SRC, 'g');
+    const paras = tcXml.match(paraRe) || [];
+    if (!paras.length || !lines || !lines.length) return tcXml;
+    const tpl = paras[0];
+    const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(tpl);
+    const pPr = pPrM ? pPrM[0] : '';
+    const rPr = firstRunRPr(tpl);
+    const runs = lines.map(function (ln, i) {
+      const br = i === 0 ? '' : '<w:r>' + rPr + '<w:br/></w:r>';
+      return br + '<w:r>' + rPr + '<w:t xml:space="preserve">' + xmlEsc(ln) + '</w:t></w:r>';
+    }).join('');
+    const np = '<w:p>' + pPr + runs + '</w:p>';
+    let first = true;
+    return tcXml.replace(paraRe, function () {
+      if (first) { first = false; return np; }
+      return '';
+    });
+  }
+
+  // 检测项目文本 → 需要写入的「超标原因分析」行（按 噪声 / 高温 / 粉尘 / 毒物 顺序，去重）
+  function overLimitLines(itemText, hIdx) {
+    const out = [];
+    const push = function (kind) {
+      for (const ln of PJBG_OVER_LIMIT_TEXTS[kind]) if (out.indexOf(ln) < 0) out.push(ln);
+    };
+    const whole = hazNorm(itemText);
+    if (whole.indexOf('噪声') >= 0) push('noise');
+    if (whole.indexOf('高温') >= 0) push('heat');
+    // 化学因素：按库「系统名称」逐个匹配（三级：原名 → 去「(总尘)/(呼尘)」→ 原样）
+    const parts = String(itemText === null || itemText === undefined ? '' : itemText)
+      .split(/[,，、;；\n]/).map(function (x) { return x.trim(); }).filter(Boolean);
+    const MIX = hazNorm('粉尘、毒物');
+    let dustDone = false, toxDone = false;
+    for (const p of parts) {
+      const k = hazNorm(p);
+      if (!k || k.indexOf('噪声') >= 0 || k.indexOf('高温') >= 0) continue;
+      let h = hIdx[k];
+      if (!h) {
+        const k2 = hazNorm(String(p).replace(/[（(]\s*(?:总尘|呼尘)\s*[)）]\s*$/, ''));
+        if (k2) h = hIdx[k2];
+      }
+      if (!h) continue;
+      const ph = hazNorm(h.physchem);
+      if (ph === MIX || ph === hazNorm('粉尘')) { if (!dustDone) { push('dust'); dustDone = true; } }
+      else if (ph.indexOf('毒物') >= 0) { if (!toxDone) { push('tox'); toxDone = true; } }
+    }
+    return out;
+  }
+
+  // 在 document.xml 里找「表8-2 超标原因分析表」（表头含「检测项目」+「超标原因分析」），逐行填空。
+  // 返回 { xml, changed, filled }。
+  function fillOverLimitCause(xml, hazardFactors) {
+    if (xml.indexOf('超标原因分析') < 0) return { xml: xml, changed: 0, filled: 0 };
+    const hIdx = buildHazardIndex(hazardFactors || []);
+    const re = new RegExp(TBL_SRC, 'g');
+    const jobs = [];
+    let m;
+    while ((m = re.exec(xml))) {
+      const tbl = m[0];
+      if (tbl.indexOf('超') < 0 || tbl.indexOf('项') < 0) continue;   // 廉价预筛
+      const rows = tableRows(tbl);
+      if (rows.length < 2) continue;
+      const heads = rowCells(rows[0]).map(cellText);
+      const cItem = headIndexOf(heads, '检测项目');
+      const cWhy = headIndexOf(heads, '超标原因分析');
+      if (cItem < 0 || cWhy < 0) continue;
+      jobs.push({ start: m.index, len: tbl.length, tbl: tbl, rows: rows, heads: heads, cItem: cItem, cWhy: cWhy });
+    }
+    if (!jobs.length) return { xml: xml, changed: 0, filled: 0 };
+    let out = xml;
+    let filled = 0;
+    // 从后往前替换，避免前面的长度变化让后面的偏移失效
+    for (let ji = jobs.length - 1; ji >= 0; ji--) {
+      const j = jobs[ji];
+      let newTbl = j.tbl;
+      for (let ri = 1; ri < j.rows.length; ri++) {
+        const row = j.rows[ri];
+        const cells = rowCells(row);
+        if (cells.length < 2) continue;
+        const shift = cells.length - j.heads.length;
+        const ii = j.cItem + shift, wi = j.cWhy + shift;
+        const iIdx = (ii >= 0 && ii < cells.length) ? ii : j.cItem;
+        const wIdx = (wi >= 0 && wi < cells.length) ? wi : j.cWhy;
+        if (wIdx >= cells.length) continue;
+        const itemTxt = cellText(cells[iIdx]);
+        const curWhy = cellText(cells[wIdx]);
+        if (!isHazPlaceholder(curWhy)) continue;          // 已有内容 → 不覆盖
+        const lines = overLimitLines(itemTxt, hIdx);
+        if (!lines.length) continue;
+        newTbl = newTbl.replace(row, row.replace(cells[wIdx], setCellLines(cells[wIdx], lines)));
+        filled++;
+      }
+      if (newTbl !== j.tbl) out = out.slice(0, j.start) + newTbl + out.slice(j.start + j.len);
+    }
+    return { xml: out, changed: filled, filled: filled };
+  }
+
   // 对下载到的检评报告 docx 做全部后处理（读一次 document.xml，改完统一重打包）；
   // 任何一步失败都不影响出报告（回退到上一步结果 / 原始文件）。
   async function patchPjbgDocx(buf) {    try {
@@ -2102,6 +2329,8 @@
       if (!f) return buf;
       let xml = await readZipEntryText(f);
       let changed = 0;
+      // 危害因素库快照：⑥（条件删除）与⑩（表8-2 超标原因）共用，故提到函数作用域
+      let hazardFactors = [];
       // ① 「存在高毒物品」列 0/1 → 否/是
       const r1 = fixHighToxColumn(xml);
       xml = r1.xml; changed += r1.changed;
@@ -2189,7 +2418,6 @@
             noiseWorkshopEmpty = Array.isArray(ws) && ws.length === 0;
           } catch (e) { noiseWorkshopEmpty = false; }
         }
-        let hazardFactors = [];
         const app = root.SamplingApp;
         if (app && typeof app.librarySnapshot === 'function') {
           try {
@@ -2213,6 +2441,14 @@
       const r8 = mergePpeRows(xml);
       xml = r8.xml; changed += r8.changed;
       if (r8.changed) console.info('[检评报告] 表3-6 防护用品合并同规格行，共合并 ' + r8.changed + ' 行');
+      // ⑨ 表3-3「原辅材料情况」下方插入「注1~注4」说明（整段标红）
+      const r9 = addMaterialNote(xml);
+      xml = r9.xml; changed += r9.changed;
+      if (r9.changed) console.info('[检评报告] 表3-3 下方已插入「注1~注4」（标红）');
+      // ⑩ 表8-2「超标原因分析」按检测项目自动填「超标原因分析」列（只填空/占位）
+      const r10 = fillOverLimitCause(xml, hazardFactors);
+      xml = r10.xml; changed += r10.changed;
+      if (r10.changed) console.info('[检评报告] 表8-2 超标原因分析已填写 ' + r10.filled + ' 行');
       if (!changed) return buf;
       zip.file('word/document.xml', xml);
       // 说明（2026-10-18 实测）：这一步是整条链路最贵的（真实报告 ~500ms，占一半）。
@@ -2646,6 +2882,12 @@
     fixNitrogenOxide: fixNitrogenOxide,
     mergePpeRows: mergePpeRows,
     mergePpeJobText: mergePpeJobText,
+    // ⑨ 表3-3 下方插入「注1~注4」（整段标红）；供测试/复用
+    addMaterialNote: addMaterialNote,
+    PJBG_MATERIAL_NOTES: PJBG_MATERIAL_NOTES,
+    // ⑩ 表8-2 超标原因分析：按检测项目填「超标原因分析」列
+    fillOverLimitCause: fillOverLimitCause,
+    PJBG_OVER_LIMIT_TEXTS: PJBG_OVER_LIMIT_TEXTS,
     fixReportText: fixReportText,
     fixHazardNote: fixHazardNote,
     collectHazardMarks: collectHazardMarks,

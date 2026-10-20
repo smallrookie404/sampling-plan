@@ -144,6 +144,8 @@ sampling-plan/
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
   node tests/pjbg.conddel.test.mjs # 后处理⑥ 条件删除条目 + 章节内序号重排（纯 XML 夹具，无需真实报告）
+  node tests/pjbg.matnote.test.mjs  # 后处理⑨ 表3-3 下方插入「注1~注4」：位置/4 行/标红/格式继承/幂等（纯 XML 夹具）
+  node tests/pjbg.overlimit.test.mjs # 后处理⑩ 表8-2 超标原因分析：噪声/高温/粉尘/毒物模板、占位才填、多因素、列平移（纯 XML 夹具）
   node tests/pjbg.shiftred.test.mjs # 后处理⑦ 「两班制」作息说明句标红（纯 XML 夹具）
   node tests/pjbg.noisereuse.test.mjs # 噪声表「只解析一次」的复用/缓存/退化逻辑（纯夹具，无需真实报告）
   node tests/pjbg.noiseapi.smoke.mjs # 真实 DOMParser 下 noiseInfoFromXml 的分组/拆分/文本（Playwright）
@@ -188,7 +190,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      双击抓到的 td 变游离节点 → **搜索后双击进不了编辑态**（2026-10-21 修复）。
    - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）、`tests/hazard.search.smoke.mjs`（11 项，搜索后编辑）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
-10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）。
+10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）⑨ **表3-3 下方插入「注1~注4」（整段标红）**（`addMaterialNote`）⑩ **表8-2 超标原因分析按检测项目自动填写**（`fillOverLimitCause`）。
    - ⑤ **接触职业病危害人数口径（2026-10-19 变更，`sumExposedFromT41`）**：取**表4-1**「人数」列下「总数」子列的数字合计——
      · **按「车间+岗位」去重后只计一次**（同一岗位的多点位行会把同一个人数重复写在每行：包装工 20/20/20、压机工 30×4；逐格相加会成倍放大）；
      · 某岗位**所有行**的「职业病危害因素」列**全部为空或 `-`/`—`/`无`/`/`** → 该人数不纳入统计；
@@ -250,8 +252,25 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · 实测 0959：表3-6 由 8 行 → **5 行**（合并 3 行），配置岗位形如
        `连接器车间,金工成型车间/针孔件制造岗位,打标岗位,…`；1121 五列均不同 → 0 合并。整链路 XML 良构、无页面错误。
      · 专项测试：`tests/pjbg.ppe.test.mjs`（18 项，含 0959 真实样例）。
-   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（20/3，**3 项在 HEAD 上已失败**，与⑥无关）、`pjbg.ppe.test`（18）。
-   - ⑨ **整条链路性能优化（2026-10-18）**——改动集中在「重复劳动」上，输出结果**逐字节不变**：
+   - ⑨ **表3-3「原辅材料情况」下方插入「注1~注4」（整段标红）**（用户 2026-10-21，`addMaterialNote`）：
+     一段 4 行（`<w:br/>` 分行），说明「漆料主要成分」的取值口径；四条文案固定在 `PJBG_MATERIAL_NOTES`。
+     · 定位：先找含「表3-3」且含「原辅材料」的**标题段落** → 取其后第一张 `<w:tbl>` → 在 `</w:tbl>` 之后插入新段落；
+       找不到标题时按表头（`物料名称`/`主要成分`/`年用量`）兜底找表。
+     · 格式：克隆**标题段落之前那一段正文**的 `<w:pPr>` 与首个 `<w:r>` 的 `<w:rPr>`（实测 0959/1009 得到
+       `Times New Roman + 仿宋_GB2312 / sz 21 / firstLine 420`），再强制 `<w:color w:val="FF0000"/>`（`forceRedRPr`）。
+     · **幂等**：文档里已有「注1：本次检测对用人单位漆料」→ 直接跳过，重复导出不会叠加。
+     · 专项测试：`tests/pjbg.matnote.test.mjs`（20 项：位置/4 行/标红/格式继承/幂等/兜底/无表不改）。
+   - ⑩ **表8-2「超标原因分析」按检测项目自动填写**（用户 2026-10-21，`fillOverLimitCause`）：
+     报告 8.2「不符合岗位/工种超标原因分析」章节若有表8-2（表头含「检测项目」+「超标原因分析」），逐行看检测项目：
+     · 含「噪声」→ 4 行模板；含「高温」→ 6 行模板（`PJBG_OVER_LIMIT_TEXTS.noise/heat`）；
+     · 按危害因素库「系统名称」匹配后，物化性质 =「粉尘」或「粉尘、毒物」→ 粉尘 6 行模板（`dust`）；
+     · 物化性质除「粉尘、毒物」外含「毒物」→ 毒物 5 行模板（`tox`）；一格里多因素按 噪声→高温→粉尘→毒物 顺序拼接并去重。
+     · **只填空 / 占位（`-`/`—`/`/`/`无`）**的单元格，已有内容一律不覆盖（保护人工填写的分析）。
+     · 写单元格用 `setCellLines`：沿用该格首段的 `pPr` 与首个 run 的 `rPr`，多行用 `<w:br/>` 分行。
+     · 实测：0959（7 行，6 行噪声）填 6 行；1009 填 1 行噪声；整链路 XML 良构。
+     · 专项测试：`tests/pjbg.overlimit.test.mjs`（20 项）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（20）、`pjbg.overlimit.test`（20）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（20/3，**3 项在 HEAD 上已失败**，与⑥无关）、`pjbg.ppe.test`（18）。
+   - ⑪ **整条链路性能优化（2026-10-18）**——改动集中在「重复劳动」上，输出结果**逐字节不变**：
      1. **噪声表只解析一次**：②⑤⑥ 原来各自调一个 `noise*FromBuf(buf)`，每次都 `JSZip.loadAsync` 解压整份 docx + `DOMParser` 解析全文，**同一报告被完整解析 3 次**。现在 upload.js 提供 `noiseInfoFromXml(xml)` / `noiseInfoFromBuf(buf)`（带记忆）/ `getCachedNoiseInfo(buf)`，`patchPjbgDocx` 只算一次并复用给三步；且**优先复用 `patchPjbgDocx` 已解压出的 xml**，连解压都省掉。若用户先打开过「噪声数据结果」页签，`loadNoiseResult` 会顺手把结果写进缓存 → 导出时**零额外解析**。
      2. **扫表前先做单字预筛**：`readBasicInfoTable`（在册职工人数/接触职业病危害人数）、`findTableByHead`（新增可选第 3 参 `needChars`）、`collectConfirmColTexts`、`fixNoteParagraph`、`collectHazardMarks` 原先会遍历**全文每张表的每个单元格**，现在先用单字（`册`/`触`/`数`/`论`/`职`/`临`/`备`）跳过无关表。单字预筛是安全的——汉字即使被拆到多个 `<w:t>`，该字仍原样出现在原始 XML 里（与 `mapParasContaining` 的 needles 约定同源）。
      3. **`collectHazardMarks` 不再 `mapTables`**：原来用 `xml.replace` 全量重建一个 6MB 字符串却**丢弃返回值**（只读不改），改为 `tablesOf` 只读遍历。
