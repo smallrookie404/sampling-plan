@@ -41,7 +41,7 @@ process.on("exit", () => {
 });
 
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
-page.on("dialog", (d) => d.accept());
+page.on("dialog", (d) => { d.accept().catch(() => {}); }); // 收尾时页面已关会 reject，吞掉避免退出码变 1
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(e.message));
 await page.addInitScript(() => {
@@ -280,11 +280,18 @@ const selectProject = async () => {
   });
   await page.waitForFunction(() => document.querySelectorAll(".suggest-item").length > 0, null, { timeout: 15000 });
   await page.evaluate(() => document.querySelector(".suggest-item").click());
-  await page.waitForFunction(() => document.getElementById("entOnJobNum").value === "410", null, { timeout: 15000 });
+  // 2026-10-20：选中项目后不再预填在职/接害人数（输入框保持为空），
+  // 故改为等待「已选择项目」提示出现，确认选中动作已完成。
+  await page.waitForFunction(() => {
+    const el = document.getElementById("projectInfo");
+    return el && /已选择项目/.test(el.textContent || "");
+  }, null, { timeout: 15000 });
 };
 await selectProject();
 
-// G：未勾选
+// G：未勾选。选中项目已不再预填人数，故这里显式填一个接害人数，
+//    保证「有输入 → 会读一次平台并整对象回写」，从而验证「未勾选 → 不做基本信息补全」。
+await page.evaluate(() => { document.getElementById("entHazardNum").value = "53"; });
 await setChk(false);
 await resetCalls();
 await clickUploadSurvey();

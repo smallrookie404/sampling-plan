@@ -213,8 +213,10 @@ check(e5.indexOf("企业信息未写入") === 0 && e5.indexOf("服务异常") >=
 
 const errCount = pageErrors.length;
 
-// ---- G. 选中项目 → 工具栏输入框预填平台现值 ----
+// ---- G. 选中项目 → **不导入原有数据**（2026-10-20 用户需求）----
+//   两个输入框保持为空；且不请求平台企业信息（零 GET）、不把平台现值写进本地缓存。
 await setMode("ok", "ok");
+await resetCalls();
 await page.evaluate(() => {
   const code = document.getElementById("projectCode");
   code.value = "0959";
@@ -222,16 +224,23 @@ await page.evaluate(() => {
 });
 await page.waitForFunction(() => document.querySelectorAll(".suggest-item").length > 0, null, { timeout: 15000 });
 await page.evaluate(() => document.querySelector(".suggest-item").click());
-await page.waitForFunction(() => document.getElementById("entOnJobNum").value === "410", null, { timeout: 15000 });
-const prefill = await page.evaluate(() => ({
+// 给「若仍会预填」的异步请求留出时间，否则零请求断言会假通过
+await page.waitForTimeout(1000);
+const afterSelect = await page.evaluate(() => ({
   onJob: document.getElementById("entOnJobNum").value,
   hazard: document.getElementById("entHazardNum").value,
   cache: localStorage.getItem("xcdc_entinfo_v1"),
+  calls: window.__ent.calls.length,
 }));
-check(prefill.onJob === "410" && prefill.hazard === "53", "G1 选中项目后自动预填平台现值（410/53）", JSON.stringify(prefill));
+check(afterSelect.onJob === "" && afterSelect.hazard === "",
+  "G1 选中项目后不预填原有数据（两个输入框保持为空）", JSON.stringify(afterSelect));
+check(afterSelect.calls === 0,
+  "G2 选中项目后不请求平台企业信息（零 GET）", "calls=" + afterSelect.calls);
 let cacheObj = {};
-try { cacheObj = JSON.parse(prefill.cache || "{}"); } catch (e) {}
-check(cacheObj["6205"] && cacheObj["6205"].onJobNum === "410" && cacheObj["6205"].hazardNum === "53", "G2 预填值写入本地缓存 xcdc_entinfo_v1", prefill.cache);
+try { cacheObj = JSON.parse(afterSelect.cache || "{}"); } catch (e) {}
+const gCache = cacheObj["6205"] || {};
+check(gCache.onJobNum !== "410" && gCache.hazardNum !== "53",
+  "G3 平台现值未写入本地缓存 xcdc_entinfo_v1", JSON.stringify(gCache));
 
 // ---- I. 上传分工：主表格只带在职人数，调查表只带接害人数 ----
 const split = await page.evaluate(() => {

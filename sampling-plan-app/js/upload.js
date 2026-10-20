@@ -1290,21 +1290,15 @@
       if (!isNaN(a) && !isNaN(b) && b > a) return '接害人数不能大于在职人数（' + b + ' > ' + a + '）';
       return '';
     }
-    // 选中项目后预填：先按项目 id 取本地缓存，再拉平台当前值覆盖（过期响应丢弃）
+    // 选中项目后：**不导入任何原有数据**（2026-10-20 用户需求）
+    //   · 不读本地缓存（xcdc_entinfo_v1），也不拉平台现值（fetchEnterpriseInfo）——
+    //     两个输入框一律清空，避免把「上次填的」或「平台上原有的」旧人数当成本次要上传的值，
+    //     否则很容易出现「本没打算改人数，却把旧值又写了一遍」。
+    //   · 仍递增 entInfoSeq：让切换项目前发出的在途请求作废（防御性，防止旧响应回填）。
+    //   · 要看平台现值，请到平台「企业信息」页签查看；上传成功后本模块仍会清空已写入的那一侧。
     function prefillEntInfo(project) {
-      const seq = ++entInfoSeq;
-      if (!project) { setEntInputs('', ''); return; }
-      const cached = entInfoCacheRead()[String(project.id)];
-      setEntInputs(cached && cached.onJobNum, cached && cached.hazardNum);
-      if (!token || project.belongInspect === undefined || project.belongInspect === null || project.belongInspect === '') return;
-      fetchEnterpriseInfo(token, orgId, project.belongInspect).then(function (rec) {
-        if (seq !== entInfoSeq) return; // 已切换项目，丢弃过期响应
-        if (!rec) return;
-        const onJob = rec.enterpriseNum == null ? '' : String(rec.enterpriseNum);
-        const hazard = rec.hazardNum == null ? '' : String(rec.hazardNum);
-        setEntInputs(onJob, hazard);
-        entInfoCacheSave(project.id, { onJobNum: onJob, hazardNum: hazard });
-      }).catch(function () { /* 拉取失败：保留缓存/已填值 */ });
+      entInfoSeq++;
+      setEntInputs('', '');
     }
 
     function selectedMemberIds() {
@@ -1598,7 +1592,7 @@
           $('projectInfo').className = 'info ok';
           log('已选择项目：' + p.code + ' ' + (p.belongInspectName || ''));
           loadProjectTeam(p.id);
-          prefillEntInfo(p);   // 企业信息输入框预填（本地缓存 + 平台现值）
+          prefillEntInfo(p);   // 企业信息输入框清空（不导入本地缓存 / 平台现值）
           refreshReportPanel();   // 「数据报告处理」页签同步显示当前项目
         });
         suggestBox.appendChild(item);
