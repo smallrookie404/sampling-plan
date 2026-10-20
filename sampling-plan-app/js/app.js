@@ -3601,12 +3601,21 @@
     }
   }
 
+  // 绝对下标 → 当前显示顺序里的位置（搜索/列筛选后与绝对下标不同）；不在显示列表返回 -1
+  function hazDisplayPos(absIdx) {
+    return hazardDisplayList().indexOf(absIdx);
+  }
+
   // 滚动到当前格可见并重绘（窗口化渲染）
   function hazRevealCell(r, ci) {
     const wrap = document.querySelector(".hazard-wrap");
     if (!wrap) return;
+    // ⚠ 窗口化渲染的行位置按「显示顺序」排，搜索/列筛选后显示位置 ≠ 绝对下标；
+    //   用绝对下标算滚动位置会算到很远的地方，进而无谓重绘（并让双击时的 td 失效）
+    const pos = hazDisplayPos(r);
+    if (pos < 0) { hazApplySelection(); return; }   // 不在当前筛选结果里，无需滚动
     const headH = $("hazard-head").offsetHeight || 30;
-    const top = headH + r * HAZARD_ROW_H;
+    const top = headH + pos * HAZARD_ROW_H;
     const h = HAZARD_ROW_H;
     const ch = wrap.clientHeight;
     let st = wrap.scrollTop;
@@ -3645,15 +3654,18 @@
       hzSelStart = { r, c: ci };
       hzSelEnd = { r, c: ci };
     }
-    // 当前格不在可见窗口内时先滚动重绘
+    // 当前格不在可见窗口内时先滚动重绘（位置按「显示顺序」算，搜索后 ≠ 绝对下标）
     const wrap = document.querySelector(".hazard-wrap");
     if (wrap) {
       const headH = $("hazard-head").offsetHeight || 30;
-      const top = r * HAZARD_ROW_H;
-      if (top < wrap.scrollTop || top + HAZARD_ROW_H > wrap.scrollTop + wrap.clientHeight - headH) {
-        hazRevealCell(r, ci);
-        if (focus) hazFocusCurrentCell();
-        return;
+      const pos = hazDisplayPos(r);
+      if (pos >= 0) {
+        const top = headH + pos * HAZARD_ROW_H;
+        if (top < wrap.scrollTop || top + HAZARD_ROW_H > wrap.scrollTop + wrap.clientHeight - headH) {
+          hazRevealCell(r, ci);
+          if (focus) hazFocusCurrentCell();
+          return;
+        }
       }
     }
     hazApplySelection();
@@ -3813,7 +3825,9 @@
     hzEditing = true;
     hzEditTyping = false; // 双击进入：方向键在格内移动光标（Excel 编辑模式）
     hzEditOriginal = hazGetValue(cell.r, cell.c);
-    const el = cell.td.querySelector("input");
+    // 重取 td：hazSetCur 可能触发窗口化重绘，事件里拿到的 cell.td 会变成游离节点
+    const td = hazTd(cell.r, cell.c) || cell.td;
+    const el = td ? td.querySelector("input") : null;
     if (el) {
       el.focus({ preventScroll: true });
       let pos = el.value.length;

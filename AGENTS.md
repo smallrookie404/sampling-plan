@@ -140,6 +140,7 @@ sampling-plan/
   node tests/memberpicker.smoke.mjs # 项目组成员「人员选项框」：标题行（项目组成员+确认成员）在搜索框上方、默认收起、点搜索框展开全部、输入即过滤、无匹配提示、Esc/点外部收起（Playwright）
   node tests/noisereset.smoke.mjs  # 切项目/重新搜索/**加载中**清空三块页签的**内容**（卡片保留显示「（无）」）+ 噪声表格 + 报告缓存（Playwright）
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
+  node tests/hazard.search.smoke.mjs # 危害因素库**搜索后**的编辑：双击/F2 进编辑、方向键按显示顺序移动、Delete 清空（Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
   node tests/pjbg.conddel.test.mjs # 后处理⑥ 条件删除条目 + 章节内序号重排（纯 XML 夹具，无需真实报告）
@@ -148,6 +149,7 @@ sampling-plan/
   node tests/pjbg.noiseapi.smoke.mjs # 真实 DOMParser 下 noiseInfoFromXml 的分组/拆分/文本（Playwright）
   ```
 - 测试注意：应用会自动把参考库写回 `data/library.json`；跑会改动参考库的测试前先备份，测试后 `git checkout -- sampling-plan-app/data/library.json` 恢复。
+  `tests/hazard.search.smoke.mjs` 已自带 `fetch` 拦截（非 GET 的 `/api/library` 直接返回 200），跑它不会污染 `data/library.json`。
 - `tests/pjbg.note.test.mjs` / `pjbg.note1009.test.mjs` 需要真实检评报告 docx 作样例（默认读 `%TEMP%/sampling-plan-login/`，可用 `PJBG_SAMPLE` / `PJBG_1009` 或 argv 指定）。纯 Node（`vm` 沙箱加载 `js/blf.js` + `JSZip`），不依赖浏览器；**blf.js 为此保留了 `SamplingUtil` 缺失时的内联兜底**。
 - ⚠ 已知**预存在失败**（与近期改动无关，勿误判）：`tests/ui.smoke.mjs` 第 4 步「覆盖联动」（AR 覆盖为「个体」时期望 AS=长时间/AK=采样对象）——当前逻辑产出短时间/采样点，断言陈旧。
 - 环境注意：本机系统 PATH 中可能没有 `node`（`启动采样计划软件.bat` 会按顺序回退到内置运行时）。可先取内置 Node 绝对路径再执行；`sampling-plan-app/node_modules` 已含 jszip 与 playwright-core。
@@ -181,7 +183,10 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
    - 布防框与滚动协同：`scroll` 事件在布防态下调 `hazSyncArmPosition()` 重定位（不做窗口化重绘），移出可视区才移除；`hazRevealCell()` 负责滚动到目标格并触发重绘。
    - 清空/还原等改动模型的操作必须**同步已渲染的 input DOM**（`hazClearRange`/`hazRevertCurrent`），否则窗口化渲染会残留旧值。
    - 列结构：`HAZARD_HEADERS`（14 项，首项「序号」不在 keys 中）+ `HAZARD_KEYS`（13 项，末项为 2026-10 新增的 `physchem`「物化性质」）；**键索引 = 表头索引 - 1**。新增列只需在两数组**同位置**追加，`blankHazard`/`renderHazard`/`hazGetValue`/`hazSetValue`/窗口化 `colspan` 均由 `HAZARD_KEYS` 派生，会自动生效。
-   - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
+   - ⚠ **窗口化渲染的行位置按「显示顺序」算，不是绝对下标**：`hazRevealCell`/`hazSetCur` 一律用 `hazDisplayPos(r)` 换算；
+     早期用绝对下标算滚动位置，搜索/列筛选后会误判「当前格不可见」→ 无谓 `renderHazard()` 换掉 DOM →
+     双击抓到的 td 变游离节点 → **搜索后双击进不了编辑态**（2026-10-21 修复）。
+   - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）、`tests/hazard.search.smoke.mjs`（11 项，搜索后编辑）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
 10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）。
    - ⑤ **接触职业病危害人数口径（2026-10-19 变更，`sumExposedFromT41`）**：取**表4-1**「人数」列下「总数」子列的数字合计——
@@ -263,7 +268,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 新增/修改一列自动计算 | logic.js 列常量 + `computeRows` 组装 → app.js `ALL_COLS`/`HEADERS`/`COL_W` → 视情况加 `OVERRIDE_COLS`/`MANUAL_COLS` |
 | 改公式/校验规则 | logic.js `computeRows`（组级计算、下填、库查找）、`validateRow`、`countErrors` |
 | 改主表格交互（选中/编辑/移动/粘贴/清空） | app.js `armCell`/`armReveal`/`commitCurrent`/`moveCur`/`clearRange`、`parseTsvGrid`+粘贴/复制、键盘路由与鼠标处理 |
-| 改危害因素库交互（编辑/导航/选区/行操作） | app.js `haz*` 函数族（`hazSetCur`/`hazMoveCur`/`hazArmCell`/`hazArmReveal`/`hazClearRange`/`hazApplySelection`/`hazTd`/`hazardDisplayList`）+ `hz*` 状态 + `renderHazard`（列结构 `HAZARD_HEADERS`/`HAZARD_KEYS`）；行操作用 `hazardAnchor`/`afterHazardRowsChanged` |
+| 改危害因素库交互（编辑/导航/选区/行操作） | app.js `haz*` 函数族（`hazSetCur`/`hazMoveCur`/`hazArmCell`/`hazArmReveal`/`hazClearRange`/`hazApplySelection`/`hazTd`/`hazardDisplayList`/`hazDisplayPos`（绝对下标→显示位置））+ `hz*` 状态 + `renderHazard`（列结构 `HAZARD_HEADERS`/`HAZARD_KEYS`）；行操作用 `hazardAnchor`/`afterHazardRowsChanged` |
 | 改虚拟滚动/列宽/表头样式 | app.js `buildHead`/`cellHtml`/`rowHtml`/`renderWindow`（spacer 必须恒为首末子节点）+ `computeGridWidths` |
 | 加/改调查表字段 | survey.js `SURVEY_SHEETS`（列名即键）+ `SURVEY_COL_OPTIONS`（下拉）；联动列用 `headers.indexOf` 定位，**改列名会使联动与旧 Excel 导入静默失效** |
 | 改调查表导出/导入 | survey.js `exportAllWorkbook` / `importFromArray`（按工作表名+表头名匹配，兼容列序变化） |
@@ -284,7 +289,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 ## 常见任务速查
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
-- 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）。
+- 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）+ `node tests/hazard.search.smoke.mjs`（11 项）。
 - 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
