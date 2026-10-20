@@ -1451,36 +1451,59 @@
   //   段落文本（去首尾空白）以目标串开头/包含目标串即删整段。
   //   序号重排：先记录每个删除段落所属章节（最近的上一个「标题段落」），删除后在每个受影响章节内
   //   把剩余的「（N）」按出现顺序重编为「（1）（2）…」。
+  // ★ 条件删除目标（2026-10-21 按用户口径全面改写：粉尘/毒物/腐蚀/高温/紫外/噪声 逐条独立判定）
+  //   每条目标的判定条件见 fixConditionalDeletions 里的编号注释。
   const PJBG_DEL_TARGETS = {
-    // A. 噪声
-    noiseEvalBasis: '《听力防护装备的选择、使用和维护》(GB 23466-2025)',
-    noiseWarnSign: '产生噪声的工作场所设置',
-    // B. 毒物组
-    toxB: ['《使用有毒物品作业场所劳动保护条例》', '《高毒物品目录》',
-      '《呼吸防护 自吸过滤式防毒面具》(GB 2890-2022)',
-      '产生含有有毒物质的混合性粉(烟)尘的工作场所应设置'],
-    // B. 粉尘组
-    dustB: ['《中华人民共和国尘肺病防治条例》',
-      '《呼吸防护 自吸过滤式防颗粒物呼吸器》(GB 2626-2019)',
-      '产生粉尘的工作场所设置'],
-    // B. 粉尘、毒物都无 → 再删
-    bothNone: '《呼吸防护装备的选择、使用和维护》(GB 18664-2025)',
-    // C. 高毒
-    highToxC: '《高毒物品目录》',
+    // 1.1 法律、法规、规章
+    dustLaw: '《中华人民共和国尘肺病防治条例》',                        // ① 无「粉尘」（「粉尘、毒物」不算）
+    toxLaw: '《使用有毒物品作业场所劳动保护条例》',                     // ② 无「毒物」（「粉尘、毒物」不算）
+    highToxList: '《高毒物品目录》',                                    // ③ 无高毒物品（判读方式同旧版）
+    // 1.2.3 评价依据
+    resp18664: '《呼吸防护装备的选择、使用和维护》(GB 18664-2025)',     // ④ 既无「毒物」也无「粉尘」
+    hearing23466: '《听力防护装备的选择、使用和维护》(GB 23466-2025)',  // ⑤ 表4-1 危害因素列（处理后）无「噪声」
+    mask2890: '《呼吸防护 自吸过滤式防毒面具》(GB 2890-2022)',         // ⑥ 无「毒物」（「粉尘、毒物」不算）
+    resp2626: '《呼吸防护 自吸过滤式防颗粒物呼吸器》(GB 2626-2019)',   // ⑦ 无「粉尘」或「粉尘、毒物」
   };
 
-  // ★ 分句裁剪关键词（只在「一整句话覆盖多种危害」的条目里切分句用，与上面的「整条删除目标」分开）
-  //   背景：9.2 第(4)条是一条长句，粉尘/毒物/噪声/高温/紫外各占一个分句，不能整条删，只能切分句。
-  //   这些串要足够具体，避免误伤其它章节里普通提到「粉尘」的句子。
+  // ★ 分句裁剪关键词（9.2 第四段是一条长句，各危害各占一个分句，只能切分句不能整条删）
   const PJBG_TRIM_KWS = {
-    dust: ['产生粉尘的工作场所设置', '对皮肤有刺激性或经皮肤吸收的粉尘工作场所'],
-    tox: ['产生含有有毒物质的混合性粉(烟)尘的工作场所应设置', '有毒物品工作场所设置'],
-    noise: ['产生噪声的工作场所设置'],
-    // 下面三组：**只按「确认表里有没有这个因素」判定**，与粉尘/毒物组互相独立
-    mixed: ['产生含有有毒物质的混合性粉(烟)尘的工作场所应设置'],   // 需存在 physchem 恰为「粉尘、毒物」的因素
-    heat: ['高温工作场所设置'],                                    // 需存在「高温」因素
-    uv: ['产生紫外辐射的工作场所设置'],                             // 需存在「紫外辐射」因素
+    dust: ['产生粉尘的工作场所设置', '对皮肤有刺激性或经皮肤吸收的粉尘工作场所'],  // ⑧ 无「粉尘」或「粉尘、毒物」
+    mixed: ['产生含有有毒物质的混合性粉(烟)尘的工作场所应设置'],                  // ⑨ 无「粉尘、毒物」
+    tox: ['有毒物品工作场所设置'],                                                // ⑩ 无「毒物」（「粉尘、毒物」不算）
+    corrode: ['能引起职业性灼伤或腐蚀的化学品工作场所'],                          // ⑪ 无「腐蚀」
+    noise: ['产生噪声的工作场所设置'],                                            // ⑫ 表4-1 危害因素列（处理后）无「噪声」
+    heat: ['高温工作场所设置'],                                                   // ⑬ 无「高温」
+    uv: ['产生紫外辐射的工作场所设置'],                                           // ⑭ 无「紫外辐射」
   };
+
+  // 表4-1「岗位（工种）设置、劳动者作业情况及职业病危害因素识别情况」的
+  // 「职业病危害因素」列里是否还出现「噪声」。
+  //   ★ 必须在本步**之前**的 ②（非噪声岗位删「噪声」）/②c（低噪点位删「噪声」）跑完之后判断，
+  //     即「经过处理后再看还剩不剩噪声」——patchPjbgDocx 的管线顺序已保证（⑥ 在 ② 之后）。
+  //   返回 true / false；**找不到该表（或没有危害因素列）返回 null** → 调用方退回旧口径
+  //   （噪声车间岗位是否为空，`noiseWorkshopEmpty`）。
+  function t41HasNoise(xml) {
+    // 表4-1 识别：表头同时含「职业病危害因素」「岗位」「人数」（同 sumExposedFromT41，
+    //   避免误抓「岗位/工种/采样/测量点/对象 + 职业病危害因素 + 检测项目」那张检测表）
+    const t = findTableByHead(xml, function (heads) {
+      const has = function (n) {
+        const want = normKey(n);
+        return heads.some(function (h) { return normKey(h).indexOf(want) >= 0; });
+      };
+      return has('职业病危害因素') && has('岗位') && has('人数');
+    }, ['岗', '数', '危']);
+    if (!t) return null;
+    const ci = headIndexOf(t.heads, '职业病危害因素');
+    if (ci < 0) return null;
+    for (let ri = 1; ri < t.rows.length; ri++) {
+      const cs = rowCells(t.rows[ri]);
+      if (cs.length < 3) continue;                        // 子表头行（总数 / 数/班）
+      const idx = ci + (cs.length - t.head.length);       // 合并单元格导致的列号平移
+      const txt = cellText(cs[idx >= 0 && idx < cs.length ? idx : ci]);
+      if (hazNorm(txt).indexOf('噪声') >= 0) return true;
+    }
+    return false;
+  }
 
   // 取段落可见文本（跨 run 拼接，去空白），用于关键词定位
   function paraText(pXml) { return cellText(pXml); }
@@ -1885,104 +1908,104 @@
 
   // 主入口⑥：按条件计算删除目标，再执行「删条目 + 重排」
   // opt = { noiseWorkshopEmpty: bool, hazardFactors: [] }
+  // 主入口⑥：按条件计算删除目标，再执行「删条目 + 重排」
+  // opt = { noiseWorkshopEmpty: bool, hazardFactors: [] }
+  // ★ 2026-10-21 口径（用户逐条指定，编号与需求一一对应）：
+  //   ① 无「粉尘」（「粉尘、毒物」不算）      → 删《中华人民共和国尘肺病防治条例》
+  //   ② 无「毒物」（「粉尘、毒物」不算）      → 删《使用有毒物品作业场所劳动保护条例》
+  //   ③ 无高毒物品（判读同旧版）             → 删《高毒物品目录》
+  //   ④ 既无「毒物」也无「粉尘」             → 删《呼吸防护装备的选择、使用和维护》(GB 18664-2025)
+  //   ⑤ 表4-1 危害因素列（**处理后**）无「噪声」 → 删《听力防护装备的选择、使用和维护》(GB 23466-2025)
+  //   ⑥ 无「毒物」（「粉尘、毒物」不算）      → 删《呼吸防护 自吸过滤式防毒面具》(GB 2890-2022)
+  //   ⑦ 无「粉尘」或「粉尘、毒物」           → 删《呼吸防护 自吸过滤式防颗粒物呼吸器》(GB 2626-2019)
+  //   ⑧ 同上                                 → 删 9.2「产生粉尘的工作场所设置…」分句
+  //   ⑨ 无「粉尘、毒物」                     → 删「产生含有有毒物质的混合性粉(烟)尘…」分句
+  //   ⑩ 无「毒物」（「粉尘、毒物」不算）      → 删「有毒物品工作场所设置…」分句
+  //   ⑪ 无「腐蚀」                           → 删「能引起职业性灼伤或腐蚀的化学品工作场所…」分句
+  //   ⑫ 表4-1 危害因素列（**处理后**）无「噪声」 → 删「产生噪声的工作场所设置…」分句
+  //   ⑬ 无「高温」                           → 删「高温工作场所设置…」分句
+  //   ⑭ 无「紫外辐射」                       → 删「产生紫外辐射的工作场所设置…」分句
+  //   「有/无」按**检测项目确认表匹配到的因素在危害因素库里的「物化性质」**判定；
+  //   确认表里有因素在库中找不到 → ①-④⑥-⑪⑬⑭ 一律不删（保守）；⑤⑫ 只看表4-1，不受影响。
   function fixConditionalDeletions(xml, opt) {
     const o = opt || {};
     const targets = [];
     const trims = [];
     const reasons = [];
-    const emptyNoise = o.noiseWorkshopEmpty === true;
-    // A. 噪声车间岗位为空
-    if (emptyNoise) {
-      targets.push(PJBG_DEL_TARGETS.noiseEvalBasis, PJBG_DEL_TARGETS.noiseWarnSign);
-      trims.push({ kws: PJBG_TRIM_KWS.noise });
-      reasons.push('噪声车间岗位为空→删噪声类条目');
+    const pushTrim = function (kws, why) {
+      for (const k of kws) targets.push(k);        // 兜底：该句单独成段时整段删
+      trims.push({ kws: kws });                    // 主路径：长句里按分句裁掉
+      reasons.push(why);
+    };
+
+    // ---- ⑤⑫ 噪声：看**表4-1「职业病危害因素」列处理之后还剩不剩「噪声」** ----
+    //   ②/②c 已把非噪声岗位、低噪点位的「噪声」删掉，这里看到的就是「处理后的结果」；
+    //   找不到表4-1 时退回旧口径（噪声车间岗位是否为空）。
+    const t41Noise = t41HasNoise(xml);             // true / false / null
+    const hasNoise = t41Noise === null ? (o.noiseWorkshopEmpty === true ? false : true) : t41Noise;
+    if (!hasNoise) {
+      targets.push(PJBG_DEL_TARGETS.hearing23466);
+      pushTrim(PJBG_TRIM_KWS.noise, '⑤⑫表4-1 危害因素列（处理后）无噪声→删 GB23466 + 噪声警示句');
+    } else {
+      reasons.push(t41Noise === null ? '⑤⑫表4-1 未找到→噪声按旧口径保留' : '⑤⑫表4-1 危害因素列仍有噪声→保留噪声类条目');
     }
-    // B/C. 依赖危害因素库
+
+    // ---- ①-④⑥-⑪⑬⑭ 依赖危害因素库 ----
     const hf = o.hazardFactors;
     const cf = collectConfirmColTexts(xml, ['职业病危害因素']);
     if (cf.found && Array.isArray(hf) && hf.length) {
-      // ---- 粉尘：看「粉尘性质」列（dust：总尘/呼尘/空）**或**「物化性质」含「粉尘」 ----
-      //   ⚠ 两个信号都要看：实测库里有 6 条（锰及其无机化合物、钼不溶性化合物、金属镍…）
-      //     dust 为空但 physchem 写着「粉尘、毒物」，只看 dust 会误判成「无粉尘」。
-      //   取「或」= 只要任一列说它是粉尘就算有粉尘（保守，少删）。
-      // ★ 性能：确认表单元格**先去重**（1095 的 140 格只有 15 种），库索引**只建一次**，
-      //   且**只匹配一次**得到库行，dust/physchem/highTox 三个字段都从同一批行里取。
+      // ★ 性能：确认表单元格先去重，库索引只建一次，只匹配一次（各字段都从同一批行取）
       const cells = uniqHazTexts(cf.texts);
       const hIdx = buildHazardIndex(hf);
       const mr = matchHazardRows(hf, cells, hIdx);
-      const okAll = mr.missing.length === 0;
-      const vals = function (f) {
-        return mr.rows.map(function (h) { return String(h[f] === null || h[f] === undefined ? '' : h[f]); });
-      };
-      const du = { ok: okAll, values: vals('dust'), missing: mr.missing };
-      const phy = { ok: okAll, values: vals('physchem'), missing: mr.missing };
-      let noDust = false;
-      if (du.ok) {
-        const hasDustByField = du.values.some(function (v) { return String(v || '').trim() !== ''; });
-        const hasDustByPhy = phy.ok && phy.values.some(function (v) { return String(v || '').indexOf('粉尘') >= 0; });
-        noDust = !hasDustByField && !hasDustByPhy;
-        if (noDust) {
-          for (const t of PJBG_DEL_TARGETS.dustB) targets.push(t);
-          trims.push({ kws: PJBG_TRIM_KWS.dust });
-          reasons.push('无粉尘→删粉尘组');
+      if (mr.missing.length === 0) {
+        const phy = mr.rows.map(function (h) { return hazNorm(h && h.physchem); });
+        const names = mr.rows.map(function (h) { return hazNorm(h && h.name); });
+        const MIX = hazNorm('粉尘、毒物');
+        const anyOf = function (arr, kw) { return arr.some(function (v) { return v.indexOf(kw) >= 0; }); };
+        const hasMixed = phy.some(function (v) { return v === MIX; });
+        const hasDustWide = anyOf(phy, '粉尘');                                         // 含「粉尘、毒物」
+        const hasDustStrict = phy.some(function (v) { return v.indexOf('粉尘') >= 0 && v !== MIX; });
+        const hasToxWide = anyOf(phy, '毒物');
+        const hasToxStrict = phy.some(function (v) { return v.indexOf('毒物') >= 0 && v !== MIX; });
+        const hasCorrode = anyOf(phy, '腐蚀');
+        const hasHeat = names.some(function (v) { return v === hazNorm('高温'); });
+        const hasUV = names.some(function (v) { return v === hazNorm('紫外辐射'); });
+        const hasHighTox = mr.rows.some(function (h) { return hazNorm(h && h.highTox).indexOf('是') >= 0; });
+
+        if (!hasDustStrict) {
+          targets.push(PJBG_DEL_TARGETS.dustLaw);
+          reasons.push('①无「粉尘」（粉尘、毒物不算）→删尘肺病条例');
         }
+        if (!hasToxStrict) {
+          targets.push(PJBG_DEL_TARGETS.toxLaw, PJBG_DEL_TARGETS.mask2890);
+          pushTrim(PJBG_TRIM_KWS.tox, '②⑥⑩无「毒物」（粉尘、毒物不算）→删有毒物品条例/GB2890/有毒物品警示句');
+        }
+        if (!hasHighTox) {
+          targets.push(PJBG_DEL_TARGETS.highToxList);
+          reasons.push('③无高毒物品→删高毒目录');
+        }
+        if (!hasDustWide && !hasToxWide) {
+          targets.push(PJBG_DEL_TARGETS.resp18664);
+          reasons.push('④无毒物且无粉尘→删 GB18664');
+        }
+        if (!hasDustWide) {
+          targets.push(PJBG_DEL_TARGETS.resp2626);
+          pushTrim(PJBG_TRIM_KWS.dust, '⑦⑧无「粉尘」或「粉尘、毒物」→删 GB2626 + 粉尘警示句');
+        }
+        if (!hasMixed) pushTrim(PJBG_TRIM_KWS.mixed, '⑨无「粉尘、毒物」→删混合性粉(烟)尘警示句');
+        if (!hasCorrode) pushTrim(PJBG_TRIM_KWS.corrode, '⑪无「腐蚀」→删腐蚀类警示句');
+        if (!hasHeat) pushTrim(PJBG_TRIM_KWS.heat, '⑬无「高温」→删高温警示句');
+        if (!hasUV) pushTrim(PJBG_TRIM_KWS.uv, '⑭无「紫外辐射」→删紫外辐射警示句');
       } else {
-        reasons.push('粉尘性质缺数据（库中找不到：' + (du.missing || []).slice(0, 4).join('、') + '）→粉尘组不删');
-      }
-      // ---- 毒物：看「物化性质」含不含「毒物」；整列都为空时视为**未知**，不删（保守） ----
-      const toxKnown = phy.ok && phy.values.some(function (v) { return String(v || '').trim(); });
-      const noTox = toxKnown && noneContains(phy.values, ['毒物']);
-      if (noTox) {
-        for (const t of PJBG_DEL_TARGETS.toxB) targets.push(t);
-        trims.push({ kws: PJBG_TRIM_KWS.tox });
-        reasons.push('无毒物→删毒物组');
-      } else if (!toxKnown) {
-        reasons.push('物化性质无数据→毒物组不删（无法判定）');
-      } else {
-        reasons.push('有毒物→保留毒物组');
-      }
-      // 粉尘毒物俱无 → 再删 GB 18664（毒物未知时不算「俱无」）
-      if (noTox && noDust) {
-        targets.push(PJBG_DEL_TARGETS.bothNone);
-        reasons.push('粉尘毒物俱无→再删GB18664');
-      }
-      const ht = { ok: okAll, values: vals('highTox'), missing: mr.missing };
-      if (ht.ok) {
-        const noHigh = noneContains(ht.values, ['是']);
-        if (noHigh) { targets.push(PJBG_DEL_TARGETS.highToxC); reasons.push('无高毒物品→删高毒目录'); }
-      } else {
-        reasons.push('存在高毒物品缺数据（库中找不到：' + (ht.missing || []).slice(0, 4).join('、') + '）→高毒目录不删');
-      }
-      // ---- D. 9.2 第四段里另外三种警示句：按「确认表里有没有这个因素」独立判定 ----
-      //   ⚠ 这三句是**一整句里的分句**，只能裁剪不能整段删，所以只进 trims（同时进 targets 兜底单行段落）。
-      if (okAll) {
-        const nameSet = new Set(mr.rows.map(function (h) { return hazNorm(h && h.name); }));
-        const phySet = new Set(mr.rows.map(function (h) { return hazNorm(h && h.physchem); }));
-        const hasHeat = nameSet.has(hazNorm('高温'));
-        const hasUV = nameSet.has(hazNorm('紫外辐射'));
-        // 「粉尘、毒物」= 物化性质**完全等于**该值（库里 17 条混合性因素），而不是含「粉尘」或含「毒物」
-        const hasMixed = phySet.has(hazNorm('粉尘、毒物'));
-        if (!hasMixed) {
-          for (const t of PJBG_TRIM_KWS.mixed) targets.push(t);
-          trims.push({ kws: PJBG_TRIM_KWS.mixed });
-          reasons.push('无「粉尘、毒物」因素→删混合性粉(烟)尘警示句');
-        }
-        if (!hasHeat) {
-          for (const t of PJBG_TRIM_KWS.heat) targets.push(t);
-          trims.push({ kws: PJBG_TRIM_KWS.heat });
-          reasons.push('无高温→删高温警示句');
-        }
-        if (!hasUV) {
-          for (const t of PJBG_TRIM_KWS.uv) targets.push(t);
-          trims.push({ kws: PJBG_TRIM_KWS.uv });
-          reasons.push('无紫外辐射→删紫外辐射警示句');
-        }
+        reasons.push('确认表有因素在库中找不到（' + mr.missing.slice(0, 4).join('、') + '）→粉尘/毒物/高毒/腐蚀/高温/紫外 均不删');
       }
     } else if (!cf.found) {
-      reasons.push('未找到「检测项目确认表」→毒物/粉尘/高毒均不删');
-    } else if (!Array.isArray(hf) || !hf.length) {
-      reasons.push('危害因素库为空→毒物/粉尘/高毒均不删');
+      reasons.push('未找到「检测项目确认表」→粉尘/毒物/高毒/腐蚀/高温/紫外 均不删');
+    } else {
+      reasons.push('危害因素库为空→粉尘/毒物/高毒/腐蚀/高温/紫外 均不删');
     }
+
     if (!targets.length && !trims.length) return { xml: xml, changed: 0, reasons: reasons };
     const r = deletePjbgParas(xml, targets, { trimClauses: trims });
     return { xml: r.xml, changed: r.changed, sections: r.sections, reasons: reasons };

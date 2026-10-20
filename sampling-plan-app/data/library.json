@@ -3058,7 +3058,7 @@
       "digits": "",
       "highTox": "否",
       "noTestReason": "",
-      "physchem": "毒物"
+      "physchem": "毒物、腐蚀"
     },
     {
       "rec": "硫酸",
@@ -3073,7 +3073,7 @@
       "digits": "",
       "highTox": "否",
       "noTestReason": "",
-      "physchem": "毒物"
+      "physchem": "毒物、腐蚀"
     },
     {
       "rec": "硫酰氟",
@@ -3358,7 +3358,7 @@
       "digits": 1,
       "highTox": "否",
       "noTestReason": "",
-      "physchem": "毒物"
+      "physchem": "毒物、腐蚀"
     },
     {
       "rec": "氯化氰",
@@ -3957,7 +3957,7 @@
       "digits": 3,
       "highTox": "否",
       "noTestReason": "",
-      "physchem": "毒物"
+      "physchem": "毒物、腐蚀"
     },
     {
       "rec": "氢氧化铯",
@@ -8094,7 +8094,7 @@
       "digits": "",
       "highTox": "否",
       "noTestReason": "",
-      "physchem": ""
+      "physchem": "激光辐射"
     },
     {
       "rec": "手传振动",
@@ -8109,7 +8109,7 @@
       "digits": "",
       "highTox": "否",
       "noTestReason": "",
-      "physchem": ""
+      "physchem": "手传振动"
     },
     {
       "rec": "γ射线",
@@ -8169,7 +8169,7 @@
       "digits": 1,
       "highTox": "否",
       "noTestReason": "",
-      "physchem": ""
+      "physchem": "噪声"
     },
     {
       "rec": "紫外辐射(短波紫外线)",
@@ -8842,7 +8842,7 @@
       "digits": 1,
       "highTox": "否",
       "noTestReason": "无检测方法",
-      "physchem": "粉尘"
+      "physchem": "毒物、腐蚀"
     },
     {
       "rec": "其他粉尘(化纤)(总尘)",
@@ -8890,5 +8890,5 @@
       "physchem": "粉尘"
     }
   ],
-  "updatedAt": "2026-10-19T06:25:11.115Z"
+  "updatedAt": "2026-10-20T16:23:16.153Z"
 }
