@@ -2118,6 +2118,25 @@
     if (out.indexOf('</w:rPr>') >= 0) return out.replace('</w:rPr>', '<w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>');
     return '<w:rPr><w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>';
   }
+  // 强制「首行不缩进 + 行距固定 14 磅」（14pt = 280 twips → w:line="280" w:lineRule="exact"）
+  //   ⚠ OOXML 的 pPr 子元素有固定顺序（spacing 在 ind 之前，二者都在 jc/rPr 之前），
+  //     所以按顺序插到第一个「后继元素」前面，而不是直接追加到 </w:pPr>。
+  function forceNoteSpacing(pPr) {
+    let out = String(pPr || '');
+    if (!out) out = '<w:pPr></w:pPr>';
+    out = out.replace(/<w:pPr\s*\/>/, '<w:pPr></w:pPr>');
+    out = out.replace(/<w:spacing\b[^>]*\/>/g, '').replace(/<w:ind\b[^>]*\/>/g, '');
+    const spacing = '<w:spacing w:line="280" w:lineRule="exact"/>';
+    const ind = '<w:ind w:firstLine="0" w:firstLineChars="0"/>';
+    const beforeSpacing = /<w:(?:ind|contextualSpacing|mirrorIndents|jc|textDirection|textAlignment|outlineLvl|rPr|sectPr)\b/;
+    let m = beforeSpacing.exec(out);
+    out = m ? out.slice(0, m.index) + spacing + out.slice(m.index) : out.replace('</w:pPr>', spacing + '</w:pPr>');
+    const beforeInd = /<w:(?:contextualSpacing|mirrorIndents|jc|textDirection|textAlignment|outlineLvl|rPr|sectPr)\b/;
+    m = beforeInd.exec(out);
+    out = m ? out.slice(0, m.index) + ind + out.slice(m.index) : out.replace('</w:pPr>', ind + '</w:pPr>');
+    return out;
+  }
+
   // 取段落里第一个 run 的 <w:rPr>（先剔除 <w:pPr>，避免命中段落标记自带的 rPr）
   function firstRunRPr(pXml) {
     const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(pXml);
@@ -2188,7 +2207,9 @@
     const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(src || '');
     // 去掉段落标记自带的 <w:rPr>（那是「标题/正文」的字体，比如黑体 sz28 加粗），
     // 否则整段的段落标记仍是旧字号，与表格字体不一致
-    const pPr = pPrM ? pPrM[0].replace(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/g, '') : '';
+    const pPrRaw = pPrM ? pPrM[0].replace(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/g, '') : '';
+    // 段落格式：**首行不缩进 + 行距固定 14 磅**（用户 2026-10-21）
+    const pPr = forceNoteSpacing(pPrRaw);
     let rPrSrc = '';
     const tblXml = (tblStart >= 0 && tblEnd > tblStart) ? xml.slice(tblStart, tblEnd) : '';
     if (tblXml) {

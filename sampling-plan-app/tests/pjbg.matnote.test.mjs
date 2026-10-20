@@ -107,10 +107,11 @@ console.log("[A-D] 正常插入（位置 / 4 行 / 标红 / 格式继承）");
   const allRed = runs.length > 0 && runs.every((x) => x.indexOf('w:val="FF0000"') >= 0);
   check("注段落每个 run 都标红（FF0000）", allRed, JSON.stringify(runs.map((x) => (x.match(/<w:color[^>]*\/>/) || [""])[0])));
 
-  // D. 字符格式取自「表3-3 表格内」（仿宋_GB2312 / sz 18）；段落格式仍取自正文（首行缩进、不居中）
+  // D. 字符格式取自「表3-3 表格内」（仿宋_GB2312 / sz 18）；段落：首行不缩进 + 固定 14 磅行距、不居中
   check("字体与表格一致（仿宋_GB2312）", notePara.indexOf("仿宋_GB2312") >= 0, notePara.slice(0, 160));
   check("字号与表格一致（sz 18，不是正文的 sz 21）", notePara.indexOf('<w:sz w:val="18"/>') >= 0 && notePara.indexOf('<w:sz w:val="21"/>') < 0, notePara.slice(0, 200));
-  check("段落缩进仍用正文（firstLine 420）", notePara.indexOf('w:firstLine="420"') >= 0);
+  check("首行不缩进（firstLine=0，且不带正文的 420）", notePara.indexOf('w:firstLine="0"') >= 0 && notePara.indexOf('w:firstLine="420"') < 0, notePara.slice(0, 240));
+  check("行距固定 14 磅（line=280 exact）", notePara.indexOf('<w:spacing w:line="280" w:lineRule="exact"/>') >= 0, notePara.slice(0, 240));
   check("整段未套用表格的居中", notePara.indexOf('<w:jc w:val="center"/>') < 0);
   check("未误用标题的黑体/24 号", notePara.indexOf("黑体") < 0 && notePara.indexOf('<w:sz w:val="24"/>') < 0);
   check("未被表头带成加粗", !/<w:b\s*\/>/.test(notePara), notePara.slice(0, 200));

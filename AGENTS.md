@@ -258,8 +258,10 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
        找不到标题时按表头（`物料名称`/`主要成分`/`年用量`）兜底找表。
      · 格式（2026-10-21 晚调整）：**字符格式（字体/字号）取「表3-3 数据单元格」**里第一个 run —— 用户要求
        「和前面表格内字体格式一致」（实测表内 `仿宋_GB2312 / sz 21`，正文是 sz 28）；跳过表头行（表头加粗），
-       并去掉 `pPr` 里的段落标记 `rPr`，避免残留旧字号。段落格式（缩进/对齐/行距）仍沿用「表题前一段正文」，
-       免得整段被表格的居中对齐影响。最后强制 `<w:color w:val="FF0000"/>`（`forceRedRPr`，同时去加粗）。
+       并去掉 `pPr` 里的段落标记 `rPr`，避免残留旧字号。最后强制 `<w:color w:val="FF0000"/>`（`forceRedRPr`，同时去加粗）。
+     · **段落格式固定**：`forceNoteSpacing` 强制「**首行不缩进**」（`<w:ind w:firstLine="0" w:firstLineChars="0"/>`）+
+       「**行距固定 14 磅**」（`<w:spacing w:line="280" w:lineRule="exact"/>`，14pt=280 twips）；
+       注意按 OOXML 顺序插在 `ind` / `jc` / `rPr` 之前（spacing 在前、ind 在后），不能直接追加到 `</w:pPr>`。
      · **幂等**：文档里已有「注1：本次检测对用人单位漆料」→ 直接跳过，重复导出不会叠加。
      · 专项测试：`tests/pjbg.matnote.test.mjs`（20 项：位置/4 行/标红/格式继承/幂等/兜底/无表不改）。
    - ⑩ **表8-2「超标原因分析」按检测项目自动填写**（用户 2026-10-21，`fillOverLimitCause`）：
