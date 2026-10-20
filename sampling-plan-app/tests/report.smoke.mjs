@@ -227,13 +227,19 @@ await page.waitForTimeout(300);
 const panelActiveAfterSelect = await page.$eval("#tab-report", (el) => el.classList.contains("active"));
 check("选中项目后点「数据报告处理」可正常进入", panelActiveAfterSelect === true);
 
-// 5.2) 只剩「数据报告回退」「数据报告审核」两个按钮；「查看…报告单」按钮已移除
+// 5.2) 工具栏按钮：「刷新」+「数据报告回退」+「数据报告审核」；「查看…报告单」按钮已移除
+const refreshVisible = await page.isVisible("#report-refresh");
 const resetVisible = await page.isVisible("#report-reset");
 const auditVisible = await page.isVisible("#report-audit");
 const viewFinalExists = await page.$("#report-view-final");
+check("「刷新」按钮可见", refreshVisible);
 check("「数据报告回退」按钮可见", resetVisible);
 check("「数据报告审核」按钮可见", auditVisible);
 check("「查看…报告单」按钮已移除（审核成功自动显示）", viewFinalExists === null);
+// 刷新按钮须在「数据报告回退」左边（DOM 顺序：refresh → reset → audit）
+const toolbarOrder = await page.$$eval("#tab-report .grid-toolbar .left button", (els) => els.map((e) => e.id));
+check("工具栏顺序为 刷新 → 回退 → 审核",
+  JSON.stringify(toolbarOrder.slice(0, 3)) === JSON.stringify(["report-refresh", "report-reset", "report-audit"]));
 
 // 6.1) ★ 选中项目后，「数据报告处理」页应显示该项目的**数据报告项目状态**
 //   数据源 = GET /api/projectJcbgLastAffix?isDel=<0|1>&code=<编号>（平台「检测结果报告单」列表的数据源）
@@ -341,6 +347,23 @@ check("切走再切回复原面板：内嵌 PDF 复用同一 blob URL（不重�
     && /已显示该项目当下流程中的数据报告/.test(cacheHitStatus),
   "visible=" + cacheHitBoxVisible + " sameBlob=" + (cacheHitIframeSrc === pdfBlobBefore)
     + " blob=" + String(cacheHitIframeSrc).slice(0, 30) + " ／ status=" + cacheHitStatus.slice(0, 60));
+
+// 6.1c-2) ★ 点工具栏「刷新」→ 必须**绕过缓存**重新联网（与上面切页签的缓存命中正相反）
+//   断言三点：重新请求 getAffix、重新下载报告 PDF（blob URL 变新）、仍内嵌显示。
+seen.getAffixJcbg = "";
+const refreshCountBefore = getAffixJcbgCount;
+await page.click("#report-refresh");
+await page.waitForTimeout(1500);
+const refreshBoxVisible = await page.isVisible("#report-pdf-box");
+const refreshIframeSrc = await page.$eval("#report-pdf-frame-wrap iframe", (el) => el.getAttribute("src")).catch(() => "");
+const refreshStatus = await page.$eval("#report-status", (e) => e.textContent.trim()).catch(() => "");
+check("点「刷新」绕过缓存：重新请求 getAffix",
+  getAffixJcbgCount > refreshCountBefore,
+  "before=" + refreshCountBefore + " after=" + getAffixJcbgCount + " seen=" + (seen.getAffixJcbg || ""));
+check("点「刷新」重新下载报告单（blob URL 变新，不复用缓存）",
+  refreshBoxVisible && refreshIframeSrc.startsWith("blob:") && refreshIframeSrc !== pdfBlobBefore,
+  "visible=" + refreshBoxVisible + " sameBlob=" + (refreshIframeSrc === pdfBlobBefore)
+    + " ／ status=" + refreshStatus.slice(0, 60));
 
 // 6.1d) ★ 状态变化（模拟：审核/回退后）→ 缓存键随之变化 → 应重新拉取
 await page.evaluate(() => window.SamplingUpload.invalidateReportCache());

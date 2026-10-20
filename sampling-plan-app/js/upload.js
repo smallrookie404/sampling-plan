@@ -3269,6 +3269,32 @@
       autoShowCurrentReport();
     }
 
+    // ★ 工具栏「刷新」（2026-10-20）：强制重新查询当前项目的数据报告状态 + 重新加载报告单预览。
+    //   与「进页签 / 切项目」走的 refreshReportPanel() 不同——那条在**同一项目 + 同一状态**时会命中
+    //   面板缓存直接复原（秒开、不联网）。用户在工具栏主动点「刷新」意味着「我要看平台此刻的真实状态」，
+    //   所以必须先**绕过缓存**：断开当前 PDF 显示 → 清缓存（释放其 blob）→ 清状态令牌 → 再走完整联网刷新。
+    //   · 未选项目：只在状态栏提示（该页签本身已被拦下，正常进不来，属兜底）
+    //   · 不额外加锁：loadReportStatus 有 reportStateSeq、autoShowCurrentReport 有 reportPdfSeq，
+    //     连点只会让旧请求被丢弃，不会叠加错乱。
+    function forceRefreshReportPanel() {
+      const el = reportEls();
+      if (!selectedProject || !selectedProject.id) {
+        if (el.status) el.status.textContent = '请先在「数据上传」中选择项目';
+        return;
+      }
+      // ① 先断开当前显示：此时缓存仍持有该 blob → hideReportPdf 不会释放它
+      try { hideReportPdf(); } catch (e) {}
+      // ② 再清缓存：由 invalidateReportCache 统一 revoke blob，保证每个 URL 只释放一次
+      invalidateReportCache();
+      // ③ 清状态令牌与 PDF 信息，避免用上一次的残留值参与缓存键判定
+      reportStateToken = null;
+      reportPdfCacheInfo = null;
+      // ④ 缓存已空 → refreshReportPanel 必定走联网分支（重新 loadReportStatus + autoShowCurrentReport）
+      refreshReportPanel();
+      // refreshReportPanel 会把状态栏清空，故在它之后再写即时反馈（随后被 PDF 加载进度覆盖属正常）
+      if (el.status) el.status.textContent = '正在刷新：重新查询数据报告状态与报告单…';
+    }
+
     // 从缓存复原面板：状态徽标 + 状态栏文案 + 内嵌 PDF（复用已下载的 blob URL，不重新联网）。
     function restoreReportPanelFromCache(el) {
       const c = reportPanelCache;
@@ -3952,6 +3978,8 @@
         setTimeout(function () { refreshReportPanel(); }, 0);
       }, true);
     }
+    const reportRefreshBtn = document.getElementById('report-refresh');
+    if (reportRefreshBtn) reportRefreshBtn.addEventListener('click', forceRefreshReportPanel);
     const reportResetBtn = document.getElementById('report-reset');
     if (reportResetBtn) reportResetBtn.addEventListener('click', resetReportApproval);
     const reportAuditBtn = document.getElementById('report-audit');
