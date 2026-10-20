@@ -851,6 +851,7 @@
       syncUserMenu();
       teamSaved = null;
       selectedProject = null;
+      resetNoiseState();   // 退出登录 → 噪声结果与报告缓存一并清空
       selectedFile = null;
       userList = [];
       confirmedMemberIds = [];
@@ -1585,6 +1586,7 @@
         item.appendChild(nameSpan);
         item.addEventListener('click', function () {
           selectedProject = p;
+          resetNoiseState();   // 换项目 → 先清掉上一个报告的噪声筛选结果/缓存
           unitInput.value = '';
           codeInput.value = '';
           suggestBox.classList.add('hidden');
@@ -1633,6 +1635,7 @@
           return;
         }
         selectedProject = null;
+        resetNoiseState();   // 重新搜索 → 原选中项目作废，噪声结果一并清空
         $('projectInfo').textContent = '';
         $('projectInfo').className = 'info';
         refreshReportPanel();
@@ -2356,19 +2359,14 @@
       else fallback();
     }
 
-    function renderNoiseSummary(display) {
-      const box = document.getElementById('noise-summary');
-      if (!box) return;
-      const s = buildNoiseSummary(display);
-      noiseSummaryData = s;
-      const hasAny = s.nonNoise.length || s.noiseWorkshop.length || s.overWorkshop.length;
-      if (!hasAny) { box.innerHTML = ''; box.classList.add('hidden'); return; }
+    // 三块筛选结果的 HTML（s 为空数据时每块显示「（无）」）
+    function noiseSummaryHtml(s) {
       let html = '<div class="noise-summary-head"><strong>筛选结果</strong>'
         + '<span class="noise-summary-hint">同一「车间+岗位」合并全部测量点，取所有 LEX 列的最大值（非数字按 0）；结果按车间合并</span>'
         + '<button class="btn small ghost" data-copy-all="1">复制全部</button></div>';
       html += '<div class="noise-summary-grid">';
       for (const d of NOISE_SUMMARY_DEFS) {
-        const list = s[d.key] || [];
+        const list = (s && s[d.key]) || [];
         const n = noiseSummaryJobCount(list);
         html += '<div class="noise-summary-item ' + d.cls + '">'
           + '<div class="nsi-head"><span class="nsi-title">' + d.title + '</span>'
@@ -2379,7 +2377,59 @@
           + '</div>';
       }
       html += '</div>';
-      box.innerHTML = html;
+      return html;
+    }
+
+    // 「页签还留着、内容清空」：三块卡片照常显示，内容一律「（无）」
+    //   切换项目 / 加载中都用这个，避免上一家的筛选结果残留（2026-10-20 用户需求）
+    function renderNoiseSummaryEmpty() {
+      const box = document.getElementById('noise-summary');
+      if (!box) return;
+      noiseSummaryData = { nonNoise: [], noiseWorkshop: [], overWorkshop: [], groupCount: 0, quietPoints: [] };
+      box.innerHTML = noiseSummaryHtml(noiseSummaryData);
+      box.classList.remove('hidden');
+    }
+
+    // 彻底收起三块（仅「未选中项目」时用）
+    function hideNoiseSummary() {
+      const box = document.getElementById('noise-summary');
+      if (box) { box.innerHTML = ''; box.classList.add('hidden'); }
+      noiseSummaryData = null;
+    }
+
+    // 只清「界面」：三块筛选结果（保留卡片、内容清空）+ 噪声表格 + 状态行（不动缓存）
+    //   用于加载一开始就抹掉上一家的数据，避免加载期间还显示旧内容
+    function clearNoiseDisplay() {
+      renderNoiseSummaryEmpty();
+      const box = document.getElementById('noise-table-box');
+      if (box) box.innerHTML = '';
+      const st = document.getElementById('noise-status');
+      if (st) st.textContent = '';
+    }
+
+    // ★ 清空「上一个报告」的噪声结果（2026-10-20 用户需求）：
+    //   切换项目 / 重新搜索 / 重新加载前调用，避免「非噪声车间岗位 / 噪声车间岗位 /
+    //   噪声超标车间岗位」三块筛选结果与噪声表格、状态行残留上一个项目的内容，
+    //   也顺手丢掉检评报告缓存（pjbgBufCache）与噪声信息缓存（noiseInfoCache），
+    //   防止后续「生成检评报告 / 非噪声岗位同步」误用上一个报告的数据。
+    function resetNoiseState() {
+      noiseCache = null;
+      pjbgBufCache = null;
+      noiseInfoCache = { buf: null, info: null };
+      clearNoiseDisplay();
+      const pj = document.getElementById('pjbg-status');
+      if (pj) pj.textContent = '';
+      const empty = document.getElementById('noise-empty');
+      if (empty) empty.classList.add('hidden');
+    }
+
+    function renderNoiseSummary(display) {
+      const box = document.getElementById('noise-summary');
+      if (!box) return;
+      const s = buildNoiseSummary(display);
+      noiseSummaryData = s;
+      // 三块卡片始终保留（无数据时内容为「（无）」），不再整块隐藏
+      box.innerHTML = noiseSummaryHtml(s);
       box.classList.remove('hidden');
     }
 
@@ -2426,7 +2476,7 @@
       if (!token) { showLogin(); return; }
       if (!selectedProject || !selectedProject.id) {
         box.innerHTML = '';
-        renderNoiseSummary(null);
+        hideNoiseSummary();   // 未选项目：三块整体收起
         if (empty) {
           empty.textContent = '尚未在「数据上传」中选择项目。请先到「数据上传」查询并选中项目，再查看噪声数据结果。';
           empty.classList.remove('hidden');
@@ -2447,7 +2497,7 @@
       noiseLoading = true;
       setNoiseTabLoading(true);
       if (empty) empty.classList.add('hidden');
-      box.innerHTML = '';
+      clearNoiseDisplay();   // ★ 加载一开始就抹掉上一家的三块筛选结果 + 表格 + 状态行
       if (status) status.textContent = '加载中…（正在生成并解析检评报告）';
       try {
         // 数据源：**检评报告**（不是检测报告）——模板列表 → jpbgYL 生成 → 同路径 .docx 下载
@@ -2494,7 +2544,7 @@
         enterNoisePanel();   // 数据就绪 → 首次进入该页签
       } catch (e) {
         box.innerHTML = '';
-        renderNoiseSummary(null);
+        renderNoiseSummaryEmpty();   // 加载失败：卡片保留、内容清空（不显示上一家的数据）
         if (empty) {
           empty.textContent = '加载失败：' + (e && e.message ? e.message : e);
           empty.classList.remove('hidden');
@@ -2525,6 +2575,9 @@
         if (noiseEnterAllowed) return;                 // 已放行，交给 app.js 正常切换
         e.preventDefault();
         e.stopImmediatePropagation();                  // 拦下 app.js 的页签切换
+        // 点开页签的瞬间就抹掉上一家的数据（即使下面 loadNoiseResult 因「正在加载」提前返回，
+        // 也不会把上一家报告的筛选结果留在界面上）
+        clearNoiseDisplay();
         loadNoiseResult(false);                        // 未就绪：先加载，成功后再进入
       }, true);
     }
@@ -4128,6 +4181,8 @@
       noiseInfoFromBuf: noiseInfoFromBuf,
       getCachedNoiseInfo: getCachedNoiseInfo,
       noiseInfoFromRows: noiseInfoFromRows,
+      // 清空上一个报告的噪声结果（筛选结果三块 + 表格 + 状态行 + 报告/噪声缓存）；供测试/复用
+      resetNoiseState: resetNoiseState,
       // 解压 docx 取 word/document.xml 字符串（供上层复用，避免重复解压）
       readDocxDocumentXml: readDocxDocumentXml,
       // 复用噪声页签已生成并下载的检评报告（供「生成检评报告」缩短时间）：

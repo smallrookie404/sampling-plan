@@ -138,6 +138,7 @@ sampling-plan/
   node tests/entinfo.smoke.mjs   # 在职人数/接害人数：输入框预填、写入分工、上传成功后清空输入框与缓存（Playwright）
   node tests/entbasic.smoke.mjs  # 「企业基本信息上传」勾选项：三条补全规则（办公室/抄联系人/兼职专职1）、合并成一次 PUT、端到端上传调查表（Playwright）
   node tests/memberpicker.smoke.mjs # 项目组成员「人员选项框」：标题行（项目组成员+确认成员）在搜索框上方、默认收起、点搜索框展开全部、输入即过滤、无匹配提示、Esc/点外部收起（Playwright）
+  node tests/noisereset.smoke.mjs  # 切项目/重新搜索/**加载中**清空三块页签的**内容**（卡片保留显示「（无）」）+ 噪声表格 + 报告缓存（Playwright）
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
@@ -277,6 +278,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 | 改「企业基本信息上传」勾选项（调查表上传补全） | upload.js `buildEntBasicPatch`/`entValueBlank`/`entBasicChecked`/`applyEntInfoOnUpload`（第 6 参 extraBuilder，合并成一次 PUT）+ index.html `#chkEntBasicUpload`；勾选状态**随团队配置**一起存（`saveTeamSettings` 的 `entBasicUpload` 字段 → 本地 `xcdc_team_v1_<账号>` 兜底 + Pages 版 `/api/team` 写 KV `team:<账号>`），`applyTeamSettings` 回填，缺省不勾；测试 `tests/entbasic.smoke.mjs` |
 | 改团队配置 | upload.js `loadTeamSettings`/`saveTeamSettings`/`loadProjectTeam` + `functions/api/team.js`（KV key、64KB 上限） |
 | 改「项目组成员」人员选项框 | upload.js `filterMemberItems`（只过滤）/`filterMemberList`（过滤+开关：有关键字或搜索框聚焦即展开）/`openMemberList`（focus/click 展开全部）/`closeMemberList`/`setMemberEmptyHint` + index.html `.member-head`（标题行：左「项目组成员」右「确认成员」，在搜索框**上方**）/`.member-picker`/`.member-list`（默认 `display:none`，选项框在搜索框**下方**）；测试 `tests/memberpicker.smoke.mjs` |
+| 改噪声结果页签的清空/缓存 | upload.js `noiseSummaryHtml`（三块卡片统一模板）/`renderNoiseSummaryEmpty`（**卡片保留、内容清成「（无）」**）/`hideNoiseSummary`（仅未选项目时整块收起）/`clearNoiseDisplay`（清界面：三块空壳 + 表格 + 状态行）/`resetNoiseState`（切项目 / 重新搜索 / 登出，连缓存一起清）+ `loadNoiseResult` 开头与页签点击拦截里各调一次 `clearNoiseDisplay`；测试 `tests/noisereset.smoke.mjs` |
 | 改样式/主题 | 主界面 `css/styles.css`（CSS 变量）；登录/上传视图是 index.html 内联 `.xcdc`（老内核兼容写法勿改成 `inset` 简写等新语法） |
 
 ## 常见任务速查
