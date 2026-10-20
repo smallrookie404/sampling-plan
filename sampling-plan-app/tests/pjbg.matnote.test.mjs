@@ -58,9 +58,15 @@ function capP(text) {
     + '<w:r><w:rPr><w:rFonts w:ascii="黑体" w:eastAsia="黑体"/><w:sz w:val="24"/></w:rPr>'
     + '<w:t>' + esc(text) + '</w:t></w:r></w:p>';
 }
+// 表格内段落样式（与正文不同：仿宋_GB2312 / sz 18 / 居中、无首行缩进）——注段落应继承它
+function cellP(text) {
+  return '<w:p><w:pPr><w:jc w:val="center"/><w:ind w:firstLine="0"/></w:pPr>'
+    + '<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="仿宋_GB2312" w:hAnsi="Times New Roman"/><w:b w:val="0"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>'
+    + '<w:t xml:space="preserve">' + esc(text) + '</w:t></w:r></w:p>';
+}
 function tbl(headers, rows) {
-  const hc = headers.map((h) => '<w:tc>' + bodyP(h) + '</w:tc>').join("");
-  const rc = rows.map((r) => '<w:tr>' + r.map((c) => '<w:tc>' + bodyP(c) + '</w:tc>').join("") + '</w:tr>').join("");
+  const hc = headers.map((h) => '<w:tc>' + cellP(h) + '</w:tc>').join("");
+  const rc = rows.map((r) => '<w:tr>' + r.map((c) => '<w:tc>' + cellP(c) + '</w:tc>').join("") + '</w:tr>').join("");
   return '<w:tbl><w:tr>' + hc + '</w:tr>' + rc + '</w:tbl>';
 }
 const MAT_TABLE = tbl(["工作场所", "物料名称", "主要成分", "物理状态", "年用量"],
@@ -101,11 +107,13 @@ console.log("[A-D] 正常插入（位置 / 4 行 / 标红 / 格式继承）");
   const allRed = runs.length > 0 && runs.every((x) => x.indexOf('w:val="FF0000"') >= 0);
   check("注段落每个 run 都标红（FF0000）", allRed, JSON.stringify(runs.map((x) => (x.match(/<w:color[^>]*\/>/) || [""])[0])));
 
-  // D. 格式继承自「标题前一段」正文（仿宋_GB2312 / sz 21 / 首行缩进），不是黑体标题
-  check("字体继承正文（仿宋_GB2312）", notePara.indexOf("仿宋_GB2312") >= 0, notePara.slice(0, 160));
-  check("字号继承正文（sz 21）", notePara.indexOf('<w:sz w:val="21"/>') >= 0);
-  check("段落缩进继承正文（firstLine 420）", notePara.indexOf('w:firstLine="420"') >= 0);
+  // D. 字符格式取自「表3-3 表格内」（仿宋_GB2312 / sz 18）；段落格式仍取自正文（首行缩进、不居中）
+  check("字体与表格一致（仿宋_GB2312）", notePara.indexOf("仿宋_GB2312") >= 0, notePara.slice(0, 160));
+  check("字号与表格一致（sz 18，不是正文的 sz 21）", notePara.indexOf('<w:sz w:val="18"/>') >= 0 && notePara.indexOf('<w:sz w:val="21"/>') < 0, notePara.slice(0, 200));
+  check("段落缩进仍用正文（firstLine 420）", notePara.indexOf('w:firstLine="420"') >= 0);
+  check("整段未套用表格的居中", notePara.indexOf('<w:jc w:val="center"/>') < 0);
   check("未误用标题的黑体/24 号", notePara.indexOf("黑体") < 0 && notePara.indexOf('<w:sz w:val="24"/>') < 0);
+  check("未被表头带成加粗", !/<w:b\s*\/>/.test(notePara), notePara.slice(0, 200));
 }
 
 // ============ E. 幂等 ============

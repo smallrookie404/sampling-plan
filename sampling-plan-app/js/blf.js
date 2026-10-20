@@ -2113,6 +2113,8 @@
     let out = rPr || '';
     if (!out) return '<w:rPr><w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>';
     out = out.replace(/<w:color\b[^>]*\/>/g, '');          // 去掉已有颜色
+    // 去掉加粗（表格表头单元格是加粗的，万一兜底克隆到表头，注段落也不该变粗）
+    out = out.replace(/<w:b\s*\/>/g, '<w:b w:val="0"/>').replace(/<w:bCs\s*\/>/g, '<w:bCs w:val="0"/>');
     if (out.indexOf('</w:rPr>') >= 0) return out.replace('</w:rPr>', '<w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>');
     return '<w:rPr><w:color w:val="' + PJBG_NOTE_RED + '"/></w:rPr>';
   }
@@ -2133,13 +2135,23 @@
     const paraRe = new RegExp(PARA_SRC, 'g');
     let m;
     let capStart = -1, capEnd = -1, prevPara = '';
+    let looseStart = -1, looseEnd = -1, loosePrev = '';
+    // 标题段落：优先「以 表3-3 开头」（真正的表题，如「表3-3 原辅材料情况」）；
+    // 退而求其次才用「正文里提到 表3-3 的句子」（如「用人单位原辅材料情况详见表3-3。」）——
+    // 否则格式模板会取到章节小标题（加粗/黑体），段落缩进也不对。
     while ((m = paraRe.exec(xml))) {
-      const t = cellText(m[0]);
-      if (t && t.indexOf('表3-3') >= 0 && t.indexOf('原辅材料') >= 0) {
+      const t = cellText(m[0]).replace(/\s+/g, '');
+      if (t && t.indexOf('表3-3') === 0) {
         capStart = m.index; capEnd = m.index + m[0].length;
         break;
       }
+      if (t && t.indexOf('表3-3') >= 0 && t.indexOf('原辅材料') >= 0 && looseStart < 0) {
+        looseStart = m.index; looseEnd = m.index + m[0].length; loosePrev = prevPara;
+      }
       prevPara = m[0];                                  // 记下标题前一段（做格式模板）
+    }
+    if (capStart < 0 && looseStart >= 0) {
+      capStart = looseStart; capEnd = looseEnd; prevPara = loosePrev;
     }
     let tblStart = -1, tblEnd = -1;
     if (capStart >= 0) {
@@ -2168,11 +2180,34 @@
     }
     if (tblEnd < 0) return { xml: xml, changed: 0 };
 
-    // 格式模板：优先用标题前一段（正文），否则用标题段本身
+    // 格式模板：
+    //   · 段落格式（缩进/对齐/行距）沿用「标题前一段正文」——表格单元格是居中对齐，整段注居中也难看；
+    //   · 字符格式（字体/字号）取**表3-3 数据单元格**里第一个 run —— 用户要求「和前面表格内字体格式一致」
+    //     （实测表内 仿宋_GB2312 / sz 21，而正文是 sz 28，差两个字号）。跳过表头行（表头加粗）。
     const src = prevPara || (capStart >= 0 ? xml.slice(capStart, capEnd) : '');
     const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(src || '');
-    const pPr = pPrM ? pPrM[0] : '';
-    const rPr = forceRedRPr(firstRunRPr(src || ''));
+    // 去掉段落标记自带的 <w:rPr>（那是「标题/正文」的字体，比如黑体 sz28 加粗），
+    // 否则整段的段落标记仍是旧字号，与表格字体不一致
+    const pPr = pPrM ? pPrM[0].replace(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/g, '') : '';
+    let rPrSrc = '';
+    const tblXml = (tblStart >= 0 && tblEnd > tblStart) ? xml.slice(tblStart, tblEnd) : '';
+    if (tblXml) {
+      const trs = tableRows(tblXml);
+      for (let ti = 1; ti < trs.length && !rPrSrc; ti++) {
+        const tcs = rowCells(trs[ti]);
+        for (const tc of tcs) {
+          const pm = new RegExp(PARA_SRC).exec(tc);
+          if (!pm) continue;
+          const r = firstRunRPr(pm[0]);
+          if (r) { rPrSrc = r; break; }
+        }
+      }
+      if (!rPrSrc) {                                    // 兜底：整表第一个段落（可能是表头）
+        const pm = new RegExp(PARA_SRC).exec(tblXml);
+        if (pm) rPrSrc = firstRunRPr(pm[0]);
+      }
+    }
+    const rPr = forceRedRPr(rPrSrc || firstRunRPr(src || ''));
     const runs = PJBG_MATERIAL_NOTES.map(function (line, i) {
       const br = i === 0 ? '' : '<w:r>' + rPr + '<w:br/></w:r>';
       return br + '<w:r>' + rPr + '<w:t xml:space="preserve">' + xmlEsc(line) + '</w:t></w:r>';
