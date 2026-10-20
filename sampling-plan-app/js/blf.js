@@ -378,7 +378,19 @@
   const TBL_SRC = '<w:tbl(?:\\s[^>]*)?>[\\s\\S]*?<\\/w:tbl>';
   function mapParagraphs(xml, cb) { return xml.replace(new RegExp(PARA_SRC, 'g'), cb); }
   function mapTables(xml, cb) { return xml.replace(new RegExp(TBL_SRC, 'g'), cb); }
-  function tablesOf(xml) { return xml.match(new RegExp(TBL_SRC, 'g')) || []; }
+  // ★ 性能（2026-10-21）：同一步里常要连续查好几张表（表3-1 / 表4-1 / 表8-1 …），
+  //   每次 tablesOf 都要在 6MB XML 上跑一遍全局正则并生成 21 张表的字符串（约 9ms）。
+  //   这里按「同一个 xml 字符串引用」缓存一份（字符串不可变，引用相同 = 内容相同）：
+  //   步骤之间 xml 会变，缓存自然失效，不会拿到过期结果。
+  let TBL_CACHE_XML = null;
+  let TBL_CACHE_LIST = null;
+  function tablesOf(xml) {
+    if (xml === TBL_CACHE_XML && TBL_CACHE_LIST) return TBL_CACHE_LIST;
+    const list = xml.match(new RegExp(TBL_SRC, 'g')) || [];
+    TBL_CACHE_XML = xml;
+    TBL_CACHE_LIST = list;
+    return list;
+  }
   function eachParagraph(xml, cb) {                    // 需要「匹配位置」时用
     const re = new RegExp(PARA_SRC, 'g');
     let m;
@@ -897,7 +909,11 @@
   //        ② 只扫「含粉 / 含害」的段落（TEXT_FIXES 每条都至少含其中一个字），不再全篇扫。
   //   ⚠ 以后往 TEXT_FIXES 加条目时，必须保证新条目的 from 里含 TEXT_FIX_NEEDLES 中的某个字，
   //     否则该条永远匹配不到（下面有启动期自检，会打印警告）。
-  const TEXT_FIX_NEEDLES = ['粉', '害'];
+  // 定位字（只做「哪些段落可能命中」的廉价预筛，真正的匹配仍是整串比对）：
+  //   2026-10-21 性能：原来用 ['粉','害']，这两个字在报告里极常见（上千段都要做一次 paraTextConcat），
+  //   实测 68ms；改用 ['限','价']（三条替换串都含其一：两条含「接触限值」、一条含「分析与评价」）
+  //   后候选段落骤减到个位数。启动期自检会校验「每条 from 至少含一个定位字」。
+  const TEXT_FIX_NEEDLES = ['限', '价'];
   TEXT_FIXES.forEach(function (f) {
     const ok = TEXT_FIX_NEEDLES.some(function (n) { return f.from.indexOf(n) >= 0; });
     if (!ok) console.warn('[检评报告] TEXT_FIXES 条目缺少定位字（会被漏掉）：' + f.from);
@@ -2151,26 +2167,34 @@
   function addMaterialNote(xml) {
     // 幂等：已插入过就不再插
     if (xml.indexOf('注1：本次检测对用人单位漆料') >= 0) return { xml: xml, changed: 0, skipped: true };
-    const paraRe = new RegExp(PARA_SRC, 'g');
-    let m;
-    let capStart = -1, capEnd = -1, prevPara = '';
-    let looseStart = -1, looseEnd = -1, loosePrev = '';
     // 标题段落：优先「以 表3-3 开头」（真正的表题，如「表3-3 原辅材料情况」）；
     // 退而求其次才用「正文里提到 表3-3 的句子」（如「用人单位原辅材料情况详见表3-3。」）——
     // 否则格式模板会取到章节小标题（加粗/黑体），段落缩进也不对。
-    while ((m = paraRe.exec(xml))) {
-      const t = cellText(m[0]).replace(/\s+/g, '');
-      if (t && t.indexOf('表3-3') === 0) {
-        capStart = m.index; capEnd = m.index + m[0].length;
-        break;
+    // ★ 性能（2026-10-21）：原来 eachParagraph 全篇扫 4767 段（~8ms），改为只按「表3-3」定位
+    //   （全篇出现次数个位数），命中后再向两侧扩到段落边界。
+    let capStart = -1, capEnd = -1;
+    let looseStart = -1, looseEnd = -1;
+    let i = xml.indexOf('表3-3');
+    while (i >= 0) {
+      const s0 = paraStartBefore(xml, i);
+      const e0 = xml.indexOf('</w:p>', i);
+      if (s0 >= 0 && e0 >= 0) {
+        const end0 = e0 + '</w:p>'.length;
+        const t = cellText(xml.slice(s0, end0)).replace(/\s+/g, '');
+        if (t && t.indexOf('表3-3') === 0) { capStart = s0; capEnd = end0; break; }
+        if (looseStart < 0 && t && t.indexOf('原辅材料') >= 0) { looseStart = s0; looseEnd = end0; }
       }
-      if (t && t.indexOf('表3-3') >= 0 && t.indexOf('原辅材料') >= 0 && looseStart < 0) {
-        looseStart = m.index; looseEnd = m.index + m[0].length; loosePrev = prevPara;
-      }
-      prevPara = m[0];                                  // 记下标题前一段（做格式模板）
+      i = xml.indexOf('表3-3', i + 4);
     }
-    if (capStart < 0 && looseStart >= 0) {
-      capStart = looseStart; capEnd = looseEnd; prevPara = loosePrev;
+    if (capStart < 0 && looseStart >= 0) { capStart = looseStart; capEnd = looseEnd; }
+    // 表题前一段（做段落格式模板）
+    let prevPara = '';
+    if (capStart > 0) {
+      const pe = xml.lastIndexOf('</w:p>', capStart);
+      if (pe > 0) {
+        const ps = paraStartBefore(xml, pe);
+        if (ps >= 0 && ps < pe) prevPara = xml.slice(ps, pe + '</w:p>'.length);
+      }
     }
     let tblStart = -1, tblEnd = -1;
     if (capStart >= 0) {
@@ -2376,6 +2400,191 @@
     return { xml: out, changed: filled, filled: filled };
   }
 
+  // ---------------- 快速重打包（B1）：只重压 document.xml，其余条目原始压缩字节直接拷贝 ----------------
+  // 背景（2026-10-21 实测，0959：docx 1.88MB / document.xml 6.14MB / 31 个条目）：
+  //   JSZip 的 generateAsync 会把**所有条目**重新 DEFLATE（图片 1.7MB 也重压一遍），耗时 584ms；
+  //   而实际只有 document.xml 变了。这里直接按 ZIP 结构重建：
+  //     · 其余条目：拷贝原始压缩数据 + 原始 method/crc/大小/时间戳/外部属性 → 零重压；
+  //     · document.xml：原生 `CompressionStream('deflate-raw')` 压缩（实测 6.4MB → 145ms）；
+  //     · 去掉 data descriptor（bit 3），本地头写真实大小。
+  //   任何异常（ZIP64 / 结构不认识 / 没有原生 CompressionStream）→ 返回 null，调用方回退 JSZip。
+  let PJBG_CRC_TABLE = null;
+  function pjbgCrc32(u8) {
+    if (!PJBG_CRC_TABLE) {
+      const t = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[n] = c >>> 0;
+      }
+      PJBG_CRC_TABLE = t;
+    }
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < u8.length; i++) crc = PJBG_CRC_TABLE[(crc ^ u8[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  // 原生 deflate-raw；不支持则返回 null（走 JSZip 回退）
+  async function pjbgDeflateRaw(u8) {
+    if (typeof CompressionStream !== 'function') return null;
+    try {
+      const cs = new CompressionStream('deflate-raw');
+      const w = cs.writable.getWriter();
+      w.write(u8); w.close();
+      const rd = cs.readable.getReader();
+      const chunks = [];
+      let total = 0;
+      for (;;) {
+        const r = await rd.read();
+        if (r.done) break;
+        chunks.push(r.value); total += r.value.length;
+      }
+      const out = new Uint8Array(total);
+      let o = 0;
+      for (const c of chunks) { out.set(c, o); o += c.length; }
+      return out;
+    } catch (e) { return null; }
+  }
+
+  // 解析 ZIP 的中央目录（只读，不碰数据）→ [{name, flags, method, time, date, crc, csize, usize, extAttr, dataOff}]
+  function pjbgParseZip(buf) {
+    const dv = new DataView(buf);
+    const len = buf.byteLength;
+    if (len < 22) return null;
+    let eocd = -1;
+    const floor = Math.max(0, len - 65558);
+    for (let i = len - 22; i >= floor; i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) return null;
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true);
+    const dec = new TextDecoder('utf-8');
+    const entries = [];
+    for (let i = 0; i < count; i++) {
+      if (p + 46 > len || dv.getUint32(p, true) !== 0x02014b50) return null;
+      const flags = dv.getUint16(p + 8, true);
+      const method = dv.getUint16(p + 10, true);
+      const time = dv.getUint16(p + 12, true);
+      const date = dv.getUint16(p + 14, true);
+      const crc = dv.getUint32(p + 16, true);
+      const csize = dv.getUint32(p + 20, true);
+      const usize = dv.getUint32(p + 24, true);
+      const nlen = dv.getUint16(p + 28, true);
+      const elen = dv.getUint16(p + 30, true);
+      const clen = dv.getUint16(p + 32, true);
+      const extAttr = dv.getUint32(p + 38, true);
+      const off = dv.getUint32(p + 42, true);
+      if (csize === 0xFFFFFFFF || usize === 0xFFFFFFFF || off === 0xFFFFFFFF) return null;  // ZIP64 → 不处理
+      if (off + 30 > len || dv.getUint32(off, true) !== 0x04034b50) return null;
+      const lnlen = dv.getUint16(off + 26, true);
+      const lelen = dv.getUint16(off + 28, true);
+      const dataOff = off + 30 + lnlen + lelen;
+      if (dataOff + csize > len) return null;
+      entries.push({
+        name: dec.decode(new Uint8Array(buf, p + 46, nlen)),
+        flags: flags, method: method, time: time, date: date,
+        crc: crc, csize: csize, usize: usize, extAttr: extAttr, dataOff: dataOff,
+      });
+      p += 46 + nlen + elen + clen;
+    }
+    return entries;
+  }
+
+  // 按条目重新拼 ZIP（本地头 + 数据 + 中央目录 + EOCD）
+  function pjbgBuildZip(items) {
+    const enc = new TextEncoder();
+    const parts = [];
+    const cds = [];
+    let offset = 0;
+    for (const it of items) {
+      const nameU8 = enc.encode(it.name);
+      const lh = new Uint8Array(30 + nameU8.length);
+      const dv = new DataView(lh.buffer);
+      dv.setUint32(0, 0x04034b50, true);
+      dv.setUint16(4, 20, true);                       // version needed
+      dv.setUint16(6, it.flags & ~0x08, true);         // 清 data descriptor
+      dv.setUint16(8, it.method, true);
+      dv.setUint16(10, it.time, true);
+      dv.setUint16(12, it.date, true);
+      dv.setUint32(14, it.crc, true);
+      dv.setUint32(18, it.csize, true);
+      dv.setUint32(22, it.usize, true);
+      dv.setUint16(26, nameU8.length, true);
+      dv.setUint16(28, 0, true);                       // 不带 extra
+      lh.set(nameU8, 30);
+      parts.push(lh, it.data);
+      const cd = new Uint8Array(46 + nameU8.length);
+      const cdv = new DataView(cd.buffer);
+      cdv.setUint32(0, 0x02014b50, true);
+      cdv.setUint16(4, 20, true);
+      cdv.setUint16(6, 20, true);
+      cdv.setUint16(8, it.flags & ~0x08, true);
+      cdv.setUint16(10, it.method, true);
+      cdv.setUint16(12, it.time, true);
+      cdv.setUint16(14, it.date, true);
+      cdv.setUint32(16, it.crc, true);
+      cdv.setUint32(20, it.csize, true);
+      cdv.setUint32(24, it.usize, true);
+      cdv.setUint16(28, nameU8.length, true);
+      cdv.setUint16(30, 0, true);
+      cdv.setUint16(32, 0, true);
+      cdv.setUint16(34, 0, true);
+      cdv.setUint16(36, 0, true);
+      cdv.setUint32(38, it.extAttr, true);
+      cdv.setUint32(42, offset, true);
+      cd.set(nameU8, 46);
+      cds.push(cd);
+      offset += lh.length + it.data.length;
+    }
+    let cdSize = 0;
+    for (const c of cds) cdSize += c.length;
+    const eocd = new Uint8Array(22);
+    const edv = new DataView(eocd.buffer);
+    edv.setUint32(0, 0x06054b50, true);
+    edv.setUint16(8, items.length, true);
+    edv.setUint16(10, items.length, true);
+    edv.setUint32(12, cdSize, true);
+    edv.setUint32(16, offset, true);
+    const total = offset + cdSize + 22;
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    for (const c of cds) { out.set(c, o); o += c.length; }
+    out.set(eocd, o);
+    return out.buffer;
+  }
+
+  // 用新 document.xml 重打包；不可用时返回 null
+  async function repackDocxFast(buf, newXml) {
+    try {
+      // buf 可能是 ArrayBuffer（浏览器 fetch）或 Uint8Array/Buffer（Node 测试）→ 统一成 ArrayBuffer
+      //   ⚠ 不能用 `instanceof ArrayBuffer`：测试在 vm 沙箱里跑，跨 realm 的 instanceof 恒为 false
+      const isAB = function (x) { return !!x && Object.prototype.toString.call(x) === '[object ArrayBuffer]'; };
+      const ab = isAB(buf) ? buf
+        : (buf && isAB(buf.buffer) ? buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) : null);
+      if (!ab) return null;
+      const entries = pjbgParseZip(ab);
+      if (!entries || !entries.length) return null;
+      if (!entries.some(function (e) { return e.name === 'word/document.xml'; })) return null;
+      const xmlBytes = new TextEncoder().encode(newXml);
+      const comp = await pjbgDeflateRaw(xmlBytes);
+      if (!comp) return null;
+      const items = entries.map(function (e) {
+        if (e.name === 'word/document.xml') {
+          return { name: e.name, flags: e.flags, method: 8, time: e.time, date: e.date,
+            crc: pjbgCrc32(xmlBytes), csize: comp.length, usize: xmlBytes.length, extAttr: e.extAttr, data: comp };
+        }
+        return { name: e.name, flags: e.flags, method: e.method, time: e.time, date: e.date,
+          crc: e.crc, csize: e.csize, usize: e.usize, extAttr: e.extAttr,
+          data: new Uint8Array(ab, e.dataOff, e.csize) };
+      });
+      return pjbgBuildZip(items);
+    } catch (e) {
+      return null;
+    }
+  }
+
   // 对下载到的检评报告 docx 做全部后处理（读一次 document.xml，改完统一重打包）；
   // 任何一步失败都不影响出报告（回退到上一步结果 / 原始文件）。
   async function patchPjbgDocx(buf) {    try {
@@ -2506,12 +2715,12 @@
       xml = r10.xml; changed += r10.changed;
       if (r10.changed) console.info('[检评报告] 表8-2 超标原因分析已填写 ' + r10.filled + ' 行');
       if (!changed) return buf;
+      // 快速重打包（2026-10-21）：只重压 document.xml，其余条目原始压缩字节直接拷贝。
+      //   实测 0959：JSZip generateAsync 584ms → 本路径约 150~200ms。
+      //   不支持（老内核无 CompressionStream / ZIP64 / 结构异常）时回退 JSZip，行为与以前一致。
+      const fast = await repackDocxFast(buf, xml);
+      if (fast) return fast;
       zip.file('word/document.xml', xml);
-      // 说明（2026-10-18 实测）：这一步是整条链路最贵的（真实报告 ~500ms，占一半）。
-      //   JSZip 对**未改动**的条目会直接复用原有压缩字节（图片不会被重新压缩），所以耗时几乎全在
-      //   document.xml（解压后 6MB+）的 DEFLATE 上，属于必要成本。
-      //   曾试过把 level 从默认 6 降到 4：交错 A/B 实测只省 ~46ms（9%），但文件体积 +2%，
-      //   性价比不足 → 保持默认级别（输出与改动前完全一致）。
       return await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
     } catch (e) {
       console.warn('[检评报告] 后处理失败，改用原始文件：', e);
@@ -2949,6 +3158,7 @@
     collectHazardMarks: collectHazardMarks,
     trimNote3: trimNote3,
     patchPjbgDocx: patchPjbgDocx,
+    repackDocxFast: repackDocxFast,   // 供测试/基准：只重压 document.xml 的快速重打包
     // 后处理⑥（条件删除条目）
     fixConditionalDeletions: fixConditionalDeletions,
     collectConfirmColTexts: collectConfirmColTexts,

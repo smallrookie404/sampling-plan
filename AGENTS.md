@@ -146,6 +146,7 @@ sampling-plan/
   node tests/pjbg.conddel.test.mjs # 后处理⑥ 条件删除条目 + 章节内序号重排（纯 XML 夹具，无需真实报告）
   node tests/pjbg.matnote.test.mjs  # 后处理⑨ 表3-3 下方插入「注1~注4」：位置/4 行/标红/格式继承/幂等（纯 XML 夹具）
   node tests/pjbg.overlimit.test.mjs # 后处理⑩ 表8-2 超标原因分析：噪声/高温/粉尘/毒物模板、占位才填、多因素、列平移（纯 XML 夹具）
+  node tests/pjbg.repack.test.mjs   # 快速重打包：条目一致 / 图片逐字节一致 / 无 CompressionStream 回退 / 异常输入（纯 Node）
   node tests/pjbg.shiftred.test.mjs # 后处理⑦ 「两班制」作息说明句标红（纯 XML 夹具）
   node tests/pjbg.noisereuse.test.mjs # 噪声表「只解析一次」的复用/缓存/退化逻辑（纯夹具，无需真实报告）
   node tests/pjbg.noiseapi.smoke.mjs # 真实 DOMParser 下 noiseInfoFromXml 的分组/拆分/文本（Playwright）
@@ -273,7 +274,21 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · 写单元格用 `setCellLines`：沿用该格首段的 `pPr` 与首个 run 的 `rPr`，多行用 `<w:br/>` 分行。
      · 实测：0959（7 行，6 行噪声）填 6 行；1009 填 1 行噪声；整链路 XML 良构。
      · 专项测试：`tests/pjbg.overlimit.test.mjs`（20 项）。
-   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（20）、`pjbg.overlimit.test`（20）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（20/3，**3 项在 HEAD 上已失败**，与⑥无关）、`pjbg.ppe.test`（18）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）。
+   - ⑫ **导出耗时优化（2026-10-21，实测 0959：patchPjbgDocx 1286ms → 约 700ms）**：
+     · **快速重打包 `repackDocxFast`（最大头，584ms → 约 255ms）**：不再用 `zip.generateAsync`（它会把 31 个条目
+       连 1.7MB 图片一起重新 DEFLATE），改为按 ZIP 结构重建 —— 其余条目**原始压缩字节直接拷贝**（保留
+       method/crc/大小/时间戳/外部属性），只对 `document.xml` 用原生 `CompressionStream('deflate-raw')` 压缩
+       （6.4MB→145ms）+ 自实现 CRC32。**任何异常（无 CompressionStream / ZIP64 / 结构不认识）返回 null →
+       自动回退 JSZip**，行为与以前一致。注意 `buf` 可能是 ArrayBuffer 或 Buffer，且 vm 沙箱里
+       `instanceof ArrayBuffer` 跨 realm 恒 false → 用 `Object.prototype.toString` 判断。
+     · **③ 正文措辞定位字**：`TEXT_FIX_NEEDLES` 由 `['粉','害']`（候选 152 段）改为 `['限','价']`（候选 45 段），
+       68ms → 55ms；启动期自检仍会校验「每条 from 至少含一个定位字」。
+     · **⑨ 表3-3 定位**：原来 `eachParagraph` 全篇扫 4767 段，改为按「表3-3」`indexOf` 定位再向两侧扩到段落边界，
+       21ms → 8ms。
+     · **B4 `tablesOf` 引用级缓存**：同一步里连续查多张表（表3-1/表4-1/表8-1）只扫一次；
+       按「同一个 xml 字符串引用」缓存（字符串不可变，步骤间 xml 变了自然失效）。
+     · 剩余热点（2026-10-21）：读 document.xml 141ms、③55ms、⑤55ms、①33ms、⑧33ms、⑥27ms。
    - ⑪ **整条链路性能优化（2026-10-18）**——改动集中在「重复劳动」上，输出结果**逐字节不变**：
      1. **噪声表只解析一次**：②⑤⑥ 原来各自调一个 `noise*FromBuf(buf)`，每次都 `JSZip.loadAsync` 解压整份 docx + `DOMParser` 解析全文，**同一报告被完整解析 3 次**。现在 upload.js 提供 `noiseInfoFromXml(xml)` / `noiseInfoFromBuf(buf)`（带记忆）/ `getCachedNoiseInfo(buf)`，`patchPjbgDocx` 只算一次并复用给三步；且**优先复用 `patchPjbgDocx` 已解压出的 xml**，连解压都省掉。若用户先打开过「噪声数据结果」页签，`loadNoiseResult` 会顺手把结果写进缓存 → 导出时**零额外解析**。
      2. **扫表前先做单字预筛**：`readBasicInfoTable`（在册职工人数/接触职业病危害人数）、`findTableByHead`（新增可选第 3 参 `needChars`）、`collectConfirmColTexts`、`fixNoteParagraph`、`collectHazardMarks` 原先会遍历**全文每张表的每个单元格**，现在先用单字（`册`/`触`/`数`/`论`/`职`/`临`/`备`）跳过无关表。单字预筛是安全的——汉字即使被拆到多个 `<w:t>`，该字仍原样出现在原始 XML 里（与 `mapParasContaining` 的 needles 约定同源）。
