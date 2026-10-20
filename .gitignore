@@ -24,6 +24,8 @@ sampling-plan-app/_captcha.png
 
 # 原版 Excel 模板（含调查数据，默认不入库；如需入库请删除下面一行）
 0.系统测点布局调查*.xlsx
+# 现场调查导入模板（本地参考文件，不入库）
+项目现场调查导入模板*.xlsx
 
 # Cloudflare wrangler 构建产物（不入库）
 .wrangler/
@@ -34,6 +36,10 @@ sampling-plan-app/_routes.json
 
 # 工作区本地数据（记忆/日志等，不入库）
 .workbuddy-ai/
+.atomcode/
+
+# 本地打包备份（不入库）
+*.rar
 
 # 平台导出的数据报告（派生文件，不入库）
 输出/
