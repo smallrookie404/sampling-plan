@@ -278,7 +278,9 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
    - ⑪ **1.1 / 1.2 章节的列表项改成 Word 自动编号**（用户 2026-10-21，`autoNumberItemLists`）：
      原来「一个段落 + `<w:br/>` 软换行」里**文字写死**的「(1)(2)(3)…」→ 每条拆成独立段落 + `<w:numPr>`：
      · 段落格式逐项沿用原段落（`spacing line=490 exact` / `ind firstLine=420` / `jc both` / 字体 `Times New Roman+仿宋_GB2312` `sz28`）→ 视觉不变；
-     · 编号格式「(N)」、**`w:suff=nothing`**（编号后不加空格/制表符），每个原段落（=一个列表）一个独立 numId，各自从 1 开始；
+     · 编号格式「(N)」、**`w:suff=nothing`**（编号后不加空格/制表符），每个原段落（=一个列表）一个独立 numId；
+       ⚠ 多个 numId 共用一个 abstractNum 时 Word 默认**接着上一个 numId 往下编**，故每个 `w:num` 必须带
+       `<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride>` 才真正各自从 1 开始（1.2.1/1.2.2/1.2.3 均重新编号）；
      · 编号定义写入 **`word/numbering.xml`**（平台模板原本没有该部件）→ 同时补 `[Content_Types].xml` override 与
        `word/_rels/document.xml.rels` 的 numbering 关系；`repackDocxFast` 新增第 3 参 `extras` 支持新增/替换部件；
      · 范围：仅 1.1 / 1.2 章节（遇 1.3 结束），**表格内**段落不动；`<w:br/>` 写在 `<w:t>` 内的非标准写法保守跳过；

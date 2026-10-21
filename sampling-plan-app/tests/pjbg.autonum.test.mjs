@@ -158,6 +158,10 @@ console.log("[E] buildNumberingXml");
   check("编号后不加空格/制表符（suff=nothing）", nx.indexOf('<w:suff w:val="nothing"/>') >= 0);
   check("3 个 w:num 且都指向 abstractNum 90",
     (nx.match(/<w:num w:numId="\d+">/g) || []).length === 3 && (nx.match(/<w:abstractNumId w:val="90"\/>/g) || []).length === 3);
+  // ★ 多个 numId 共用 abstractNum 时，Word 默认接着上一个编号 → 必须 startOverride=1 才重新从 1 开始
+  check("每个 num 都带 lvlOverride/startOverride=1（各自重新编号）",
+    (nx.match(/<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"\/><\/w:lvlOverride>/g) || []).length === 3,
+    String((nx.match(/<w:startOverride/g) || []).length));
   check("abstractNum 在 num 之前", nx.indexOf('<w:abstractNum') < nx.indexOf('<w:num '));
   check("编号字体与正文一致（Times New Roman / 仿宋_GB2312 / sz28）",
     nx.indexOf('w:ascii="Times New Roman"') >= 0 && nx.indexOf('w:eastAsia="仿宋_GB2312"') >= 0);

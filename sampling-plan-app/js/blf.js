@@ -2738,7 +2738,11 @@
       + '<w:abstractNum w:abstractNumId="' + AUTONUM_ABSTRACT_ID + '">'
       + '<w:multiLevelType w:val="singleLevel"/>' + lvl + '</w:abstractNum>';
     (numIds || []).forEach(function (id) {
-      s += '<w:num w:numId="' + id + '"><w:abstractNumId w:val="' + AUTONUM_ABSTRACT_ID + '"/></w:num>';
+      // ★ 多个 numId 共用一个 abstractNum 时，Word 默认**接着上一个 numId 往下编号**，
+      //   必须给每个 num 加 lvlOverride/startOverride=1 才会各自从 1 重新开始
+      //   （1.2.1 / 1.2.2 / 1.2.3 都要求重新开始）。
+      s += '<w:num w:numId="' + id + '"><w:abstractNumId w:val="' + AUTONUM_ABSTRACT_ID + '"/>'
+        + '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>';
     });
     return s + '</w:numbering>';
   }
