@@ -180,6 +180,11 @@ console.log("[1] 只有毒物 + 表8-1 无噪声");
   check("⑨ 无「粉尘、毒物」→删混合性粉(烟)尘句", !has(r.xml, KW.mixedClause));
   check("⑩ 有毒物→保留有毒物品警示句", has(r.xml, KW.toxClause));
   check("⑪ 无腐蚀→删腐蚀类警示句", !has(r.xml, KW.corrodeClause));
+  // ★ 2026-10-21：腐蚀那句原文是「…化学品工作场所，设置“当心腐蚀”…」（主语与谓语被逗号分开），
+  //   只删主语会留下「设置“当心腐蚀”…等警示标识」这种没有主语的残句，故要求谓语也一并删掉。
+  check("⑪ 删腐蚀句时谓语一并删（不残留「设置“当心腐蚀”…」残句）",
+    !has(r.xml, "设置“当心腐蚀”") && !has(r.xml, "设置“当心灼伤”"),
+    "残留残句");
   check("⑫ 表4-1 无噪声→删噪声警示句", !has(r.xml, KW.noiseClause));
   check("⑬ 无高温→删高温警示句", !has(r.xml, KW.heatClause));
   check("⑭ 无紫外辐射→删紫外辐射警示句", !has(r.xml, KW.uvClause));

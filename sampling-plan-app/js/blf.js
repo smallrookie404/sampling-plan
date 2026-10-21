@@ -1784,6 +1784,10 @@
   //   · 按「；/;」切大句、再按「，/,」切分句；
   //   · 命中关键词的分句：从**最近的「。」之后**切到分句末尾（保留「…设置相应的警示标识和指令标识。」这类引导句）；
   //     找不到「。」→ 整个分句丢弃。
+  //   ★ 2026-10-21：若命中的分句是「…工作场所」这种**主语分句**、而紧随其后的分句以「设置」开头，
+  //     则那个谓语分句也一并丢弃。原因：⑪ 腐蚀那句原文是「…化学品工作场所**，**设置“当心腐蚀”…」，
+  //     中间有逗号 → 关键词只能截到「工作场所」，分句裁剪会把主语删掉、留下「设置“当心腐蚀”…等警示标识」
+  //     这样一句没有主语的残句。其他六条关键词都含「设置」，命中分句本身即完整，不会触发该分支。
   function trimClausesByKeywords(line, kws) {
     const src = String(line);
     const endedWithPeriod = /[。]\s*$/.test(src);
@@ -1796,10 +1800,12 @@
       if (!seg) { res += sep; continue; }
       const subs = seg.split(/([，,])/);
       let segOut = '';
+      let swallowNext = false;   // 上一条命中分句是「…工作场所」主语 → 下一条「设置…」谓语一并丢
       for (let j = 0; j < subs.length; j += 2) {
         const sub = subs[j];
         const subSep = subs[j + 1] || '';
         if (!sub) continue;
+        if (swallowNext) { swallowNext = false; continue; }
         const hit = kws.filter(function (k) { return sub.indexOf(k) >= 0; })[0];
         if (!hit) { segOut += sub + subSep; continue; }
         const at = sub.indexOf(hit);
@@ -1807,8 +1813,11 @@
         if (dot >= 0) {
           const head = sub.slice(0, dot + 1);
           if (head.trim()) segOut += head;     // 保留引导句，不保留分隔符（避免留下孤立逗号）
+        } else {
+          // 无「。」→ 整分句丢弃；若紧跟的下一分句以「设置」开头，说明它是这句话的谓语，一并丢弃
+          const nxt = subs[j + 2];
+          if (nxt !== undefined && /^\s*设置/.test(nxt)) swallowNext = true;
         }
-        // 无「。」→ 整分句丢弃
       }
       segOut = segOut.replace(/[，,]\s*$/, '');
       if (segOut.trim()) {
