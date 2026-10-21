@@ -492,11 +492,19 @@
     });
   }
 
-  // 在 document.xml 里找表头含「高毒物品」的表，把该列值为 0/1 的单元格换成 否/是。
+  // 在 document.xml 里找表头含「高毒物品」的表，把该列的值规整成 是 / 否：
+  //   · 平台模板有时把原始标记直接印出来（0=否、1=是）→ 按字典换成中文；
+  //   · 平台导出偶尔把「否」印成占位横线「-」（实测 BTC26-SZJC1095「生产车间(1F) / 打包岗位 / 打包」
+  //     一行：平台「检测报告编辑」里明明是「否」，导出的 docx 却是「-」）→ 该列是二值属性，
+  //     不存在「不适用」的情形，占位横线一律按「否」处理。
   // 表头可能被拆成多个 run / 带软换行（如「存在高\n毒物品」），故用**包含**匹配而非全等。
   // 返回 { xml, changed }。
+  const HIGHTOX_PLACEHOLDER_NO = ['-', '－', '—', '——', '–'];  // 半角/全角横线、破折号
   function fixHighToxColumn(xml) {
-    if (xml.indexOf(HIGHTOX_HEAD) < 0) return { xml: xml, changed: 0 };
+    // ★ 快速早退：整篇没有「高毒」/「毒物品」就不必逐表扫描。
+    //   ⚠ 不能用完整表头「存在高毒物品」做判据——表头常被拆成多个 run 或带软换行
+    //     （如「存在高」+<w:br/>+「毒物品」），完整串根本不存在，会导致**整列漏处理**。
+    if (xml.indexOf('高毒') < 0 && xml.indexOf('毒物品') < 0) return { xml: xml, changed: 0 };
     let changed = 0;
     const out = mapTables(xml, function (tbl) {
       // ★ 性能：先只取**第一行（表头）**判断是不是目标表——避免为 20 张无关表解析全部行。
@@ -505,7 +513,8 @@
       const headCells = firstRow[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
       let col = -1;
       for (let i = 0; i < headCells.length; i++) {
-        if (cellText(headCells[i]).indexOf(HIGHTOX_HEAD) >= 0) { col = i; break; }
+        // 去空白后比较：表头若带软换行，cellText 会返回「存在高\n毒物品」，直接 indexOf 匹配不到
+        if (cellText(headCells[i]).replace(/\s+/g, '').indexOf(HIGHTOX_HEAD) >= 0) { col = i; break; }
       }
       if (col < 0) return tbl;   // 不是这张表
       const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
@@ -515,8 +524,11 @@
         const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
         if (col >= cells.length) continue;
         const t = cellText(cells[col]);
-        if (t !== '0' && t !== '1') continue;
-        const newRow = rows[ri].replace(cells[col], setCellText(cells[col], t === '1' ? '是' : '否'));
+        let target = null;
+        if (t === '1') target = '是';
+        else if (t === '0' || HIGHTOX_PLACEHOLDER_NO.indexOf(t) >= 0) target = '否';
+        if (!target) continue;
+        const newRow = rows[ri].replace(cells[col], setCellText(cells[col], target));
         newTbl = newTbl.replace(rows[ri], newRow);
         changed++;
       }
@@ -2596,10 +2608,10 @@
       let changed = 0;
       // 危害因素库快照：⑥（条件删除）与⑩（表8-2 超标原因）共用，故提到函数作用域
       let hazardFactors = [];
-      // ① 「存在高毒物品」列 0/1 → 否/是
+      // ① 「存在高毒物品」列 0/1 → 否/是；占位横线「-」→ 否
       const r1 = fixHighToxColumn(xml);
       xml = r1.xml; changed += r1.changed;
-      if (r1.changed) console.info('[检评报告] 「存在高毒物品」列 0/1 → 否/是，共修正 ' + r1.changed + ' 处');
+      if (r1.changed) console.info('[检评报告] 「存在高毒物品」列 0/1/「-」→ 否/是，共修正 ' + r1.changed + ' 处');
       // ② 非噪声岗位（LEX 最大值 < 80 dB）删掉「噪声」危害；同时取「非噪声车间岗位」文本供⑤用
       //
       // ★ 性能（2026-10-18）：②⑤⑥ 都要读噪声表。原先是三个 *FromBuf 函数各自调用一次，
