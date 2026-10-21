@@ -1961,7 +1961,8 @@
   // opt = { noiseWorkshopEmpty: bool, hazardFactors: [] }
   // ★ 2026-10-21 口径（用户逐条指定，编号与需求一一对应）：
   //   ① 无「粉尘」（「粉尘、毒物」不算）      → 删《中华人民共和国尘肺病防治条例》
-  //   ② 无「毒物」（「粉尘、毒物」不算）      → 删《使用有毒物品作业场所劳动保护条例》
+  //   ② 无「毒物」（★ 2026-10-21 用户改为**宽口径**：「粉尘、毒物」**算**含毒物）
+  //                                          → 删《使用有毒物品作业场所劳动保护条例》
   //   ③ 无高毒物品（判读同旧版）             → 删《高毒物品目录》
   //   ④ 既无「毒物」也无「粉尘」             → 删《呼吸防护装备的选择、使用和维护》(GB 18664-2025)
   //   ⑤ 表4-1 危害因素列（**处理后**）无「噪声」 → 删《听力防护装备的选择、使用和维护》(GB 23466-2025)
@@ -2026,9 +2027,16 @@
           targets.push(PJBG_DEL_TARGETS.dustLaw);
           reasons.push('①无「粉尘」（粉尘、毒物不算）→删尘肺病条例');
         }
+        // ② 这条法规按**宽口径**：只要字段里出现「毒物」二字就保留
+        //    （含「粉尘、毒物」—— 2026-10-21 用户明确：混合性质也算涉及有毒物品）
+        if (!hasToxWide) {
+          targets.push(PJBG_DEL_TARGETS.toxLaw);
+          reasons.push('②无「毒物」（含「粉尘、毒物」也算有毒物）→删使用有毒物品条例');
+        }
+        // ⑥⑩ 仍按**严格口径**：「粉尘、毒物」不算有毒物
         if (!hasToxStrict) {
-          targets.push(PJBG_DEL_TARGETS.toxLaw, PJBG_DEL_TARGETS.mask2890);
-          pushTrim(PJBG_TRIM_KWS.tox, '②⑥⑩无「毒物」（粉尘、毒物不算）→删有毒物品条例/GB2890/有毒物品警示句');
+          targets.push(PJBG_DEL_TARGETS.mask2890);
+          pushTrim(PJBG_TRIM_KWS.tox, '⑥⑩无「毒物」（粉尘、毒物不算）→删 GB2890/有毒物品警示句');
         }
         if (!hasHighTox) {
           targets.push(PJBG_DEL_TARGETS.highToxList);

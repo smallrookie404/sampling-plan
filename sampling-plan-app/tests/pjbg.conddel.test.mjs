@@ -217,7 +217,9 @@ console.log("[3] 只有「粉尘、毒物」");
 {
   const r = run({ factors: [{ name: "锰及其无机化合物(按MnO2计)", highTox: "是" }], t41: ["锰及其无机化合物(按MnO2计)"] });
   check("① 「粉尘、毒物」不算粉尘→删尘肺病条例", !has(r.xml, KW.dustLaw));
-  check("② 「粉尘、毒物」不算毒物→删使用有毒物品条例", !has(r.xml, KW.toxLaw));
+  // ★ 2026-10-21 用户口径变更：② 这条法规改为**宽口径** ——「粉尘、毒物」也算含毒物 → 保留
+  //   （⑥ GB2890、⑩ 有毒物品警示句仍是严格口径，不受影响）
+  check("② 「粉尘、毒物」算毒物→保留使用有毒物品条例", has(r.xml, KW.toxLaw));
   check("③ 有高毒→保留高毒目录", has(r.xml, KW.highTox));
   check("④ 有粉尘/毒物→保留 GB18664", has(r.xml, KW.resp18664));
   check("⑥ 「粉尘、毒物」不算毒物→删 GB2890", !has(r.xml, KW.mask2890));
