@@ -171,6 +171,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 1. **数据同步**：记录与参考库按上表三端存储契约写入，但**三端各自独立、互不同步**（每类数据只写「主端」，读取按 `updatedAt` 取最新，不回写另一端）；记录侧读取优先级为 GitHub > 本地服务 > localStorage 镜像。**改同步逻辑前先看「三端存储契约」一节**——重点别引入「开页即写」或「双写」（会烧 Cloudflare KV 的 1000 写/天额度）。
 2. **统一登录**（upload.js）：平台登录（账号/密码 RSA 加密/验证码）成功后调 `auth/info` 获取权威用户信息并解析机构（顶层 `organizationId` 优先，其次 `organization.organizationId`），机构仅用于接口数据范围、**不在界面显示**。会话存 sessionStorage；登录遮罩默认显示、有会话时内联脚本立即隐藏，避免主界面闪现。
+   - **访客模式**（登录卡片底部「跳过登录，以访客身份进入」）：不写登录会话、不伪造 token，只置 sessionStorage `xcdc_guest_v1='1'`（刷新后仍为访客，关闭浏览器失效），本地功能（测点布局调查 / 调查表 / 危害因素库 / 导出与保存记录）全部可用。平台功能入口本来就以 `if (!token) showLogin()` 守卫，访客点开时弹登录框并显示 `#guestNotice` 说明条（独立元素，避免被验证码/登录提示覆盖）；右上角用户菜单显示「访客」，菜单项变成「登录」（点它清标记回登录界面）。登录成功 `saveSession()` 与 `logout()` 都会清掉访客标记。
 3. **团队配置云端保存**：成员/调查人/复核人/日期确认后，本地 localStorage 兜底 + Cloudflare KV（`/api/team`，按账号 `team:<userCode>`）同步，换电脑登录同一账号可读取；确认后切换项目不清空，手动修改才更新。
 4. **平台代理**：`functions/api/platform/[[path]].js` 用 `cloudflare:sockets` 原始 TCP 连接平台 `http://223.93.144.122:27800`，透传请求头/响应头/Cookie 并解压 gzip，绕过 Cloudflare 直连 IP 限制；`upload.js` 在 pages.dev 上自动走 `/api/platform`，本地 http/file 直连平台。代理只透传固定头白名单（authorization / organizationId / belongProject / content-type / user-agent / accept / cookie），新增自定义头必须同步白名单。
 5. **导出上传联动**：「数据上传」按钮生成当前表格的导出 Excel（`window.SamplingApp.exportWorkbookBytes()`）作为上传文件，无需手动选文件；导出范围到「检测项目」列最后一个非空单元格。

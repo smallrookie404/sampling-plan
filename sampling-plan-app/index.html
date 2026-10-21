@@ -100,6 +100,22 @@
     .xcdc .remember-row { margin: 12px 0 4px; font-size: 13px; color: #4b5563; }
     .xcdc .remember-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin: 0; }
     .xcdc .msg { color: var(--error-line); font-size: 13px; min-height: 20px; margin-top: 8px; }
+    /* 访客态说明条（独立于 loginMsg，避免被验证码/登录提示覆盖） */
+    .xcdc .guest-notice {
+      margin-top: 10px; padding: 8px 10px; border-radius: 6px;
+      background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+      font-size: 12.5px; line-height: 1.5;
+    }
+    .xcdc .guest-notice[hidden] { display: none; }
+    /* 访客入口：与「改用验证码登录」同为次要动作，单独一行、视觉弱化 */
+    .xcdc .guest-row { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line); text-align: center; }
+    .xcdc .guest-row #btnGuest {
+      background: none; border: 0; padding: 0; font: inherit;
+      color: var(--primary); font-size: 13px; cursor: pointer;
+    }
+    .xcdc .guest-row #btnGuest:hover { text-decoration: underline; }
+    .xcdc .guest-row #btnGuest:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
+    .xcdc .guest-tip { margin-top: 6px; font-size: 12px; color: #94a3b8; }
     .xcdc .info { font-size: 14px; min-height: 24px; margin: 10px 0 16px; color: #374151; }
     .xcdc .info.ok { color: #067647; }
     .xcdc .info.error { color: var(--error-line); }
@@ -542,18 +558,26 @@
         </div>
         <button class="btn" id="btnLogin" style="width:100%; margin-top:6px;">登 录</button>
         <div class="msg" id="loginMsg"></div>
+        <!-- 访客态被平台功能唤起时的说明：独立元素，避免与 loginMsg（验证码/登录提示）互相覆盖 -->
+        <div class="guest-notice" id="guestNotice" hidden>访客仅支持本地编辑与导出；数据上传 / 数据报告处理 / 噪声数据结果需要登录后使用。</div>
         <div class="link" id="btnCaptchaFallback" hidden
              style="text-align:center; margin-top:8px; font-size:12px; opacity:.75;">云端验证码不可用？改用验证码登录</div>
+        <!-- 访客入口：不登录直接使用本地功能（测点布局调查 / 调查表 / 危害因素库 / 导出），
+             平台相关功能（数据上传 / 数据报告处理 / 噪声数据结果）在点击时会要求登录。 -->
+        <div class="guest-row">
+          <button type="button" class="link" id="btnGuest">跳过登录，以访客身份进入</button>
+          <div class="guest-tip">访客仅可使用本地编辑与导出，平台功能需登录</div>
+        </div>
       </div>
     </div>
   </div>
   <script>
     // 未登录时登录遮罩默认显示（从页面解析起即遮挡主界面，避免闪烁）；
-    // 已有会话则立即隐藏遮罩
+    // 已有会话（或已选择访客身份）则立即隐藏遮罩
     (function () {
       try {
         var el = document.getElementById('xcdc-login');
-        if (sessionStorage.getItem('xcdc_session_v1')) el.classList.add('hidden');
+        if (sessionStorage.getItem('xcdc_session_v1') || sessionStorage.getItem('xcdc_guest_v1')) el.classList.add('hidden');
       } catch (e) {}
     })();
   </script>

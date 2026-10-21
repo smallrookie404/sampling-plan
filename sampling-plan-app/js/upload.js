@@ -24,6 +24,10 @@
   })();
   const RSA_PUB_B64 = 'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANL378k3RiZHWx5AfJqdH9xRNBmD9wGD2iRe41HdTNF8RUhNnHit5NpMNtGL0NPTSSpPjjI1kJfVorRvaQerUgkCAwEAAQ==';
   const SESSION_KEY = 'xcdc_session_v1';       // 登录会话（sessionStorage，关闭浏览器失效）
+  // 访客身份标记（sessionStorage，与登录会话互斥）：
+  // 登录界面点「跳过登录」后置位，仅用于「刷新后仍是访客」——不伪造 token，
+  // 因此平台相关功能（数据上传 / 报告处理 / 噪声结果）在访客态点开时仍会要求登录。
+  const GUEST_KEY = 'xcdc_guest_v1';
   const REM_KEY = 'xcdc_upload_remember';
   const USR_KEY = 'xcdc_upload_username';
   const PWD_KEY = 'xcdc_upload_password';
@@ -655,6 +659,10 @@
     let token = session ? session.token : null;
     let orgId = session ? session.orgId : null;
     let userInfo = session ? session.userInfo : null;
+    // 访客态：没有登录会话、但用户上次点了「跳过登录」→ 刷新后仍以访客身份进入
+    let guest = !session && (function () {
+      try { return sessionStorage.getItem(GUEST_KEY) === '1'; } catch (e) { return false; }
+    })();
     let selectedProject = null;
     let selectedFile = null;
     let userList = [];
@@ -746,7 +754,10 @@
     function saveSession() {
       try {
         sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token: token, orgId: orgId, userInfo: userInfo }));
+        // 登录成功即退出访客态（两者互斥）
+        sessionStorage.removeItem(GUEST_KEY);
       } catch (e) {}
+      guest = false;
     }
 
     function clearSession() {
@@ -756,9 +767,36 @@
     // 进入软件（关闭登录遮罩）
     function enterApp() {
       if (loginOverlay) loginOverlay.classList.add('hidden');
+      const notice = $('guestNotice');
+      if (notice) notice.hidden = true;   // 已登录：访客说明条不再显示
       authExpiredHandled = false; // 重新登录成功，允许再次提示
       // 换账号登录后按新账号的团队配置回填「企业基本信息上传」勾选状态（配置里没有 → 不勾选）
       try { if (chkEntBasic) chkEntBasic.checked = !!(teamSaved && teamSaved.entBasicUpload === true); } catch (e) {}
+    }
+
+    // ---------- 访客模式（跳过登录） ----------
+    // 只用于本地功能：测点布局调查 / 调查表 / 危害因素库 / 导出与保存记录。
+    // 不写登录会话、不伪造 token，所以平台功能（数据上传 / 报告处理 / 噪声结果）
+    // 被点击时仍走各自的 `if (!token) showLogin()` 分支，由 showLogin 给出「需登录」提示。
+    function enterGuest() {
+      guest = true;
+      try { sessionStorage.setItem(GUEST_KEY, '1'); } catch (e) {}
+      if (loginOverlay) loginOverlay.classList.add('hidden');
+      if (uploadOverlay) uploadOverlay.classList.add('hidden');
+      try { if (loginMsg) loginMsg.textContent = ''; } catch (e) {}
+      const notice = $('guestNotice');
+      if (notice) notice.hidden = true;
+      syncUserMenu();
+      syncGhButton();
+    }
+
+    // 访客 → 登录：清掉访客标记并弹出登录界面（不调用 logout，避免清掉本地编辑内容）
+    function exitGuest() {
+      guest = false;
+      try { sessionStorage.removeItem(GUEST_KEY); } catch (e) {}
+      syncUserMenu();
+      showLogin();
+      try { $('username').focus(); } catch (e) {}
     }
 
     // ---------- 右上角用户菜单：按钮显示登录者姓名，点击展开菜单可选退出登录 ----------
@@ -766,11 +804,19 @@
       const wrap = $('user-menu-wrap');
       const btn = $('btn-logout');
       const nameEl = $('user-menu-name');
+      const confirmBtn = $('btn-logout-confirm');
       if (!wrap || !btn) return;
       if (userInfo && (userInfo.userName || userInfo.userCode)) {
         wrap.style.display = '';
         btn.textContent = userInfo.userName || userInfo.userCode;
         if (nameEl) nameEl.textContent = userInfo.userName + '（' + userInfo.userCode + '）';
+        if (confirmBtn) confirmBtn.textContent = '退出登录';
+      } else if (guest) {
+        // 访客：菜单里给一个「登录」入口，否则进入访客后没有回到登录界面的路径
+        wrap.style.display = '';
+        btn.textContent = '访客';
+        if (nameEl) nameEl.textContent = '访客（未登录，仅本地功能）';
+        if (confirmBtn) confirmBtn.textContent = '登录';
       } else {
         wrap.style.display = 'none';
         closeUserMenu();
@@ -793,6 +839,8 @@
       if (confirmBtn) {
         confirmBtn.addEventListener('click', function () {
           closeUserMenu();
+          // 访客态下这一项是「登录」入口（没有会话可退出，也不应清掉本地编辑内容）
+          if (guest) { exitGuest(); return; }
           logout();
         });
       }
@@ -809,6 +857,10 @@
       if (uploadOverlay) uploadOverlay.classList.add('hidden');
       // 密码框复位为密文（上次可能点过「眼睛」切成明文）
       try { resetPwdEye(); } catch (e) {}
+      // 访客态下被平台功能唤起：用独立提示条说明原因（不占用 loginMsg，
+      // 否则会被验证码/登录流程的提示覆盖）
+      const notice = $('guestNotice');
+      if (notice) notice.hidden = !guest;
       // 默认云端代登录，界面不显示验证码 → 不需要预先取图；兜底模式才取
       if (captchaMode) refreshCaptcha();
     }
@@ -847,6 +899,9 @@
       token = null;
       orgId = null;
       userInfo = null;
+      // 退出登录后回到登录界面，不自动落进访客态（访客标记一并清掉）
+      guest = false;
+      try { sessionStorage.removeItem(GUEST_KEY); } catch (e) {}
       syncGhButton();
       syncUserMenu();
       teamSaved = null;
@@ -1168,6 +1223,17 @@
         btn.textContent = '登 录';
       }
     });
+
+    // 「跳过登录，以访客身份进入」：不登录直接使用本地功能（测点布局调查 / 调查表 /
+    // 危害因素库 / 导出与保存记录）。平台功能在点击时会弹登录框并说明原因。
+    (function initGuestEntry() {
+      const b = $('btnGuest');
+      if (!b) return;
+      b.addEventListener('click', function () {
+        try { if (loginMsg) loginMsg.textContent = ''; } catch (e) {}
+        enterGuest();
+      });
+    })();
 
     // 自动生成当前表格的导出 Excel 作为上传文件
     async function generateExportFile() {
@@ -4135,6 +4201,10 @@
       show: showUpload,
       hide: hideUpload,
       logout: logout,
+      // 访客模式（跳过登录）：enterGuest() 进入、exitGuest() 回到登录界面、isGuest() 查询当前态
+      enterGuest: enterGuest,
+      exitGuest: exitGuest,
+      isGuest: function () { return !!guest; },
       // 登录失效（401）时统一提示并引导重新登录（供其它模块复用）
       notifyAuthExpired: notifyAuthExpired,
       // 加载「噪声数据结果」页签（供其它模块触发）
@@ -4257,6 +4327,9 @@
         // 会话恢复期间若因登录失效被登出（token 已被清空），保持登录遮罩，不要再进入软件
         if (token) { enterApp(); warmAccountPool(); }
         else showLogin();
+      } else if (guest) {
+        // 上次以访客身份进入、且没有登录会话 → 直接回到访客态（不请求任何平台接口）
+        enterGuest();
       } else {
         showLogin();
       }
