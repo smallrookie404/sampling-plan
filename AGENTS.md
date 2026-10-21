@@ -275,7 +275,17 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · 写单元格用 `setCellLines`：沿用该格首段的 `pPr` 与首个 run 的 `rPr`，多行用 `<w:br/>` 分行。
      · 实测：0959（7 行，6 行噪声）填 6 行；1009 填 1 行噪声；整链路 XML 良构。
      · 专项测试：`tests/pjbg.overlimit.test.mjs`（20 项）。
-   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）。
+   - ⑪ **1.1 / 1.2 章节的列表项改成 Word 自动编号**（用户 2026-10-21，`autoNumberItemLists`）：
+     原来「一个段落 + `<w:br/>` 软换行」里**文字写死**的「(1)(2)(3)…」→ 每条拆成独立段落 + `<w:numPr>`：
+     · 段落格式逐项沿用原段落（`spacing line=490 exact` / `ind firstLine=420` / `jc both` / 字体 `Times New Roman+仿宋_GB2312` `sz28`）→ 视觉不变；
+     · 编号格式「(N)」、**`w:suff=nothing`**（编号后不加空格/制表符），每个原段落（=一个列表）一个独立 numId，各自从 1 开始；
+     · 编号定义写入 **`word/numbering.xml`**（平台模板原本没有该部件）→ 同时补 `[Content_Types].xml` override 与
+       `word/_rels/document.xml.rels` 的 numbering 关系；`repackDocxFast` 新增第 3 参 `extras` 支持新增/替换部件；
+     · 范围：仅 1.1 / 1.2 章节（遇 1.3 结束），**表格内**段落不动；`<w:br/>` 写在 `<w:t>` 内的非标准写法保守跳过；
+     · 在 ⑥ 之后执行（⑥ 先按文本删条目并重排文字序号，这里再把剩余条目换成自动编号）；模板已有 numbering.xml 时整步跳过（不冒险合并）。
+     · 实测 0959：4 个列表 / 38 项（numId 90~93）；1121：4 个列表 / 44 项；包内 32 条目、其余 28 条目逐字节不变、XML 良构、无页面错误。
+     · 专项测试：`tests/pjbg.autonum.test.mjs`（34 项，含 0959 真实样例 + patchPjbgDocx 端到端三部件校验）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）、`pjbg.autonum.test`（34）。
    - ⑫ **导出耗时优化（2026-10-21，实测 0959：patchPjbgDocx 1286ms → 约 700ms）**：
      · **快速重打包 `repackDocxFast`（最大头，584ms → 约 255ms）**：不再用 `zip.generateAsync`（它会把 31 个条目
        连 1.7MB 图片一起重新 DEFLATE），改为按 ZIP 结构重建 —— 其余条目**原始压缩字节直接拷贝**（保留
@@ -342,7 +352,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
 - 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）+ `node tests/hazard.search.smoke.mjs`（11 项）。
-- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
+- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+ `node tests/pjbg.autonum.test.mjs`（34 项，1.1/1.2 自动编号）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。

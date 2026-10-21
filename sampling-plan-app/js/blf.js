@@ -2596,8 +2596,183 @@
     return out.buffer;
   }
 
+  // ---------------- 报告后处理⑪：1.1 / 1.2 章节的列表项改成 Word 自动编号 ----------------
+  // 用户要求（2026-10-21）：报告 1.1（法律、法规、规章）与 1.2（技术规范与标准）里的列表项
+  //   「(1)(2)(3)…」现在是**文字写死**的，删/增条目后不会自动调整。改成 Word 原生自动编号：
+  //   · 原来「一个段落 + <w:br/> 软换行装 N 条」→ 每条拆成**独立段落**；
+  //   · 段落格式（字体/字号/行距/首行缩进/对齐）逐项沿用原段落 → 视觉不变；
+  //   · 编号格式「(N)」、编号后**不加空格/制表符**（suff=nothing），编号从 1 开始；
+  //   · 每个原段落（= 一个列表）分配独立 numId（各自从 1 开始），编号定义写入 word/numbering.xml
+  //     （平台模板原本没有该部件 → 需同时补 [Content_Types].xml override 与 document.xml.rels 关系）。
+  // ⚠ 放在 ⑥ 之后执行：⑥ 先按条目文本删条目并重排文字序号，这里再把剩余条目的文字序号换成自动编号。
+  const AUTONUM_ABSTRACT_ID = 90;
+  const AUTONUM_FIRST_NUM_ID = 90;
+  // pPr 子元素的 schema 顺序（numPr 必须插在 widowControl 之后、suppressLineNumbers 之前）
+  const PPR_ORDER = ['pStyle', 'keepNext', 'keepLines', 'pageBreakBefore', 'framePr', 'widowControl',
+    'numPr', 'suppressLineNumbers', 'pBdr', 'shd', 'tabs', 'suppressAutoHyphens', 'kinsoku', 'wordWrap',
+    'overflowPunct', 'topLinePunct', 'autoSpaceDE', 'autoSpaceDN', 'bidi', 'adjustRightInd', 'snapToGrid',
+    'spacing', 'ind', 'contextualSpacing', 'mirrorIndents', 'suppressOverlap', 'jc', 'textDirection',
+    'textAlignment', 'textboxTightWrap', 'outlineLvl', 'divId', 'cnfStyle', 'rPr', 'sectPr', 'pPrChange'];
+
+  // 把 <w:numPr> 按 schema 顺序插进 pPr（先删掉原有 numPr，如模板里的 numId=0 空编号）
+  function insertPPrNumPr(pPr, numPrXml) {
+    let s = String(pPr || '').replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, '');
+    if (s.indexOf('<w:pPr') < 0) s = '<w:pPr>' + s + '</w:pPr>';
+    const idxNum = PPR_ORDER.indexOf('numPr');
+    const re = /<w:([A-Za-z]+)(?=[\s/>])[^>]*?>/g;
+    let m;
+    let pos = -1;
+    while ((m = re.exec(s))) {
+      if (m.index === 0) continue;                       // 跳过 <w:pPr ...> 本身
+      const oi = PPR_ORDER.indexOf(m[1]);
+      if (oi > idxNum) { pos = m.index; break; }
+    }
+    if (pos < 0) return s.replace(/<\/w:pPr>\s*$/, numPrXml + '</w:pPr>');
+    return s.slice(0, pos) + numPrXml + s.slice(pos);
+  }
+
+  // 把一个「多行列表段落」拆成 N 个自动编号段落；无法安全拆分时返回 null
+  // 返回 { xml, items }
+  function buildNumberedParas(pXml, numId) {
+    const pPrM = /<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/.exec(pXml);
+    if (!pPrM) return null;
+    const bodyEnd = pXml.lastIndexOf('</w:p>');
+    if (bodyEnd < 0) return null;
+    const body = pXml.slice(pPrM.index + pPrM[0].length, bodyEnd);
+    // ⚠ 保守：<w:br/> 若写在 <w:t> 内部（非标准写法），这里不处理
+    if (/<w:t(?:\s[^>]*)?>[^<]*<w:br/.test(body)) return null;
+    const firstRun = /<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/.exec(body);
+    if (!firstRun) return null;
+    const rPrM = /<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/.exec(firstRun[0]);
+    const rPr = rPrM ? rPrM[0] : '';
+    // 按 <w:br/> 切行（<w:t> 内容原样保留，<w:tab/> 等非文本节点自然丢弃）
+    const lines = [];
+    let cur = [];
+    const TOK = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:br(?:\s[^>]*)?\/?>/g;
+    let m;
+    while ((m = TOK.exec(body))) {
+      if (m[1] !== undefined) cur.push(m[1]);
+      else { lines.push(cur.join('')); cur = []; }
+    }
+    lines.push(cur.join(''));
+    // 只保留「(N)」开头的行，并去掉行首的编号
+    const items = [];
+    for (let raw of lines) {
+      const s = String(raw).replace(/^[\s\u3000]+/, '');
+      const mm = /^[（(]\s*(\d+)\s*[)）]/.exec(s);
+      if (!mm) continue;
+      const text = s.slice(mm[0].length).replace(/^[\s\u3000]+/, '');
+      if (text) items.push(text);
+    }
+    if (!items.length) return null;
+    const numPr = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="' + numId + '"/></w:numPr>';
+    const newPPr = insertPPrNumPr(pPrM[0], numPr);
+    let out = '';
+    for (const it of items) {
+      out += '<w:p>' + newPPr + '<w:r>' + rPr + '<w:t xml:space="preserve">' + it + '</w:t></w:r></w:p>';
+    }
+    return { xml: out, items: items.length };
+  }
+
+  // 把 document.xml 里 1.1 / 1.2 章节的列表项改成自动编号
+  // 返回 { xml, changed(改了几个列表), items(总条目数), numIds: [用到的 numId] }
+  function autoNumberItemLists(xml) {
+    const out = { xml: xml, changed: 0, items: 0, numIds: [] };
+    if (xml.indexOf('1.1') < 0 && xml.indexOf('1.2') < 0) return out;
+    // 表格区间（表内段落不参与）
+    const tblSpans = [];
+    {
+      const re = new RegExp(TBL_SRC, 'g');
+      let tm;
+      while ((tm = re.exec(xml))) tblSpans.push([tm.index, tm.index + tm[0].length]);
+    }
+    const inTable = function (pos) {
+      for (const s of tblSpans) if (pos >= s[0] && pos < s[1]) return true;
+      return false;
+    };
+    // 扫顶层段落：进入 1.1 / 1.2 后开始收集「(N)」开头的列表段落，遇到 1.3 结束
+    const targets = [];
+    let inScope = false;
+    const re = new RegExp(PARA_SRC, 'g');
+    let m;
+    while ((m = re.exec(xml))) {
+      const p = m[0];
+      if (p.indexOf('<w:t') < 0) continue;
+      if (inTable(m.index)) continue;
+      const text = cellText(p);
+      if (!text) continue;
+      const first = String(text).split('\n')[0].trim();
+      if (/^1\.1(?![.\d])/.test(first) || /^1\.2(?![.\d])/.test(first)) { inScope = true; continue; }
+      if (/^1\.3(?![.\d])/.test(first)) { inScope = false; continue; }
+      if (!inScope) continue;
+      if (/^[（(]\s*\d+\s*[)）]/.test(first)) targets.push({ xml: p, index: m.index });
+    }
+    if (!targets.length) return out;
+    let cur = xml;
+    const numIds = [];
+    let changed = 0;
+    let items = 0;
+    // 从后往前替换（前面的偏移不失效）；numId 仍按出现顺序分配
+    const jobs = targets.map(function (t, i) { return { xml: t.xml, index: t.index, numId: AUTONUM_FIRST_NUM_ID + i }; });
+    for (let i = jobs.length - 1; i >= 0; i--) {
+      const built = buildNumberedParas(jobs[i].xml, jobs[i].numId);
+      if (!built) continue;
+      cur = cur.slice(0, jobs[i].index) + built.xml + cur.slice(jobs[i].index + jobs[i].xml.length);
+      numIds.unshift(jobs[i].numId);
+      changed++;
+      items += built.items;
+    }
+    if (!changed) return out;
+    return { xml: cur, changed: changed, items: items, numIds: numIds };
+  }
+
+  // 生成 word/numbering.xml（只含本步用到的 numId）
+  function buildNumberingXml(numIds) {
+    const lvl = '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+      + '<w:suff w:val="nothing"/><w:lvlText w:val="(%1)"/><w:lvlJc w:val="left"/>'
+      + '<w:pPr><w:ind w:left="0" w:firstLine="420" w:firstLineChars="150"/></w:pPr>'
+      + '<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"'
+      + ' w:eastAsia="仿宋_GB2312"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:lvl>';
+    let s = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+      + '<w:abstractNum w:abstractNumId="' + AUTONUM_ABSTRACT_ID + '">'
+      + '<w:multiLevelType w:val="singleLevel"/>' + lvl + '</w:abstractNum>';
+    (numIds || []).forEach(function (id) {
+      s += '<w:num w:numId="' + id + '"><w:abstractNumId w:val="' + AUTONUM_ABSTRACT_ID + '"/></w:num>';
+    });
+    return s + '</w:numbering>';
+  }
+
+  // 准备三个部件（numbering.xml / [Content_Types].xml / document.xml.rels）的文本；
+  // 模板已有 numbering.xml 时返回 null（不冒险合并，调用方回退：不做自动编号）
+  async function buildNumberingParts(zip, numIds) {
+    if (zip.file('word/numbering.xml')) return null;
+    const ctFile = zip.file('[Content_Types].xml');
+    const relsFile = zip.file('word/_rels/document.xml.rels');
+    if (!ctFile || !relsFile) return null;
+    let ct = await ctFile.async('string');
+    let rels = await relsFile.async('string');
+    const CT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml';
+    if (ct.indexOf('/word/numbering.xml') < 0) {
+      ct = ct.replace('</Types>', '<Override PartName="/word/numbering.xml" ContentType="' + CT_TYPE + '"/></Types>');
+    }
+    if (rels.indexOf('relationships/numbering') < 0) {
+      let id = 'rIdNum1';
+      let n = 1;
+      while (rels.indexOf('Id="' + id + '"') >= 0) { n++; id = 'rIdNum' + n; }
+      rels = rels.replace('</Relationships>', '<Relationship Id="' + id + '"'
+        + ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"'
+        + ' Target="numbering.xml"/></Relationships>');
+    }
+    return [
+      { name: 'word/numbering.xml', text: buildNumberingXml(numIds) },
+      { name: '[Content_Types].xml', text: ct },
+      { name: 'word/_rels/document.xml.rels', text: rels },
+    ];
+  }
+
   // 用新 document.xml 重打包；不可用时返回 null
-  async function repackDocxFast(buf, newXml) {
+  async function repackDocxFast(buf, newXml, extras) {
     try {
       // buf 可能是 ArrayBuffer（浏览器 fetch）或 Uint8Array/Buffer（Node 测试）→ 统一成 ArrayBuffer
       //   ⚠ 不能用 `instanceof ArrayBuffer`：测试在 vm 沙箱里跑，跨 realm 的 instanceof 恒为 false
@@ -2611,6 +2786,7 @@
       const xmlBytes = new TextEncoder().encode(newXml);
       const comp = await pjbgDeflateRaw(xmlBytes);
       if (!comp) return null;
+      const docEntry = entries.find(function (e) { return e.name === 'word/document.xml'; });
       const items = entries.map(function (e) {
         if (e.name === 'word/document.xml') {
           return { name: e.name, flags: e.flags, method: 8, time: e.time, date: e.date,
@@ -2620,6 +2796,18 @@
           crc: e.crc, csize: e.csize, usize: e.usize, extAttr: e.extAttr,
           data: new Uint8Array(ab, e.dataOff, e.csize) };
       });
+      // 附加/替换部件（如 ⑪ 自动编号需要的 word/numbering.xml、[Content_Types].xml、document.xml.rels）
+      for (const ex of (extras || [])) {
+        if (!ex || !ex.name) continue;
+        const bytes = new TextEncoder().encode(ex.text);
+        const c = await pjbgDeflateRaw(bytes);
+        if (!c) return null;
+        const item = { name: ex.name, flags: 0x0800, method: 8,
+          time: docEntry ? docEntry.time : 0, date: docEntry ? docEntry.date : 0,
+          crc: pjbgCrc32(bytes), csize: c.length, usize: bytes.length, extAttr: 0, data: c };
+        const idx = items.findIndex(function (it) { return it.name === ex.name; });
+        if (idx >= 0) items[idx] = item; else items.push(item);
+      }
       return pjbgBuildZip(items);
     } catch (e) {
       return null;
@@ -2755,13 +2943,26 @@
       const r10 = fillOverLimitCause(xml, hazardFactors);
       xml = r10.xml; changed += r10.changed;
       if (r10.changed) console.info('[检评报告] 表8-2 超标原因分析已填写 ' + r10.filled + ' 行');
+      // ⑪ 1.1 / 1.2 章节的「(1)(2)(3)…」列表项改成 Word 自动编号（删/增条目后自动重排）
+      let numParts = null;
+      const r11 = autoNumberItemLists(xml);
+      if (r11.changed) {
+        numParts = await buildNumberingParts(zip, r11.numIds);
+        if (numParts) {
+          xml = r11.xml; changed += r11.changed;
+          console.info('[检评报告] 1.1/1.2 列表项改为自动编号，共 ' + r11.changed + ' 个列表 / ' + r11.items + ' 项');
+        } else {
+          console.warn('[检评报告] 自动编号部件不可用（模板已有 numbering.xml 或缺 rels），跳过本步');
+        }
+      }
       if (!changed) return buf;
       // 快速重打包（2026-10-21）：只重压 document.xml，其余条目原始压缩字节直接拷贝。
       //   实测 0959：JSZip generateAsync 584ms → 本路径约 150~200ms。
       //   不支持（老内核无 CompressionStream / ZIP64 / 结构异常）时回退 JSZip，行为与以前一致。
-      const fast = await repackDocxFast(buf, xml);
+      const fast = await repackDocxFast(buf, xml, numParts);
       if (fast) return fast;
       zip.file('word/document.xml', xml);
+      if (numParts) numParts.forEach(function (e) { zip.file(e.name, e.text); });
       return await zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
     } catch (e) {
       console.warn('[检评报告] 后处理失败，改用原始文件：', e);
@@ -3186,6 +3387,10 @@
     fixNonNoiseHazards: fixNonNoiseHazards,
     fixQuietPointHazards: fixQuietPointHazards,
     fixNitrogenOxide: fixNitrogenOxide,
+    autoNumberItemLists: autoNumberItemLists,
+    buildNumberedParas: buildNumberedParas,
+    buildNumberingXml: buildNumberingXml,
+    insertPPrNumPr: insertPPrNumPr,
     mergePpeRows: mergePpeRows,
     mergePpeJobText: mergePpeJobText,
     // ⑨ 表3-3 下方插入「注1~注4」（整段标红）；供测试/复用
