@@ -192,7 +192,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      双击抓到的 td 变游离节点 → **搜索后双击进不了编辑态**（2026-10-21 修复）。
    - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）、`tests/hazard.search.smoke.mjs`（11 项，搜索后编辑）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
-10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）⑨ **表3-3 下方插入「注1~注4」（整段标红）**（`addMaterialNote`）⑩ **表8-2 超标原因分析按检测项目自动填写**（`fillOverLimitCause`）⑪ **1.1/1.2 列表项改 Word 自动编号**（`autoNumberItemLists`）⑫ **表8-1 评价结论/补救措施自动判定**（`fillEvalConclusions`）。
+10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）⑨ **表3-3 下方插入「注1~注4」（整段标红）**（`addMaterialNote`）⑩ **表8-2 超标原因分析按检测项目自动填写**（`fillOverLimitCause`）⑪ **1.1/1.2 列表项改 Word 自动编号**（`autoNumberItemLists`）⑫ **表8-1 评价结论/补救措施自动判定**（`fillEvalConclusions`）⑬ **表格纵向压缩（重排列宽，总宽不变）**（`optimizeTableLayout`）。
    - ⑤ **接触职业病危害人数口径（2026-10-19 变更，`sumExposedFromT41`）**：取**表4-1**「人数」列下「总数」子列的数字合计——
      · **按「车间+岗位」去重后只计一次**（同一岗位的多点位行会把同一个人数重复写在每行：包装工 20/20/20、压机工 30×4；逐格相加会成倍放大）；
      · 某岗位**所有行**的「职业病危害因素」列**全部为空或 `-`/`—`/`无`/`/`** → 该人数不纳入统计；
@@ -303,7 +303,24 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · 实测：0959 → 42 行判定（36 符合 / 5 基本符合 / 1 不符合）；1121 → 81 行（80 符合 / 1 基本符合）。
        0959「去毛刺2」LEX 93.8 > 85+8.5=93.5 → 不符合，其余噪声不符合行 → 基本符合。
      · 专项测试：`tests/pjbg.eval.test.mjs`（29 项：含高温「降温」类型过滤/诱饵用例、幂等、0959 真实样例）。
-   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）、`pjbg.autonum.test`（35）、`pjbg.eval.test`（29）。
+   - ⑬ **表格纵向压缩：总宽不变、重排列宽**（用户 2026-10-21，`optimizeTableLayout`）：
+     · 前提（用户明确）：**行高固定最小值 0.8cm**（`w:trHeight w:val="454"`）、**行距固定 16 磅**
+       （`w:line="320" w:lineRule="exact"`）→ 这两项**一律不动**；缩短总长度只能靠**重新分配列宽**。
+     · 做法：① 表内单元格段落 `<w:snapToGrid/>` → `w:val="0"`（否则 16 磅固定行距会被 linePitch=312 的
+       文档网格撑成整倍数）；② **列宽只做「保守重分配」**：按各列「最长单元格文本」算单行理想宽度，
+       只把「有富余的列」（原宽 > 单行理想宽度）的宽度挪给「缺宽的列」，且**任何列都不低于 min(原宽, 单行理想宽度)**
+       → 保证「原本单行的单元格不会变成 2 行」；每次挪动按「折行阈值」（某列把某格从 k 行降到 k-1 行所需的宽度）
+       贪心挑选，只有 (总高度, 总折行数) 下降才接受。
+     · ⚠ `tblGrid` 只是**相对比例**：`tblW` 为 pct 时要按「正文宽度 × pct」换算出真实宽度再估行数，
+       否则会低估换行（表4-1 的 grid 和 14791 ≈ 1.58 倍页宽）。
+     · ⚠ 安全阀：估算没变矮（且折行数没减少）就**不动这张表**。
+     · 实测 0959：12 张表重排、估算缩短 ~25cm，**「原本单行 → 现在 2 行」的单元格 0 个**（4378 个里），
+       每张表 grid 总宽逐表不变、trHeight 594/594、`line=320 exact` 4068/4068 不变、XML 良构。
+     · 注意：第 7 章表7-1/7-3 这类「每列最长内容都超过当前列宽」的表**没有富余可挪** → 保持原样
+       （要再压只能让部分单元格折成 2 行，与「不把单行挤成两行」冲突）。
+     · 专项测试：`tests/pjbg.tablefit.test.mjs`（22 项：总宽守恒 / 长列变宽 / 短列下限 / 40% 上限 / 行高行距不动 /
+       安全阀 / 真实 0959）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）、`pjbg.autonum.test`（35）、`pjbg.eval.test`（29）、`pjbg.tablefit.test`（22）。
    - ⑫ **导出耗时优化（2026-10-21，实测 0959：patchPjbgDocx 1286ms → 约 700ms）**：
      · **快速重打包 `repackDocxFast`（最大头，584ms → 约 255ms）**：不再用 `zip.generateAsync`（它会把 31 个条目
        连 1.7MB 图片一起重新 DEFLATE），改为按 ZIP 结构重建 —— 其余条目**原始压缩字节直接拷贝**（保留
@@ -370,7 +387,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
 - 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）+ `node tests/hazard.search.smoke.mjs`（11 项）。
-- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+ `node tests/pjbg.autonum.test.mjs`（35 项，1.1/1.2 自动编号）+ `node tests/pjbg.eval.test.mjs`（29 项，表8-1 评价结论）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
+- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+ `node tests/pjbg.autonum.test.mjs`（35 项，1.1/1.2 自动编号）+ `node tests/pjbg.eval.test.mjs`（29 项，表8-1 评价结论）+ `node tests/pjbg.tablefit.test.mjs`（22 项，表格列宽重排）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。

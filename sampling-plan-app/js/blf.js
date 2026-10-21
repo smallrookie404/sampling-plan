@@ -2734,6 +2734,308 @@
     return { xml: changed ? outXml : xml, changed: changed, rows: rows, ok: nOk, bad: nBad, basic: nBasic };
   }
 
+  // ---------------- 报告后处理⑬：表格纵向压缩（总宽度不变，靠重新分配列宽缩短总长度） ----------------
+  // 用户要求（2026-10-21）：
+  //   · 行高固定**最小值 0.8cm**（`w:trHeight w:val="454"`）、行距固定 **16 磅**（`w:line="320" w:lineRule="exact"`）
+  //     → 这两项**一律不动**；
+  //   · 通过**调整各列宽度**（同一张表总宽不变）来缩短表格总长度：长文本列加宽、短列收窄，减少换行。
+  // 做法：
+  //   ① 单元格段落关掉「对齐文档网格」（`<w:snapToGrid w:val="0"/>`）——否则 16 磅固定行距会被
+  //      linePitch=312（15.6pt）的网格撑成整倍数，行距虽写 16 磅实际更高；
+  //   ② 逐表重排列宽：按各列「最长单元格文本宽度」估算需求，等比例分配到原总宽（`<w:tblGrid>` 各
+  //      `gridCol` 之和保持不变；单元格 `tcW` 按同样比例重算，dxa/pct 两种写法都支持）；
+  //   ③ **安全阀**：用估算的「行数×行高」比较新旧列宽，只有新方案更矮才落盘，否则保持原样。
+  const TBL_MIN_COL_TW = 454;          // 单列最小宽度 0.8cm（与行高最小值一致）
+  const TBL_ROW_MIN_TW = 454;          // 行高最小值 0.8cm
+  const TBL_LINE_TW = 320;             // 行距固定 16 磅
+  const TBL_CELL_PAD_TW = 60;          // 单元格左右内边距估计（3pt）
+
+  // 估算文本宽度（twips）：汉字/全角 = 1em，ASCII 字母数字 ≈ 0.5em，空格 0.25em
+  function textWidthTwips(s, szHalfPt) {
+    const em = (szHalfPt || 21) / 2 * 20;      // 半磅 → pt → twips
+    let w = 0;
+    const str = String(s === null || s === undefined ? '' : s);
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      if (c === 32) w += em * 0.25;
+      else if (c < 128) w += em * 0.5;
+      else w += em;
+    }
+    return w;
+  }
+
+  // 单元格里每个段落的「单行所需宽度」（twips）
+  function cellParaWidths(cellXml) {
+    const paras = cellXml.match(new RegExp(PARA_SRC, 'g')) || [];
+    if (!paras.length) return [0];
+    return paras.map(function (p) {
+      const szm = /<w:sz w:val="(\d+)"/.exec(p);
+      const sz = szm ? parseInt(szm[1], 10) : 21;
+      return textWidthTwips(paraTextConcat(p), sz);
+    });
+  }
+  // 单元格里是否用了软换行（<w:br/>）——这种单元格本来就是多行，不参与「单行」约束
+  function cellHasBr(cellXml) {
+    return /<w:br(?![a-zA-Z])/.test(String(cellXml || ''));
+  }
+
+  // 逐行扫描单元格，得到「列号 + 段落宽度列表」
+  function scanTableCells(rows) {
+    const out = [];
+    for (const rowXml of rows) {
+      const cells = [];
+      let col = 0;
+      const re = /<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g;
+      let m;
+      while ((m = re.exec(rowXml))) {
+        const tc = m[0];
+        const span = parseInt((/<w:gridSpan w:val="(\d+)"/.exec(tc) || [])[1] || '1', 10);
+        cells.push({ col: col, span: span, paras: cellParaWidths(tc), hasBr: cellHasBr(tc) });
+        col += span;
+      }
+      out.push({ cells: cells, nCol: col });
+    }
+    return out;
+  }
+
+  // 按列宽估算表格总高度（twips）：每行取「各单元格行数」的最大值 × 16 磅，且不小于 0.8cm
+  function estimateTableHeight(scanned, widths) {
+    let total = 0;
+    for (const row of scanned) {
+      let maxLines = 1;
+      for (const cell of row.cells) {
+        let avail = 0;
+        for (let i = 0; i < cell.span; i++) avail += (widths[cell.col + i] || 0);
+        avail -= TBL_CELL_PAD_TW;
+        if (avail < 120) avail = 120;
+        let lines = 0;
+        for (const pw of cell.paras) lines += Math.max(1, Math.ceil(pw / avail));
+        if (lines > maxLines) maxLines = lines;
+      }
+      total += Math.max(TBL_ROW_MIN_TW, maxLines * TBL_LINE_TW);
+    }
+    return total;
+  }
+
+  // 总折行数（次要目标：同样高时越少越好 —— 避免「本来能单行的被挤成 2 行」）
+  function estimateTableLines(scanned, widths) {
+    let lines = 0;
+    for (const row of scanned) {
+      for (const cell of row.cells) {
+        let avail = 0;
+        for (let i = 0; i < cell.span; i++) avail += (widths[cell.col + i] || 0);
+        avail -= TBL_CELL_PAD_TW;
+        if (avail < 120) avail = 120;
+        for (const pw of cell.paras) lines += Math.max(1, Math.ceil(pw / avail));
+      }
+    }
+    return lines;
+  }
+
+  // 每列「单行理想宽度」（grid 单位）：该列最长单元格文本 + 内边距，且不低于 0.8cm
+  function columnIdeals(scanned, widths, scale) {
+    const n = widths.length;
+    const sc = scale > 0 ? scale : 1;
+    const total = widths.reduce(function (a, b) { return a + b; }, 0);
+    const minW = Math.round(Math.min(TBL_MIN_COL_TW / sc, Math.floor(total / n)));
+    const need = new Array(n).fill(0);
+    for (const row of scanned) {
+      for (const cell of row.cells) {
+        if (cell.hasBr) continue;                            // 软换行是内容本身的多行，不参与单行需求
+        const maxNeed = Math.max.apply(null, cell.paras.concat([0]));
+        const per = maxNeed / Math.max(1, cell.span);
+        for (let i = 0; i < cell.span; i++) {
+          const idx = cell.col + i;
+          if (idx >= n) break;
+          if (per > need[idx]) need[idx] = per;
+        }
+      }
+    }
+    return need.map(function (v) { return Math.max(Math.round((v + TBL_CELL_PAD_TW) / sc), minW); });
+  }
+
+  // 列宽微调（按「折行阈值」贪心）：总宽不变，把宽度从「有富余的列」挪给「缺宽度的列」
+  //   · 阈值 = 某列把某个单元格从 k 行降到 k-1 行所需的宽度（最多取 3 个最近的）
+  //   · 每次挑「补上就能减少行数」的列，从富余最多的列挪；接受后高度/折行必须下降
+  //   · ⚠ mins[i] = min(原宽, 单行理想宽度) → 挪出方永远不会把「原本单行的单元格」挤成 2 行
+  function refineWidths(scanned, start, scale, total, mins) {
+    const n = start.length;
+    const w = start.slice();
+    const sc = w.map(function (v) { return v * scale; });
+    let bestH = estimateTableHeight(scanned, sc);
+    let bestL = estimateTableLines(scanned, sc);
+    const slackOf = function (i) { return w[i] - mins[i]; };
+    for (let round = 0; round < 6; round++) {
+      let improved = false;
+      for (let i = 0; i < n; i++) {
+        // 该列所有「行数减少」阈值（真实 twips），取最近的 3 个
+        const availNow = sc[i] - TBL_CELL_PAD_TW;
+        const ths = [];
+        for (const row of scanned) {
+          for (const cell of row.cells) {
+            if (cell.col !== i || cell.span !== 1 || cell.hasBr) continue;
+            for (const pw of cell.paras) {
+              if (pw <= availNow) continue;
+              const cur = Math.ceil(pw / availNow);
+              for (let k = cur - 1; k >= 1; k--) {
+                const need = Math.ceil(pw / k);
+                if (need > availNow) ths.push(need);
+              }
+            }
+          }
+        }
+        const uniq = [];
+        ths.sort(function (a, b) { return a - b; });
+        for (const t of ths) if (uniq.indexOf(t) < 0) uniq.push(t);
+        const cand = uniq.slice(0, 3);
+        for (const needAvail of cand) {
+          const needGrid = (needAvail - availNow) / scale;
+          if (needGrid < 1) continue;
+          // 找富余最多、且够挪的列
+          let donor = -1;
+          let bestSlack = 0;
+          for (let j = 0; j < n; j++) {
+            if (j === i) continue;
+            const sl = slackOf(j);
+            if (sl >= needGrid && sl > bestSlack) { bestSlack = sl; donor = j; }
+          }
+          if (donor < 0) continue;
+          w[i] += needGrid; w[donor] -= needGrid;
+          sc[i] += needGrid * scale; sc[donor] -= needGrid * scale;
+          const h = estimateTableHeight(scanned, sc);
+          const l = estimateTableLines(scanned, sc);
+          if (h < bestH || (h === bestH && l < bestL)) {
+            bestH = h; bestL = l; improved = true;
+          } else {
+            w[i] -= needGrid; w[donor] += needGrid;
+            sc[i] -= needGrid * scale; sc[donor] += needGrid * scale;
+          }
+        }
+      }
+      if (!improved) break;
+    }
+    // 取整（gridCol 必须整数），并把误差补到最宽的一列
+    const out = w.map(function (v) { return Math.max(1, Math.round(v)); });
+    const diff = total - out.reduce(function (a, b) { return a + b; }, 0);
+    if (diff !== 0) {
+      let maxI = 0;
+      for (let i = 1; i < out.length; i++) if (out[i] > out[maxI]) maxI = i;
+      out[maxI] += diff;
+    }
+    // 取整后重新估算（避免因取整反而变高）
+    const hOut = estimateTableHeight(scanned, out.map(function (v) { return v * scale; }));
+    const lOut = estimateTableLines(scanned, out.map(function (v) { return v * scale; }));
+    return { widths: out, height: hOut, lines: lOut };
+  }
+
+  // 重写一行的 tcW（按列宽重算；pct 类型按总宽比例折算成 5000 分之）
+  function rewriteRowCellWidths(rowXml, widths, total) {
+    const re = /<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g;
+    let out = '';
+    let last = 0;
+    let col = 0;
+    let m;
+    while ((m = re.exec(rowXml))) {
+      out += rowXml.slice(last, m.index);
+      let tc = m[0];
+      const span = parseInt((/<w:gridSpan w:val="(\d+)"/.exec(tc) || [])[1] || '1', 10);
+      let sum = 0;
+      for (let i = 0; i < span; i++) sum += (widths[col + i] || 0);
+      col += span;
+      const wm = /<w:tcW w:w="(\d+)" w:type="(\w+)"\s*\/>/.exec(tc);
+      if (wm) {
+        const nv = wm[2] === 'pct'
+          ? Math.max(1, Math.round(sum / total * 5000))
+          : Math.round(sum);
+        tc = tc.slice(0, wm.index) + '<w:tcW w:w="' + nv + '" w:type="' + wm[2] + '" />'
+          + tc.slice(wm.index + wm[0].length);
+      }
+      out += tc;
+      last = m.index + m[0].length;
+    }
+    return out + rowXml.slice(last);
+  }
+
+  // 页面正文宽度（twips）：pgSz.w - pgMar.left - pgMar.right
+  function docTextWidthTwips(xml) {
+    const sz = /<w:pgSz[^>]*w:w="(\d+)"/.exec(xml);
+    const mar = /<w:pgMar[^>]*>/.exec(xml);
+    let w = sz ? parseInt(sz[1], 10) : 11906;
+    if (mar) {
+      const l = /w:left="(\d+)"/.exec(mar[0]);
+      const r = /w:right="(\d+)"/.exec(mar[0]);
+      w -= (l ? parseInt(l[1], 10) : 1701) + (r ? parseInt(r[1], 10) : 1701);
+    }
+    return Math.max(2000, w);
+  }
+
+  // 表格实际宽度（twips）：tblW 为 pct 时按正文宽度折算；grid 里只是相对比例
+  function tableActualWidthTwips(tblPr, gridSum, textW) {
+    const m = /<w:tblW w:w="(\d+)" w:type="(\w+)"/.exec(tblPr || '');
+    if (!m) return gridSum;
+    if (m[2] === 'pct') return Math.round(textW * parseInt(m[1], 10) / 5000);
+    if (m[2] === 'dxa') return parseInt(m[1], 10);
+    return gridSum;
+  }
+
+  // 返回 { xml, changed(重排了列宽的表数), tables, narrowed(估算省下的 twips) }
+  function optimizeTableLayout(xml) {
+    const out = { xml: xml, changed: 0, tables: 0, narrowed: 0 };
+    if (xml.indexOf('<w:tbl') < 0) return out;
+    const textW = docTextWidthTwips(xml);
+    let nTbl = 0;
+    let savedTw = 0;
+    const res = mapTables(xml, function (tbl) {
+      let s = tbl;
+      // ① 单元格段落关闭「对齐文档网格」（行距仍固定 16 磅）
+      //   ⚠ 这里已经在表格 XML 内（mapTables），直接全量替换即可，不必再逐段匹配 <w:pPr>（快很多）
+      s = s.replace(/<w:snapToGrid\b[^>]*\/>/g, '<w:snapToGrid w:val="0"/>');
+      // ② 重排列宽
+      const gridM = /<w:tblGrid>[\s\S]*?<\/w:tblGrid>/.exec(s);
+      if (!gridM) return s;
+      const cols = [...gridM[0].matchAll(/<w:gridCol w:w="(\d+)"\s*\/>/g)].map(function (m) {
+        return parseInt(m[1], 10);
+      });
+      if (cols.length < 2) return s;
+      const rows = s.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return s;
+      const scanned = scanTableCells(rows);
+      const total = cols.reduce(function (a, b) { return a + b; }, 0);
+      // grid 只是相对比例：按 tblW 换算出真实宽度，估算行数才不会偏
+      const tblPr = (/<w:tblPr>[\s\S]*?<\/w:tblPr>/.exec(s) || [''])[0];
+      const actual = tableActualWidthTwips(tblPr, total, textW);
+      const scale = actual / total;
+      const oldScaled = cols.map(function (w) { return w * scale; });
+      const hOld = estimateTableHeight(scanned, oldScaled);
+      const lOld = estimateTableLines(scanned, oldScaled);
+      // 每列不得低于「min(原宽, 单行理想宽度)」→ 挪出方不会把原本单行的单元格挤成 2 行
+      const ideals = columnIdeals(scanned, cols, scale);
+      const mins = ideals.map(function (v, i) { return Math.min(cols[i], v); });
+      const best = refineWidths(scanned, cols, scale, total, mins);
+      const bestW = best.widths;
+      const bestH = best.height;
+      const bestL = best.lines;
+      // 安全阀：只有「更矮」或「一样高但折行更少」才落盘
+      if (!bestW || bestH > hOld || (bestH === hOld && bestL >= lOld)) return s;
+      const next = bestW;
+      // 写回 tblGrid
+      s = s.replace(gridM[0], '<w:tblGrid>' + next.map(function (w) {
+        return '<w:gridCol w:w="' + w + '" />';
+      }).join('') + '</w:tblGrid>');
+      // 写回每个单元格的 tcW
+      s = s.replace(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g, function (rowXml) {
+        return rewriteRowCellWidths(rowXml, next, total);
+      });
+      nTbl++;
+      savedTw += (hOld - bestH);
+      return s;
+    });
+    if (!nTbl) return { xml: out.xml, changed: 0, tables: 0, narrowed: 0 };
+    return { xml: res, changed: nTbl, tables: nTbl, narrowed: savedTw };
+  }
+  // 兼容旧名（若外部还引用 compactTables）
+  function compactTables(xml) { return optimizeTableLayout(xml); }
+
   // ---------------- 快速重打包（B1）：只重压 document.xml，其余条目原始压缩字节直接拷贝 ----------------
   // 背景（2026-10-21 实测，0959：docx 1.88MB / document.xml 6.14MB / 31 个条目）：
   //   JSZip 的 generateAsync 会把**所有条目**重新 DEFLATE（图片 1.7MB 也重压一遍），耗时 584ms；
@@ -3260,6 +3562,13 @@
           console.warn('[检评报告] 自动编号部件不可用（模板已有 numbering.xml 或缺 rels），跳过本步');
         }
       }
+      // ⑬ 表格纵向压缩：行高/行距不动，重排各列宽度（总宽不变）+ 关闭单元格段落「对齐文档网格」
+      const r13 = optimizeTableLayout(xml);
+      xml = r13.xml; changed += r13.changed;
+      if (r13.changed) {
+        console.info('[检评报告] 表格列宽重排：' + r13.tables + ' 张表（总宽不变，估算缩短 '
+          + Math.round(r13.narrowed / 567) + ' cm）');
+      }
       if (!changed) return buf;
       // 快速重打包（2026-10-21）：只重压 document.xml，其余条目原始压缩字节直接拷贝。
       //   实测 0959：JSZip generateAsync 584ms → 本路径约 150~200ms。
@@ -3711,6 +4020,15 @@
     readFacilityRows: readFacilityRows,
     matchFacilityNames: matchFacilityNames,
     resolveColNames: resolveColNames,
+    // ⑬ 表格纵向压缩（重排列宽，总宽不变；行高 0.8cm / 行距 16 磅不动）
+    optimizeTableLayout: optimizeTableLayout,
+    cellParaWidths: cellParaWidths,
+    scanTableCells: scanTableCells,
+    columnIdeals: columnIdeals,
+    estimateTableHeight: estimateTableHeight,
+    estimateTableLines: estimateTableLines,
+    textWidthTwips: textWidthTwips,
+    compactTables: compactTables,
     fixReportText: fixReportText,
     fixHazardNote: fixHazardNote,
     collectHazardMarks: collectHazardMarks,
