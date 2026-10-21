@@ -494,6 +494,10 @@
   const S_POST_COL_RE = /(操作|使用|影响|设置|配置)岗位\(工种\)/;
   // 与主表核对标红的「地点」列（按子表 key → 表头名）：内容须为主表「同行车间+岗位」下的点位
   const S_SITE_COL = { equipment: "工作地点", material: "使用地点" };
+  // 地点类列的表头名（设备设施「工作地点」/ 原辅物料「使用地点」/ 职业防护「设置地点」）：
+  // 下拉与岗位列同口径——支持「、」多选（一个车间/岗位组合常对应多个点位）
+  const S_SITE_COL_NAMES = ["工作地点", "使用地点", "设置地点"];
+  const sIsSiteCol = (h) => !!h && S_SITE_COL_NAMES.indexOf(String(h).replace(/^\*/, "").trim()) >= 0;
   function sCheckCols(sh) {
     if (!sh) return { wsCol: -1, cols: [], siteCol: -1 };
     const wsCol = sh.headers.findIndex((h) => h && h.includes("单元/工作场所"));
@@ -726,7 +730,7 @@
         }
       }
       wsOpts = merged;
-    } else if ((headerName === "工作地点" || headerName === "使用地点" || headerName === "设置地点") && window.SamplingApp && window.SamplingApp.workshopPostSites) {
+    } else if (sIsSiteCol(headerName) && window.SamplingApp && window.SamplingApp.workshopPostSites) {
       // 「工作地点」(设备设施) /「使用地点」(原辅物料) /「设置地点」(职业防护)：选项 = 主表中「同行 单元/工作场所 + 岗位(工种)」都一致的 点位（*点位/采样对象）
       // 车间、岗位均支持「、」多选（合并去重）；无匹配点位时不显示下拉（退回普通文本编辑）
       const { wsCol, cols } = sCheckCols(sh);
@@ -779,16 +783,18 @@
           surveySave();
         }
       });
-      // 多选仅限「单元/工作场所」与岗位(工种)列；其余固定选项列单选（点选即替换）
+      // 多选：「单元/工作场所」、各「岗位(工种)」列，以及「工作地点 / 使用地点 / 设置地点」列
+      // （一个车间×岗位组合常对应多个点位，逐个点选后以「、」连接）；其余固定选项列单选（点选即替换）
       const multi = !!(
         (headerName && headerName.includes("单元/工作场所")) ||
-        (headerName && /(操作|使用|影响|设置|配置)岗位\(工种\)/.test(headerName))
+        (headerName && /(操作|使用|影响|设置|配置)岗位\(工种\)/.test(headerName)) ||
+        sIsSiteCol(headerName)
       );
       // 自定义下拉面板：始终显示全部选项（datalist 会按已有内容过滤，单元格有值时只剩匹配项）
       if (wsOpts.length) {
         const panel = document.createElement("div");
         panel.className = "survey-ws-panel";
-        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt${multi && el.value.split("、").includes(o) ? " selected" : ""}" data-v="${escAttr(o)}">${escHtml(o)}</div>`).join("");
+        panel.innerHTML = wsOpts.map((o) => `<div class="survey-ws-opt${multi && sMultiParts(el.value).includes(o) ? " selected" : ""}" data-v="${escAttr(o)}">${escHtml(o)}</div>`).join("");
         document.body.appendChild(panel);
         const r = el.getBoundingClientRect();
         panel.style.left = r.left + "px";
@@ -808,8 +814,10 @@
           ev.preventDefault(); // 阻止 input 失焦
           if (multi) {
             // 多选：点选追加（以「、」分隔），重复点选则移除（支持取消）
+            // 拆分口径与选项合并/红框校验一致（sMultiParts：顿号/半全角逗号/换行），
+            // 手输过逗号的内容也能正确高亮与取消
             const SEP = "、";
-            const curParts = el.value.split(SEP).map((s) => s.trim()).filter(Boolean);
+            const curParts = sMultiParts(el.value);
             const v = opt.dataset.v;
             const idx = curParts.indexOf(v);
             if (idx >= 0) curParts.splice(idx, 1);
