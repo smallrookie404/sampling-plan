@@ -804,44 +804,68 @@
   }
 
   // 返回 { xml, changed }；changed = 被合并掉的行数
-  function mergePpeRows(xml) {
-    if (xml.indexOf(PPE_JOB_HEAD) < 0) return { xml: xml, changed: 0 };
-    let changed = 0;
-    const out = mapTables(xml, function (tbl) {
-      // 只处理表3-6：表头必含「生产厂家」「型号」「防护性能」与「配置岗位」
-      if (tbl.indexOf('生产厂家') < 0 || tbl.indexOf('防护性能') < 0) return tbl;
-      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
-      if (rows.length < 3) return tbl;
-      const head0 = rowCells(rows[0]);
-      const head1 = rowCells(rows[1]);
-      // 数据行的列数（取各行最大值，容忍个别行少格）
-      let nCol = Math.max(head0.length, head1.length);
-      const dataStart = (cellText(head1[0] || '').indexOf('分类') >= 0
-        || cellText(head1[1] || '').indexOf('类别') >= 0) ? 2 : 1;
-      for (let ri = dataStart; ri < rows.length; ri++) {
-        nCol = Math.max(nCol, rowCells(rows[ri]).length);
-      }
-      // 列名：子表头（分类/类别）优先，其余按表头的 gridSpan 占槽位补空
-      const names = new Array(nCol).fill('');
+  // 解析「两行表头」表格的列名：第 2 行（子表头）优先，其余按第 1 行的 gridSpan 占槽位补空。
+  // 返回 { names, nCol, dataStart }
+  //   · 有子表头（第 2 行格数 ≥ 第 1 行）→ dataStart = 2，否则 dataStart = 1
+  //   · 表3-6：row1 = 分类|类别|…（9 格） / 表3-5：row1 = ""|类型|名称|…（9 格）
+  function resolveColNames(rows) {
+    const head0 = rowCells(rows[0]);
+    const head1 = rows[1] ? rowCells(rows[1]) : [];
+    // 判「是否有子表头」：格数不少于表头，且第 2 行**大量空单元格**（子表头是「类型|名称|总数…」这种稀疏行）
+    //   或首格为空。⚠ 表8-1 只有一行表头（第 2 行就是数据行，格数也相同且无空格）→ 必须判成单表头。
+    let empty1 = 0;
+    for (const c of head1) if (!cellText(c)) empty1++;
+    const twoHead = head1.length > 0 && head1.length >= head0.length
+      && (empty1 >= 2 || !cellText(head1[0] || ''));
+    const dataStart = twoHead ? 2 : 1;
+    let nCol = Math.max(head0.length, head1.length);
+    for (let ri = dataStart; ri < rows.length; ri++) nCol = Math.max(nCol, rowCells(rows[ri]).length);
+    const names = new Array(nCol).fill('');
+    if (twoHead) {
       for (let i = 0; i < head1.length && i < nCol; i++) {
         const t = cellText(head1[i]);
         if (t && !names[i]) names[i] = t;
       }
-      let p = 0;
-      for (const c of head0) {
-        const spanM = /<w:gridSpan w:val="(\d+)"/.exec(c);
-        const span = spanM ? parseInt(spanM[1], 10) : 1;
-        const t = cellText(c);
-        for (let k = 0; k < span; k++) {
-          if (p + k < nCol && !names[p + k] && t) names[p + k] = t;
-        }
-        p += span;
+    }
+    let p = 0;
+    for (const c of head0) {
+      const spanM = /<w:gridSpan w:val="(\d+)"/.exec(c);
+      const span = spanM ? parseInt(spanM[1], 10) : 1;
+      const t = cellText(c);
+      for (let k = 0; k < span; k++) {
+        if (p + k < nCol && !names[p + k] && t) names[p + k] = t;
       }
-      const findCol = function (kw) {
-        const want = normKey(kw);
-        for (let i = 0; i < names.length; i++) if (normKey(names[i]).indexOf(want) >= 0) return i;
-        return -1;
+      p += span;
+    }
+    return { names: names, nCol: nCol, dataStart: dataStart };
+  }
+  // 按关键字找列号（先精确后包含）
+  function findColByName(names, kw) {
+    const want = normKey(kw);
+    for (let i = 0; i < names.length; i++) if (normKey(names[i]) === want) return i;
+    for (let i = 0; i < names.length; i++) if (normKey(names[i]).indexOf(want) >= 0) return i;
+    return -1;
+  }
+
+  function mergePpeRows(xml) {
+    if (xml.indexOf(PPE_JOB_HEAD) < 0) return { xml: xml, changed: 0 };
+    let changed = 0;
+    const out = mapTables(xml, function (tbl) {
+      // 只处理表3-6：表头必含「配置岗位」「防护性能」（表头文字可能被拆到多个 run → 按单元格文本判断）
+      if (tbl.indexOf('岗') < 0 || tbl.indexOf('护') < 0) return tbl;
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 3) return tbl;
+      const headTexts = rowCells(rows[0]).map(cellText);
+      const hasHead = function (kw) {
+        const w = normKey(kw);
+        return headTexts.some(function (h) { return normKey(h).indexOf(w) >= 0; });
       };
+      if (!hasHead(PPE_JOB_HEAD) || !hasHead('防护性能')) return tbl;
+      const cols = resolveColNames(rows);
+      const names = cols.names;
+      const nCol = cols.nCol;
+      const dataStart = cols.dataStart;
+      const findCol = function (kw) { return findColByName(names, kw); };
       const iJob = findCol(PPE_JOB_HEAD);
       const keyIdx = PPE_KEY_HEADS.map(findCol);
       if (iJob < 0 || keyIdx.some(function (i) { return i < 0; })) return tbl;
@@ -2441,6 +2465,275 @@
     return { xml: out, changed: filled, filled: filled };
   }
 
+  // ---------------- 报告后处理⑫：表8-1「评价结论 / 补救措施」按检测结果自动判定 ----------------
+  // 用户要求（2026-10-21）：
+  //   · 检测结果「符合」→ 评价结论「符合」；
+  //   · 检测结果「不符合」：
+  //       - 检测项目含「噪声」：表3-6 里有「听力防护」→ 补救措施「防噪耳塞」；
+  //         取听力防护行「防护性能参数」里的**标称降噪值 X**，若 85 + X > 该车间/岗位/点位的噪声 LEX
+  //         → 评价结论「基本符合」，否则「不符合」；
+  //       - 检测项目含「高温」→ 评价结论「不符合」；补救措施 = 表3-5 里**同车间**且「设置地点或岗位」
+  //         能模糊匹配到该岗位/点位的防护设施**名称**（多个用「、」连接）；
+  //       - 其它检测项目 → 评价结论「不符合」（补救措施不动）。
+  const EVAL_OK = '符合';
+  const EVAL_BAD = '不符合';
+  const EVAL_BASIC = '基本符合';
+  const HEARING_CAT = '听力防护';
+  const HEARING_FIX = '防噪耳塞';
+
+  // 「岗位/工种/测量点/对象」里首个「/」之后的部分
+  function afterSlashText(text) {
+    const s = String(text === null || text === undefined ? '' : text);
+    let i = s.indexOf('/');
+    const j = s.indexOf('／');
+    if (i < 0 || (j >= 0 && j < i)) i = j;
+    return (i < 0 ? '' : s.slice(i + 1)).trim();
+  }
+
+  // 噪声表（表7-3）：Map「车间\\u0001岗位\\u0001点位」→ 该点位 LEX 最大值
+  function readNoiseLexMap(xml) {
+    const map = new Map();
+    const t = findTableByHead(xml, function (heads) {
+      const has = function (n) {
+        const w = normKey(n);
+        return heads.some(function (h) { return normKey(h).indexOf(w) >= 0; });
+      };
+      return has('LEX') && has('岗位/工种/测量点/对象');
+    }, ['L', '岗']);
+    if (!t) return map;
+    const cUnit = headIndexOf(t.heads, '单元/工作场所');
+    const cJob = headIndexOf(t.heads, '岗位/工种/测量点/对象');
+    const lexCols = [];
+    for (let i = 0; i < t.heads.length; i++) if (normKey(t.heads[i]).indexOf('LEX') >= 0) lexCols.push(i);
+    if (cUnit < 0 || cJob < 0 || !lexCols.length) return map;
+    for (let ri = 1; ri < t.rows.length; ri++) {
+      const cs = rowCells(t.rows[ri]);
+      if (cs.length <= Math.max(cUnit, cJob)) continue;
+      const unit = cellText(cs[cUnit]);
+      const jobCell = cellText(cs[cJob]);
+      let max = null;
+      for (const ci of lexCols) {
+        if (ci >= cs.length) continue;
+        const v = parseFloat(pickNumber(cellText(cs[ci])));
+        if (isFinite(v) && (max === null || v > max)) max = v;
+      }
+      if (max === null) continue;
+      // 一行里可能塞了多个点位（单元格多行，如「冲床岗位/剪板\n冲床岗位/冲床」）→ 逐行登记，
+      //   该行的 LEX 列通常只有一个值（取的是本行最大值），故多行共用这个值（保守）。
+      const lines = cellLines(jobCell);
+      const list = lines.length ? lines : [jobCell];
+      for (const ln of list) {
+        const key = normKey(unit) + '\u0001' + normKey(beforeSlashText(ln)) + '\u0001' + normKey(afterSlashText(ln));
+        const prev = map.get(key);
+        if (prev === undefined || max > prev) map.set(key, max);
+      }
+    }
+    return map;
+  }
+
+  // 表3-6：是否配了「听力防护」及其「标称降噪值」/ 类别名称
+  function readHearingProtection(xml) {
+    const none = { has: false, snr: null, name: '' };
+    const t = findTableByHead(xml, function (heads) {
+      const has = function (n) {
+        const w = normKey(n);
+        return heads.some(function (h) { return normKey(h).indexOf(w) >= 0; });
+      };
+      // ⚠「分类」在子表头（第 2 行）里，表头行只有「职业病防护用品」，所以这里不能要求 heads 含「分类」
+      return has('配置岗位') && has('防护性能参数') && has('生产厂家');
+    }, ['听', '护']);
+    if (!t) return none;
+    const cols = resolveColNames(t.rows);
+    const iCat = findColByName(cols.names, '分类');
+    const iType = findColByName(cols.names, '类别');
+    const iParam = findColByName(cols.names, '防护性能');
+    if (iCat < 0 || iParam < 0) return none;
+    for (let ri = cols.dataStart; ri < t.rows.length; ri++) {
+      const cs = rowCells(t.rows[ri]);
+      if (cs.length !== cols.nCol) continue;
+      if (normKey(cellText(cs[iCat])).indexOf(normKey(HEARING_CAT)) < 0) continue;
+      const param = cellText(cs[iParam]);
+      const m = /标称降噪值\s*[:：=]?\s*([\d.]+)/.exec(param);
+      const snr = m ? parseFloat(m[1]) : null;
+      const name = (iType >= 0 && cellText(cs[iType])) || HEARING_FIX;
+      return { has: true, snr: isFinite(snr) ? snr : null, name: name };
+    }
+    return none;
+  }
+
+  // 表3-5：职业病防护设施 [{ unit, type, name, place }]
+  function readFacilityRows(xml) {
+    const out = [];
+    const t = findTableByHead(xml, function (heads) {
+      const has = function (n) {
+        const w = normKey(n);
+        return heads.some(function (h) { return normKey(h).indexOf(w) >= 0; });
+      };
+      return has('设置地点或岗位') && has('职业病防护设施');
+    }, ['设', '护']);
+    if (!t) return out;
+    const cols = resolveColNames(t.rows);
+    const iUnit = findColByName(cols.names, '单元/工作场所');
+    const iType = findColByName(cols.names, '类型');
+    const iName = findColByName(cols.names, '名称');
+    const iPlace = findColByName(cols.names, '设置地点');
+    if (iUnit < 0 || iName < 0 || iPlace < 0) return out;
+    for (let ri = cols.dataStart; ri < t.rows.length; ri++) {
+      const cs = rowCells(t.rows[ri]);
+      if (cs.length !== cols.nCol) continue;
+      const unit = cellText(cs[iUnit]);
+      const name = cellText(cs[iName]);
+      const place = cellText(cs[iPlace]);
+      if (!unit || !name || !place) continue;
+      out.push({ unit: unit, type: iType >= 0 ? cellText(cs[iType]) : '', name: name, place: place });
+    }
+    return out;
+  }
+
+  // 按「车间+岗位+点位」取噪声 LEX；点位可能是「冲床,剪板」这种多值 → 逐个试，最后退回同岗位最大值
+  function pickNoiseLex(map, unit, job, pointCell) {
+    const pts = splitListItems(pointCell);
+    const list = pts.length ? pts : [String(pointCell || '').trim()];
+    for (const p of list) {
+      const v = map.get(normKey(unit) + '\u0001' + normKey(job) + '\u0001' + normKey(p));
+      if (v !== undefined) return v;
+    }
+    let best = null;
+    const pre = normKey(unit) + '\u0001' + normKey(job) + '\u0001';
+    map.forEach(function (v, k) {
+      if (k.indexOf(pre) === 0 && (best === null || v > best)) best = v;
+    });
+    return best;
+  }
+
+  // 表3-5 里同车间、**类型含「降温」**、且「设置地点或岗位」模糊匹配该岗位/点位的设施名称
+  //   ⚠ 用户要求（2026-10-21）：「降温的都算」→ 「通风降温」「防暑降温」等只要类型里有「降温」就录；
+  //     「吸风排毒」「通风换气」「防尘」等不录。
+  const HEAT_FACILITY_TYPE = '降温';
+  function matchFacilityNames(list, unit, job, pointCell) {
+    const uK = normKey(unit);
+    const jK = normKey(job);
+    const wantType = normKey(HEAT_FACILITY_TYPE);
+    const pts = splitListItems(pointCell).map(normKey).filter(function (x) { return x.length >= 2; });
+    const out = [];
+    for (const f of list) {
+      if (normKey(f.unit) !== uK) continue;
+      if (normKey(f.type || '').indexOf(wantType) < 0) continue;   // 只要「通风降温」类
+      const pK = normKey(f.place);
+      if (pK.length < 2) continue;
+      let hit = false;
+      for (const pt of pts) {
+        if (pK.indexOf(pt) >= 0 || pt.indexOf(pK) >= 0) { hit = true; break; }
+      }
+      if (!hit && jK.length >= 2 && (pK.indexOf(jK) >= 0 || jK.indexOf(pK) >= 0)) hit = true;
+      if (hit && out.indexOf(f.name) < 0) out.push(f.name);
+    }
+    return out;
+  }
+
+  // 按列号就地改写某一行的某个单元格（按位置定位，避免 replace 命中同内容的其它单元格）
+  function setRowCellAt(rowXml, cells, idx, newCellXml) {
+    if (idx < 0 || idx >= cells.length) return rowXml;
+    let pos = 0;
+    for (let i = 0; i < idx; i++) {
+      const at = rowXml.indexOf(cells[i], pos);
+      if (at < 0) return rowXml;
+      pos = at + cells[i].length;
+    }
+    const start = rowXml.indexOf(cells[idx], pos);
+    if (start < 0) return rowXml;
+    return rowXml.slice(0, start) + newCellXml + rowXml.slice(start + cells[idx].length);
+  }
+
+  // 返回 { xml, changed(写入单元格数), rows(判定行数), ok/bad/basic(结论计数) }
+  function fillEvalConclusions(xml) {
+    const out = { xml: xml, changed: 0, rows: 0, ok: 0, bad: 0, basic: 0 };
+    if (xml.indexOf('评') < 0 || xml.indexOf('检') < 0) return out;
+    const lexMap = readNoiseLexMap(xml);
+    const hearing = readHearingProtection(xml);
+    const facilities = readFacilityRows(xml);
+    let changed = 0, rows = 0, nOk = 0, nBad = 0, nBasic = 0;
+    // ⚠ 表头文字可能被拆到多个 run（如「评价」+「结论」）→ 不能用 tbl.indexOf('评价结论') 预筛，
+    //   必须按**单元格文本**识别（cellText 会跨 run 合并），再按位置回写。
+    const jobs = [];
+    {
+      const re = new RegExp(TBL_SRC, 'g');
+      let m;
+      while ((m = re.exec(xml))) {
+        const tbl = m[0];
+        if (tbl.indexOf('评') < 0 || tbl.indexOf('检') < 0) continue;   // 廉价预筛
+        const trs = tableRows(tbl);
+        if (trs.length < 2) continue;
+        const heads = rowCells(trs[0]).map(cellText);
+        const has = function (kw) {
+          const w = normKey(kw);
+          return heads.some(function (h) { return normKey(h).indexOf(w) >= 0; });
+        };
+        if (!has('检测结果') || !has('评价结论') || !has('检测项目')) continue;
+        jobs.push({ start: m.index, len: tbl.length, tbl: tbl, trs: trs });
+      }
+    }
+    if (!jobs.length) return out;
+    let outXml = xml;
+    for (let ji = jobs.length - 1; ji >= 0; ji--) {
+      const j = jobs[ji];
+      const trs = j.trs;
+      const cols = resolveColNames(trs);
+      const iUnit = findColByName(cols.names, '单元/工作场所');
+      const iJob = findColByName(cols.names, '岗位/工种');
+      const iPoint = findColByName(cols.names, '检测点/对象');
+      const iItem = findColByName(cols.names, '检测项目');
+      const iRes = findColByName(cols.names, '检测结果');
+      const iFix = findColByName(cols.names, '补救措施');
+      const iEval = findColByName(cols.names, '评价结论');
+      if (iUnit < 0 || iJob < 0 || iItem < 0 || iRes < 0 || iEval < 0) continue;
+      let newTbl = j.tbl;
+      for (let ri = cols.dataStart; ri < trs.length; ri++) {
+        const cs = rowCells(trs[ri]);
+        if (cs.length !== cols.nCol) continue;
+        const unit = cellText(cs[iUnit]);
+        const job = cellText(cs[iJob]);
+        const point = iPoint >= 0 ? cellText(cs[iPoint]) : '';
+        const item = cellText(cs[iItem]);
+        const result = normKey(cellText(cs[iRes]));
+        let evalText = '';
+        let fixText = '';
+        if (result === normKey(EVAL_OK)) {
+          evalText = EVAL_OK;
+        } else if (result === normKey(EVAL_BAD)) {
+          if (item.indexOf('噪声') >= 0) {
+            if (hearing.has) fixText = hearing.name || HEARING_FIX;
+            const lex = pickNoiseLex(lexMap, unit, job, point);
+            if (hearing.has && hearing.snr !== null && lex !== null && (85 + hearing.snr) > lex) evalText = EVAL_BASIC;
+            else evalText = EVAL_BAD;
+          } else if (item.indexOf('高温') >= 0) {
+            evalText = EVAL_BAD;
+            const names = matchFacilityNames(facilities, unit, job, point);
+            if (names.length) fixText = names.join('、');
+          } else {
+            evalText = EVAL_BAD;
+          }
+        }
+        if (!evalText) continue;
+        rows++;
+        if (evalText === EVAL_OK) nOk++; else if (evalText === EVAL_BASIC) nBasic++; else nBad++;
+        let rowXml = trs[ri];
+        if (cellText(cs[iEval]) !== evalText) {
+          rowXml = setRowCellAt(rowXml, cs, iEval, setCellText(cs[iEval], xmlEsc(evalText)));
+          changed++;
+        }
+        if (fixText && iFix >= 0 && cellText(cs[iFix]) !== fixText) {
+          rowXml = setRowCellAt(rowXml, cs, iFix, setCellText(cs[iFix], xmlEsc(fixText)));
+          changed++;
+        }
+        if (rowXml !== trs[ri]) newTbl = newTbl.replace(trs[ri], rowXml);
+      }
+      if (newTbl !== j.tbl) outXml = outXml.slice(0, j.start) + newTbl + outXml.slice(j.start + j.len);
+    }
+    // ⚠ 即使没有任何单元格被改写，也要把判定统计返回（日志/测试要看行数）
+    return { xml: changed ? outXml : xml, changed: changed, rows: rows, ok: nOk, bad: nBad, basic: nBasic };
+  }
+
   // ---------------- 快速重打包（B1）：只重压 document.xml，其余条目原始压缩字节直接拷贝 ----------------
   // 背景（2026-10-21 实测，0959：docx 1.88MB / document.xml 6.14MB / 31 个条目）：
   //   JSZip 的 generateAsync 会把**所有条目**重新 DEFLATE（图片 1.7MB 也重压一遍），耗时 584ms；
@@ -2947,6 +3240,14 @@
       const r10 = fillOverLimitCause(xml, hazardFactors);
       xml = r10.xml; changed += r10.changed;
       if (r10.changed) console.info('[检评报告] 表8-2 超标原因分析已填写 ' + r10.filled + ' 行');
+      // ⑫ 表8-1「评价结论 / 补救措施」：符合→符合；不符合→按噪声/高温分别判定（见函数注释）
+      const r12 = fillEvalConclusions(xml);
+      xml = r12.xml; changed += r12.changed;
+      if (r12.changed) {
+        console.info('[检评报告] 表8-1 评价结论/补救措施已判定 ' + r12.rows + ' 行'
+          + '（符合 ' + r12.ok + ' / 基本符合 ' + r12.basic + ' / 不符合 ' + r12.bad
+          + '，写入单元格 ' + r12.changed + ' 个）');
+      }
       // ⑪ 1.1 / 1.2 章节的「(1)(2)(3)…」列表项改成 Word 自动编号（删/增条目后自动重排）
       let numParts = null;
       const r11 = autoNumberItemLists(xml);
@@ -3403,6 +3704,13 @@
     // ⑩ 表8-2 超标原因分析：按检测项目填「超标原因分析」列
     fillOverLimitCause: fillOverLimitCause,
     PJBG_OVER_LIMIT_TEXTS: PJBG_OVER_LIMIT_TEXTS,
+    // ⑫ 表8-1 评价结论 / 补救措施（含噪声 LEX / 表3-6 听力防护 / 表3-5 设施）
+    fillEvalConclusions: fillEvalConclusions,
+    readNoiseLexMap: readNoiseLexMap,
+    readHearingProtection: readHearingProtection,
+    readFacilityRows: readFacilityRows,
+    matchFacilityNames: matchFacilityNames,
+    resolveColNames: resolveColNames,
     fixReportText: fixReportText,
     fixHazardNote: fixHazardNote,
     collectHazardMarks: collectHazardMarks,

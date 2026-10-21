@@ -192,7 +192,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      双击抓到的 td 变游离节点 → **搜索后双击进不了编辑态**（2026-10-21 修复）。
    - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）、`tests/hazard.search.smoke.mjs`（11 项，搜索后编辑）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
-10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）⑨ **表3-3 下方插入「注1~注4」（整段标红）**（`addMaterialNote`）⑩ **表8-2 超标原因分析按检测项目自动填写**（`fillOverLimitCause`）。
+10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）⑨ **表3-3 下方插入「注1~注4」（整段标红）**（`addMaterialNote`）⑩ **表8-2 超标原因分析按检测项目自动填写**（`fillOverLimitCause`）⑪ **1.1/1.2 列表项改 Word 自动编号**（`autoNumberItemLists`）⑫ **表8-1 评价结论/补救措施自动判定**（`fillEvalConclusions`）。
    - ⑤ **接触职业病危害人数口径（2026-10-19 变更，`sumExposedFromT41`）**：取**表4-1**「人数」列下「总数」子列的数字合计——
      · **按「车间+岗位」去重后只计一次**（同一岗位的多点位行会把同一个人数重复写在每行：包装工 20/20/20、压机工 30×4；逐格相加会成倍放大）；
      · 某岗位**所有行**的「职业病危害因素」列**全部为空或 `-`/`—`/`无`/`/`** → 该人数不纳入统计；
@@ -287,7 +287,23 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · 在 ⑥ 之后执行（⑥ 先按文本删条目并重排文字序号，这里再把剩余条目换成自动编号）；模板已有 numbering.xml 时整步跳过（不冒险合并）。
      · 实测 0959：4 个列表 / 38 项（numId 90~93）；1121：4 个列表 / 44 项；包内 32 条目、其余 28 条目逐字节不变、XML 良构、无页面错误。
      · 专项测试：`tests/pjbg.autonum.test.mjs`（34 项，含 0959 真实样例 + patchPjbgDocx 端到端三部件校验）。
-   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）、`pjbg.autonum.test`（34）。
+   - ⑫ **表8-1「检测结果与评价结论」的评价结论 / 补救措施自动判定**（用户 2026-10-21，`fillEvalConclusions`）：
+     · 检测结果「符合」→ 评价结论「符合」；
+     · 检测结果「不符合」时按检测项目分流：
+       - **噪声**：表3-6 有「听力防护」→ 补救措施填「防噪耳塞」（取该行「类别」值，缺省「防噪耳塞」）；
+         再取「防护性能参数」里的**标称降噪值 X**，`85 + X > 该车间/岗位/点位的 LEX` → 「基本符合」，否则「不符合」；
+       - **高温**：评价结论「不符合」；补救措施 = 表3-5 里**同车间**、**类型含「降温」**（`HEAT_FACILITY_TYPE='降温'`，
+         用户 2026-10-21 要求「降温的都算」→「通风降温」「防暑降温」都录；「吸风排毒」「通风换气」「防尘」不录）
+         且「设置地点或岗位」能模糊匹配该岗位/点位的设施**名称**（多个用「、」）；
+       - 其它项目：评价结论「不符合」（补救措施不动）。
+     · 数据来源：噪声 LEX 取**表7-3**「LEX,8h / LEX,W」按「车间+岗位+点位」建 Map（一行塞多点位时逐行登记、共用该行 LEX；
+       点位查不到时退回同岗位最大值）；表3-5/表3-6 列名用 `resolveColNames`（两行表头 + gridSpan 占槽）解析。
+     · ⚠ 表头文字常被拆到多个 run（如「评价」+「结论」）→ **不能用 `tbl.indexOf('评价结论')` 预筛**，
+       必须按单元格文本（`cellText` 跨 run 合并）识别表，再按位置回写（`setRowCellAt`，避免 replace 命中同内容单元格）。
+     · 实测：0959 → 42 行判定（36 符合 / 5 基本符合 / 1 不符合）；1121 → 81 行（80 符合 / 1 基本符合）。
+       0959「去毛刺2」LEX 93.8 > 85+8.5=93.5 → 不符合，其余噪声不符合行 → 基本符合。
+     · 专项测试：`tests/pjbg.eval.test.mjs`（29 项：含高温「降温」类型过滤/诱饵用例、幂等、0959 真实样例）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）、`pjbg.autonum.test`（35）、`pjbg.eval.test`（29）。
    - ⑫ **导出耗时优化（2026-10-21，实测 0959：patchPjbgDocx 1286ms → 约 700ms）**：
      · **快速重打包 `repackDocxFast`（最大头，584ms → 约 255ms）**：不再用 `zip.generateAsync`（它会把 31 个条目
        连 1.7MB 图片一起重新 DEFLATE），改为按 ZIP 结构重建 —— 其余条目**原始压缩字节直接拷贝**（保留
@@ -354,7 +370,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
 - 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）+ `node tests/hazard.search.smoke.mjs`（11 项）。
-- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+ `node tests/pjbg.autonum.test.mjs`（34 项，1.1/1.2 自动编号）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
+- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+ `node tests/pjbg.autonum.test.mjs`（35 项，1.1/1.2 自动编号）+ `node tests/pjbg.eval.test.mjs`（29 项，表8-1 评价结论）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。
