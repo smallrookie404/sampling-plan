@@ -107,7 +107,9 @@
     const init = { method: method, headers: headers };
     const ac = new AbortController();
     // timeout 为 0 表示不限时（如大文件上传，平台处理时间不可预估）
-    const timer = opts.timeout === 0 ? null : setTimeout(function () { ac.abort(); }, opts.timeout || 30000);
+    const timeoutMs = opts.timeout === 0 ? 0 : (opts.timeout || 30000);
+    let timedOut = false;   // 用于区分「超时中止」与「调用方主动取消」
+    const timer = timeoutMs ? setTimeout(function () { timedOut = true; ac.abort(); }, timeoutMs) : null;
     if (opts.signal) {
       opts.signal.addEventListener('abort', function () { ac.abort(); });
     }
@@ -127,6 +129,18 @@
       // （opts.skipAuthExpired：账号池令牌探针等内部调用使用，避免误伤主会话）
       if (resp.status === 401 && opts.token && !opts.skipAuthExpired && typeof authExpiredHandler === 'function') authExpiredHandler();
       return { status: resp.status, data: data, text: text };
+    } catch (e) {
+      // 中止类错误：Chrome 新版文案是「signal is aborted without reason」，对用户毫无意义，
+      // 统一转成可读提示（保留 name='AbortError'，上层仍可按名字识别/改写文案）
+      if (e && (e.name === 'AbortError' || /abort/i.test(e.message || ''))) {
+        const err = new Error(timedOut
+          ? '请求超时（' + Math.round(timeoutMs / 1000) + ' 秒未响应）'
+          : '请求已取消');
+        err.name = 'AbortError';
+        err.timedOut = timedOut;
+        throw err;
+      }
+      throw e;
     } finally {
       clearTimeout(timer);
     }
@@ -524,8 +538,19 @@
     return (r.data && r.data.body && r.data.body.content) || [];
   }
 
+  // 团队相关接口统一放宽到 45s：这些调用多发生在「Excel 刚上传完」之后，
+  // 平台此时可能仍在处理上传/转码，30s 容易踩超时（表现为「团队信息同步失败」）。
+  // window.__TEAM_TIMEOUT__ 可覆盖（自动化测试用来缩短等待，排障时也可临时调大）。
+  const TEAM_TIMEOUT = (function () {
+    try {
+      const v = typeof window !== 'undefined' ? Number(window.__TEAM_TIMEOUT__) : NaN;
+      if (isFinite(v) && v > 0) return v;
+    } catch (e) {}
+    return 45000;
+  })();
+
   async function fetchProjectMembers(token, projectId) {
-    const r = await apiRequest('GET', '/api/allocation/projectHuman?projectId=' + projectId + '&pageNumber=1&pageSize=200', { token: token });
+    const r = await apiRequest('GET', '/api/allocation/projectHuman?projectId=' + projectId + '&pageNumber=1&pageSize=200', { token: token, timeout: TEAM_TIMEOUT });
     if (r.status !== 200) throw new Error('获取项目组成员失败(HTTP ' + r.status + ')');
     return (r.data && r.data.body && r.data.body.records) || [];
   }
@@ -533,6 +558,7 @@
   async function addProjectMembers(token, projectId, ids) {
     return apiRequest('POST', '/api/allocation/projectHuman/add', {
       token: token,
+      timeout: TEAM_TIMEOUT,
       json: {
         humanId: ids.map(function (id) { return Number(id); }),
         projectId: projectId,
@@ -544,73 +570,99 @@
   async function deleteProjectMembers(token, humanIds) {
     return apiRequest('DELETE', '/api/allocation/projectHuman/delete', {
       token: token,
+      timeout: TEAM_TIMEOUT,
       json: humanIds.map(function (id) { return Number(id); })
     });
   }
 
   async function fetchXcdcUser(token, projectId) {
-    const r = await apiRequest('GET', '/api/projectXcdcUser?belongProject=' + projectId + '&pageSize=-1', { token: token });
+    const r = await apiRequest('GET', '/api/projectXcdcUser?belongProject=' + projectId + '&pageSize=-1', { token: token, timeout: TEAM_TIMEOUT });
     if (r.status !== 200) throw new Error('获取现场调查人员失败(HTTP ' + r.status + ')');
     const recs = (r.data && r.data.body && r.data.body.records) || [];
     return recs.length ? recs[0] : null;
   }
 
   async function saveXcdcUser(token, data) {
-    return apiRequest('PUT', '/api/projectXcdcUser/edit', { token: token, json: data });
+    return apiRequest('PUT', '/api/projectXcdcUser/edit', { token: token, timeout: TEAM_TIMEOUT, json: data });
   }
 
   // 导入成功后同步：项目组成员（差量）+ 调查人/复核人/调查日期
+  // ⚠ 容错原则：这些都是「上传成功后的收尾动作」，任何一步失败都**不能中断其它步骤**，
+  //   更不能把异常抛回上传流程。原来读成员列表失败会直接冒泡，界面上只剩一句
+  //   「团队信息同步失败：signal is aborted without reason」（超时中止的原始文案），
+  //   连调查人/复核人/日期一起丢掉。现在失败一律转成 logs 说明，由调用方汇总展示。
   async function syncProjectInfo(token, projectId, opts) {
     const logs = [];
     const want = (opts.memberIds || []).map(String);
-    const existing = await fetchProjectMembers(token, projectId);
-    const existingIds = existing.map(function (m) { return String(m.humanId); });
-    const toAdd = want.filter(function (id) { return existingIds.indexOf(id) < 0; });
-    // 项目负责人保护：平台项目表 responser 字段即负责人用户 id，负责人不能被移除
-    // （另有成员记录带非 '0' humanType 的负责人标记，也一并保护，双保险）
-    const leaderIds = [];
-    if (opts.project && opts.project.responser != null && opts.project.responser !== '') {
-      leaderIds.push(String(opts.project.responser));
+    // ① 读现有成员：失败 → 跳过成员增删（不猜、不误删），但仍继续 ② 的同步
+    let existing = null;
+    try {
+      existing = await fetchProjectMembers(token, projectId);
+    } catch (e) {
+      logs.push('读取项目组成员失败（本次跳过成员增删）：' + e.message);
     }
-    const toDel = existing.filter(function (m) {
-      if (want.indexOf(String(m.humanId)) >= 0) return false;
-      if (leaderIds.indexOf(String(m.humanId)) >= 0) return false;
-      if (m.humanType != null && String(m.humanType) !== '0') return false; // 非 '0' 类型=负责人/管理员，不移除
-      return true;
-    });
-    // 增删成员与调查人同步三者互不依赖：并行执行（原串行 5 次往返，现约 2 次）
     const jobs = [];
-    if (toAdd.length > 0) {
-      const names = toAdd.map(function (id) {
-        const u = (opts.users || []).filter(function (x) { return String(x.id) === id; })[0];
-        return u ? u.userName : id;
+    if (existing) {
+      const existingIds = existing.map(function (m) { return String(m.humanId); });
+      const toAdd = want.filter(function (id) { return existingIds.indexOf(id) < 0; });
+      // 项目负责人保护：平台项目表 responser 字段即负责人用户 id，负责人不能被移除
+      // （另有成员记录带非 '0' humanType 的负责人标记，也一并保护，双保险）
+      const leaderIds = [];
+      if (opts.project && opts.project.responser != null && opts.project.responser !== '') {
+        leaderIds.push(String(opts.project.responser));
+      }
+      const toDel = existing.filter(function (m) {
+        if (want.indexOf(String(m.humanId)) >= 0) return false;
+        if (leaderIds.indexOf(String(m.humanId)) >= 0) return false;
+        if (m.humanType != null && String(m.humanType) !== '0') return false; // 非 '0' 类型=负责人/管理员，不移除
+        return true;
       });
-      jobs.push(addProjectMembers(token, projectId, toAdd).then(function (r) {
-        if (r.status === 200 && r.data && r.data.code === '200') {
-          logs.push('添加项目成员成功：' + names.join('、'));
-        } else {
-          logs.push('添加项目成员失败（' + names.join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
-        }
-      }));
-    }
-    if (toDel.length > 0) {
-      // 逐个删除：平台会拒绝删除项目负责人（整批提交时一人被拒全批失败）。
-      // 单个失败只记日志提示（负责人本就不该被删，平台拒绝=符合预期），不进失败摘要弹窗
-      for (const m of toDel) {
-        const name = m.humanIdName || m.humanId;
-        // eslint-disable-next-line no-await-in-loop
-        const r = await deleteProjectMembers(token, [m.humanId]);
-        if (r.status === 200 && r.data && r.data.code === '200') {
-          logs.push('移除项目成员成功：' + name);
-        } else {
-          // 平台拒删（负责人等受保护成员）：静默保留，仅记提示日志
-          logs.push('成员「' + name + '」保留（平台不允许移除，如负责人）');
+      // 增删成员与调查人同步三者互不依赖：并行执行（原串行 5 次往返，现约 2 次）
+      if (toAdd.length > 0) {
+        const names = toAdd.map(function (id) {
+          const u = (opts.users || []).filter(function (x) { return String(x.id) === id; })[0];
+          return u ? u.userName : id;
+        });
+        jobs.push(addProjectMembers(token, projectId, toAdd).then(function (r) {
+          if (r.status === 200 && r.data && r.data.code === '200') {
+            logs.push('添加项目成员成功：' + names.join('、'));
+          } else {
+            logs.push('添加项目成员失败（' + names.join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
+          }
+        }).catch(function (e) {
+          logs.push('添加项目成员失败（' + names.join('、') + '）：' + e.message);
+        }));
+      }
+      if (toDel.length > 0) {
+        // 逐个删除：平台会拒绝删除项目负责人（整批提交时一人被拒全批失败）。
+        // 单个失败只记日志提示（负责人本就不该被删，平台拒绝=符合预期），不进失败摘要弹窗
+        for (const m of toDel) {
+          const name = m.humanIdName || m.humanId;
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const r = await deleteProjectMembers(token, [m.humanId]);
+            if (r.status === 200 && r.data && r.data.code === '200') {
+              logs.push('移除项目成员成功：' + name);
+            } else {
+              // 平台拒删（负责人等受保护成员）：静默保留，仅记提示日志
+              logs.push('成员「' + name + '」保留（平台不允许移除，如负责人）');
+            }
+          } catch (e) {
+            logs.push('移除成员「' + name + '」失败：' + e.message);
+          }
         }
       }
     }
+    // ② 调查人 / 复核人 / 调查日期：独立于成员增删，读取失败也不影响已有成员操作
     if (opts.investigatorId || opts.reviewerId || opts.investigateDate) {
       jobs.push((async function () {
-        const rec = await fetchXcdcUser(token, projectId);
+        let rec = null;
+        try {
+          rec = await fetchXcdcUser(token, projectId);
+        } catch (e) {
+          logs.push('读取现场调查人员失败（本次跳过调查人/复核人同步）：' + e.message);
+          return;
+        }
         const payload = {
           id: rec ? rec.id : null,
           belongProject: projectId,
@@ -618,16 +670,20 @@
           accompanyPerson: opts.reviewerId ? String(opts.reviewerId) : (rec ? rec.accompanyPerson : null),
           investigateTime: opts.investigateDate ? opts.investigateDate : (rec ? rec.investigateTime : null)
         };
-        const r = await saveXcdcUser(token, payload);
-        if (r.status === 200 && r.data && r.data.code === '200') {
-          logs.push('调查人/复核人/调查日期已同步');
-        } else {
-          // 逐项列出本次要同步的内容与平台返回，便于定位哪一项失败
-          const parts = [];
-          if (opts.investigatorId) parts.push('调查人');
-          if (opts.reviewerId) parts.push('复核人');
-          if (opts.investigateDate) parts.push('调查日期=' + opts.investigateDate);
-          logs.push('同步失败（' + parts.join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
+        // 逐项列出本次要同步的内容，失败时便于定位是哪一项
+        const parts = [];
+        if (opts.investigatorId) parts.push('调查人');
+        if (opts.reviewerId) parts.push('复核人');
+        if (opts.investigateDate) parts.push('调查日期=' + opts.investigateDate);
+        try {
+          const r = await saveXcdcUser(token, payload);
+          if (r.status === 200 && r.data && r.data.code === '200') {
+            logs.push('调查人/复核人/调查日期已同步');
+          } else {
+            logs.push('同步失败（' + parts.join('、') + '）：' + ((r.data && (r.data.message || r.data.msg)) || ('HTTP ' + r.status)));
+          }
+        } catch (e) {
+          logs.push('同步失败（' + parts.join('、') + '）：' + e.message);
         }
       })());
     }
@@ -4301,7 +4357,10 @@
       },
       // 供「网站数据导入」独立搜索项目：与「数据上传」搜索完全同一套逻辑与缓存
       // （服务端 code 为包含匹配，见 runProjectSearch）
-      searchProjectsFor: runProjectSearch
+      searchProjectsFor: runProjectSearch,
+      // 导入后「团队信息同步」（成员差量 + 调查人/复核人/日期）：供测试/复用。
+      // 已做分步容错——任何一步失败只进 logs，不抛异常。
+      syncProjectInfo: syncProjectInfo
     };
 
     // 启动：先定登录方式（云端代登录 / 本地手输验证码），再决定是否取图
