@@ -1721,10 +1721,14 @@
     return { full: full, breaks: breaks, lines: lines };
   }
 
-  // 在段落内把纯文本区间 [start,end) 替换为 to（跨 run，未涉及的 run 原样保留）
   // 在段落内把纯文本区间 [start,end) 替换为 to（跨 run，未涉及的 run 原样保留）。
   // keepTag=true → 沿用原 <w:t> 的起始标签（与旧 replaceAcrossRuns 逐字节一致）；
   // 否则统一写成 <w:t xml:space="preserve">（⑥⑦ 用，保证首尾空格不被 Word 吞掉）。
+  // ★★ 2026-10-21 修 bug：区间**跨越多个 run** 时，to 只能插入一次（落在第一个相交 run 上），
+  //    其余相交 run 只保留区间之后的部分。原实现每个相交 run 都 `slice(0,a) + to + slice(b)`，
+  //    于是「物理有害因素检测结果分析与评价」这种被 Word 拆成两个 run 的标题，
+  //    替换后变成「物理因素检测结果分析与评价」重复两遍（实测 测试.docx 段落 #437：
+  //    run0='7.1' run1=to run2=to）。单 run 内替换不受影响。
   function spliceParaRange(pXml, start, end, to, keepTag) {
     const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
     const nodes = [];
@@ -1732,12 +1736,15 @@
     let m;
     while ((m = re.exec(pXml))) { const t = m[1] || ''; nodes.push({ s: full.length, e: full.length + t.length }); full += t; }
     let k = 0;
+    let inserted = false;   // to 是否已插入（跨 run 时只插一次）
     return pXml.replace(re, function (raw, t) {
       const nd = nodes[k++];
       if (!nd || nd.e <= start || nd.s >= end) return raw;
       const a = Math.max(nd.s, start) - nd.s;
       const b = Math.min(nd.e, end) - nd.s;
-      const nt = t.slice(0, a) + to + t.slice(b);
+      const ins = inserted ? '' : to;
+      inserted = true;
+      const nt = t.slice(0, a) + ins + t.slice(b);
       if (keepTag) {
         const open = /^<w:t(?:\s[^>]*)?>/.exec(raw);
         return (open ? open[0] : '<w:t>') + nt + '</w:t>';
