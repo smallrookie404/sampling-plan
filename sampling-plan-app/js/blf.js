@@ -1813,11 +1813,16 @@
         if (dot >= 0) {
           const head = sub.slice(0, dot + 1);
           if (head.trim()) segOut += head;     // 保留引导句，不保留分隔符（避免留下孤立逗号）
-        } else {
-          // 无「。」→ 整分句丢弃；若紧跟的下一分句以「设置」开头，说明它是这句话的谓语，一并丢弃
-          const nxt = subs[j + 2];
-          if (nxt !== undefined && /^\s*设置/.test(nxt)) swallowNext = true;
         }
+        // 无「。」→ 整分句丢弃；有「。」→ 只丢「。」之后的部分。
+        // ★ 两种分支都要检查**紧跟的下一分句是否以「设置」开头**：
+        //   若上一分句被删掉的正是「能引起职业性灼伤或腐蚀的化学品工作场所」这类**主语**，
+        //   紧随的「设置“当心腐蚀”…」就是它的谓语，必须一并丢弃，否则留下无主残句。
+        //   典型触发链：mixed 先删掉混合性粉(烟)尘分句时连分隔符一起吃掉，使
+        //   「…指令标识。能引起…工作场所」粘成同一分句 → corrode 走的是「保留句号前引导句」分支
+        //   （dot >= 0），若只在这个分支外检查就会漏掉 → 实测 0986 报告就是这么残留的。
+        const nxt = subs[j + 2];
+        if (nxt !== undefined && /^\s*设置/.test(nxt)) swallowNext = true;
       }
       segOut = segOut.replace(/[，,]\s*$/, '');
       if (segOut.trim()) {
