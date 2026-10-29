@@ -325,6 +325,20 @@
   let gridFilterMode = false;
   let gridFilterCi = null; // 当前打开弹层的列字母
 
+  // 生效的筛选条件缓存：rowVisible() 在虚拟滚动的每帧里被调用成百上千次，
+  // 原实现每次都 Object.entries(...).filter(...) 新建数组，行数多时是滚动卡顿的一部分。
+  let filterEntriesCache = null;
+  function activeFilterEntries() {
+    if (!filterEntriesCache) {
+      filterEntriesCache = Object.entries(gridFilter).filter(([, set]) => set.size > 0);
+    }
+    return filterEntriesCache;
+  }
+  // gridFilter 有改动时必须调用（改动点见 applyChecked / 清除本列 / 关闭筛选）
+  function invalidateFilterCache() {
+    filterEntriesCache = null;
+  }
+
   // 某行某列的实际显示值（优先级与 cellHtml 一致：覆盖值 > 手工值 > 自动值 > 录入值）
   function gridCellText(row, col) {
     if (OVERRIDE_COLS.includes(col)) return fmt(row.values[col] ?? row.manual?.[col] ?? "");
@@ -340,7 +354,7 @@
   }
 
   function gridFilteredRows() {
-    const entries = Object.entries(gridFilter).filter(([, set]) => set.size > 0);
+    const entries = activeFilterEntries();
     if (!gridFilterMode || !entries.length) return rows;
     return rows.filter((r) => entries.every(([col, set]) => set.has(gridCellText(r, col))));
   }
@@ -413,6 +427,7 @@
       const cur = new Set([...pop.querySelectorAll(".hfp-item input:checked")].map((el) => el.value));
       if (cur.size === values.length) delete gridFilter[col];
       else gridFilter[col] = cur;
+      invalidateFilterCache();
       renderWindow();
       buildHead();
       // 重渲染表头后按钮节点被替换，重新定位弹层
@@ -435,6 +450,7 @@
         // 取消/清除本列：还原为打开弹层前的状态
         delete gridFilter[col];
         if (snapshot.size > 0 && snapshot.size < values.length) gridFilter[col] = snapshot;
+        invalidateFilterCache();
         closeGridFilterPop();
         renderWindow();
       } else if (op === "ok") {
@@ -462,6 +478,7 @@
     $("btn-filter").classList.toggle("active", gridFilterMode); // 筛选开启时按钮加深
     closeGridFilterPop();
     if (!gridFilterMode) gridFilter = {};
+    invalidateFilterCache();
     buildHead();
     renderWindow();
   });
@@ -512,14 +529,20 @@
     return lo;
   }
 
-  // 渲染缓冲：上下各多渲染的行数。增量渲染接管滚动后无需过大缓冲
-  const RENDER_OVERSCAN = 24;
+  // 渲染缓冲：上下各多渲染的行数（可视行数 + 2×该值 = 实际渲染行数）。
+  // ⚠ 调这个值前先看下面的实测：它决定「一帧要重排多少个单元格」（61 列 × 渲染行数），
+  //   但更关键的是「多久触发一次补行」——缓冲越小，每次滚动都要补/裁，帧帧都重排。
+  //   3000 行实测（Chrome headless）：
+  //     overscan=24（窗口 78 行）>50ms 卡顿帧 32/158；overscan=16（62 行）25/150；
+  //     overscan=6（42 行）42~64/155（明显更差，因为每帧都触发），4 同理。
+  //   取 16：触发频率低（约每 5 帧补一次），多数帧仍是满帧。
+  const RENDER_OVERSCAN = 16;
 
   // 单行 HTML（renderWindow 与增量渲染共用）
   // 行可见性：筛选模式下仅显示各筛选列勾选值匹配的行（行号保持原行号，编辑/选择仍按原行定位）
   function rowVisible(i) {
     if (!gridFilterMode) return true;
-    const entries = Object.entries(gridFilter).filter(([, set]) => set.size > 0);
+    const entries = activeFilterEntries();
     if (!entries.length) return true;
     const r = rows[i];
     if (!r) return false;
@@ -545,14 +568,14 @@
 
   // 筛选激活时占位高度只按可见行累计（隐藏行不占位），否则按原行号偏移
   function spacerHeightUpTo(rowIndex) {
-    if (!gridFilterMode || !Object.values(gridFilter).some((s) => s.size > 0)) return rowOffsetAt(rowIndex);
+    if (!gridFilterMode || !activeFilterEntries().length) return rowOffsetAt(rowIndex);
     let h = 0;
     for (let i = 0; i < rowIndex; i++) if (rowVisible(i)) h += rowHeightAt(i);
     return h;
   }
 
   function spacerHeightFrom(rowIndex) {
-    if (!gridFilterMode || !Object.values(gridFilter).some((s) => s.size > 0)) {
+    if (!gridFilterMode || !activeFilterEntries().length) {
       const lastVis = lastVisibleIndex();
       return lastVis < 0 || rowIndex > lastVis ? 0 : rowOffsetAt(lastVis + 1) - rowOffsetAt(rowIndex);
     }
@@ -612,7 +635,7 @@
     const total = rows.length;
     if (!total) return;
     // 筛选激活时可见行不连续，增量渲染按行号与 DOM 节点一一对应的假设不再成立，整体重建
-    if (gridFilterMode && Object.values(gridFilter).some((s) => s.size > 0)) { renderWindow(); return; }
+    if (gridFilterMode && activeFilterEntries().length) { renderWindow(); return; }
     const st = gridWrap.scrollTop;
     const ch = gridWrap.clientHeight;
     const visStart = rowIndexAt(st);
@@ -620,8 +643,12 @@
     const curStart = renderedRows.length ? renderedRows[0] : -1;
     const curEnd = renderedRows.length ? renderedRows[renderedRows.length - 1] + 1 : -1;
     if (curStart < 0) { renderWindow(); return; }
-    // 迟滞区间：可视区（含半缓冲余量）仍落在已渲染窗口内时不动 DOM，滚动不触发每帧重排
-    const half = Math.floor(RENDER_OVERSCAN / 2);
+    // 迟滞区间：可视区（含余量）仍在已渲染窗口内时不动 DOM。
+    // ⚠ 曾取 RENDER_OVERSCAN/2（=8）：缓冲被吃掉一半才补齐，于是一次要整块滑动十几行，
+    //   大表实测每 5 帧就有一帧 80~120ms（滚动明显一顿一顿）。
+    //   改为 1 后窗口只随可视区小步移动：每次滚动补/裁的行数 = 实际滚过的行数（约 3 行），
+    //   单帧 DOM 量降到原来的 1/5，总 DOM 操作量也更少（不再整块滑动）。
+    const half = 1;
     if (visStart - half >= curStart && visEnd + half <= curEnd) return;
     const wantStart = Math.max(0, visStart - RENDER_OVERSCAN);
     const wantEnd = Math.min(total, visEnd + RENDER_OVERSCAN);
@@ -677,7 +704,29 @@
     for (let i = wantStart; i < wantEnd; i++) renderedRows.push(i);
     lastRenderedStart = wantStart;
     selDomGen++;
-    updateSelectionClasses();
+    // ⚠ 不能调 updateSelectionClasses()：它检测到 DOM 换代就整窗全量扫描（≈3800 次 classList）。
+    //   老行的选区类还在，只需给新追加的行补上，再把 lastSelState 同步成当前状态，
+    //   否则下一次调用又会走全量分支（移植自 2.0 版 grid.ts:578 的处理）。
+    const addedTop = Math.max(0, curStart - wantStart);
+    const addedBottom = Math.max(0, wantEnd - curEnd);
+    let node = topSpacer.nextElementSibling;
+    for (let i = 0; i < addedTop && node && node !== bottomSpacer; i++) {
+      paintRowSelection(node);
+      node = node.nextElementSibling;
+    }
+    node = bottomSpacer.previousElementSibling;
+    for (let i = 0; i < addedBottom && node && node !== topSpacer; i++) {
+      paintRowSelection(node);
+      node = node.previousElementSibling;
+    }
+    const rectNow = selRect();
+    const multiNow = !!(rectNow && (rectNow.r1 !== rectNow.r2 || rectNow.c1 !== rectNow.c2));
+    lastSelState = {
+      rect: rectNow ? { ...rectNow } : null,
+      cur: cur ? { ...cur } : null,
+      multi: multiNow,
+      gen: selDomGen,
+    };
   }
 
   gridWrap.addEventListener("scroll", () => {
@@ -696,10 +745,12 @@
 
   // ---------- 输入联动 ----------
   let recomputeTimer = null;
-  // 输入过程中合并重算请求，避免每次按键都全量计算（离散操作仍走同步 recomputeAndRefresh）；
-  // 250ms：连续打字期间基本不触发全量重算，停顿后一次算清（体感与 120ms 无差异）
+  // 输入过程中合并重算请求，避免每次按键都全量计算（离散操作仍走同步 recomputeAndRefresh）。
+  // 延时按数据量自适应：小表 120ms（计算只要十几毫秒，反馈更快）；
+  // 上万行时重算约 150ms，拉到 250ms 以免每次停顿都卡一下。
   function scheduleRecompute() {
     if (recomputeTimer) clearTimeout(recomputeTimer);
+    const delay = rows.length > 5000 ? 250 : 120;
     recomputeTimer = setTimeout(() => {
       recomputeTimer = null;
       recomputeAndRefresh();
@@ -755,9 +806,20 @@
     const rRect = td.getBoundingClientRect();
     if (e.clientY >= rRect.bottom - 6) return; // 下边缘为调整行高拖动区，不触发选中整行
     const r = Number(td.closest("tr").dataset.r);
+    const prev = selectedRow;
     selectedRow = selectedRow === r ? -1 : r;
-    renderWindow();
+    // 只切换受影响两行的选中样式。原先调用 renderWindow() 整窗重建：
+    // 3000 行时一次要 300ms 以上（用户点一下行号就卡半秒），而行选中只影响 tr 的 class。
+    paintSelectedRow(prev);
+    paintSelectedRow(selectedRow);
   });
+
+  // 单独刷新某一行的「选中」样式（renderWindow 之外的轻量路径）
+  function paintSelectedRow(r) {
+    if (r < 0) return;
+    const tr = gridBody.querySelector(`tr[data-r="${r}"]`);
+    if (tr) tr.classList.toggle("selected", selectedRow === r);
+  }
 
   function recomputeAndRefresh() {
     if (recomputeTimer) { clearTimeout(recomputeTimer); recomputeTimer = null; }
@@ -800,38 +862,51 @@
     renderWindow(); // 重算后一次性渲染（原来先渲染再重算会二次逐格刷新）
   }
 
+  // 列分类集合：原实现对每个单元格都要做 4 次数组 includes（线性查找），
+  // 渲染窗口 32 行 × 61 列就是近两千次线性查找，每次重算/刷新都要走一遍。
+  const MANUAL_COL_SET = new Set(MANUAL_COLS);
+  const OVERRIDE_COL_SET = new Set(OVERRIDE_COLS);
+  const TEXT_OVERRIDE_COL_SET = new Set(TEXT_OVERRIDE_COLS);
+  // 纯文本计算列 = 计算区里既不可覆盖、也不是手工列、也不是备注的那些（渲染为 div.computed-text）
+  const PLAIN_COMPUTED_COL_SET = new Set(
+    COMPUTED_COLS.filter(
+      (c) => !OVERRIDE_COL_SET.has(c) && !MANUAL_COL_SET.has(c) && !TEXT_OVERRIDE_COL_SET.has(c)
+    )
+  );
+
   function updateVisibleCells() {
-    for (const tr of gridBody.querySelectorAll("tr[data-r]")) {
-      const r = Number(tr.dataset.r);
-      const row = rows[r];
+    // 直接遍历 tbody 的子节点（原本每格两次 querySelector，等于每帧几千次选择器查询）
+    for (const tr of gridBody.children) {
+      const rowIdx = tr.dataset.r;
+      if (rowIdx === undefined) continue; // 顶/底占位行
+      const row = rows[Number(rowIdx)];
       if (!row) continue; // 行数变化后 DOM 可能残留旧行
-      for (const cell of tr.querySelectorAll("td[data-c]")) {
+      const errs = row.errors || {};
+      for (const cell of tr.children) {
         const c = cell.dataset.c;
-        const isErr = !!row.errors[c];
-        cell.classList.toggle("error", isErr);
-        cell.title = isErr ? row.errors[c] : "";
-        const el = cell.querySelector("input,select");
-        if (COMPUTED_COLS.includes(c)) {
-          // 只读计算列为纯文本单元格（无 input），直接同步文本内容
-          const txt = cell.querySelector("div.computed-text");
-          if (txt) {
-            const v = escHtml(fmt(row.values[c]));
-            if (txt.innerHTML !== v) txt.innerHTML = v;
-            continue;
-          }
-          // 无 computed-text 的计算列（可覆盖下拉 Y/Z/AO/AR 渲染为 select）：落到下方控件同步
-          if (!el) continue;
+        if (c === undefined) continue; // 行号列
+        const msg = errs[c];
+        const isErr = !!msg;
+        if (isErr) {
+          if (!cell.classList.contains("error")) cell.classList.add("error");
+        } else if (cell.classList.contains("error")) {
+          cell.classList.remove("error");
         }
+        const title = isErr ? msg : "";
+        if (cell.title !== title) cell.title = title;
+        const el = cell.firstElementChild;
         if (!el) continue;
-        let val;
-        if (OVERRIDE_COLS.includes(c)) val = fmt(row.values[c]);
-        else if (MANUAL_COLS.includes(c)) val = fmt(row.values[c] ?? row.manual[c]); // values 为引擎合并值（手工 + 组内同步填充）
-        else val = fmt(row.input[c]);
-        if (el.tagName === "SELECT") {
-          if (el.value !== val) el.value = val;
-        } else if (el.value !== val) {
-          el.value = val;
+        if (PLAIN_COMPUTED_COL_SET.has(c)) {
+          // 只读计算列为纯文本单元格（无 input），直接同步文本内容
+          const v = escHtml(fmt(row.values[c]));
+          if (el.innerHTML !== v) el.innerHTML = v;
+          continue;
         }
+        let val;
+        if (OVERRIDE_COL_SET.has(c)) val = fmt(row.values[c]);
+        else if (MANUAL_COL_SET.has(c)) val = fmt(row.values[c] ?? row.manual[c]); // values 为引擎合并值（手工 + 组内同步填充）
+        else val = fmt(row.input[c]);
+        if (el.value !== val) el.value = val;
       }
     }
   }
@@ -839,7 +914,7 @@
   function refreshStatus() {
     const { total, byCol } = L.countErrors(rows);
     const status = $("grid-status");
-    const filtered = gridFilterMode && Object.values(gridFilter).some((s) => s.size > 0);
+    const filtered = gridFilterMode && activeFilterEntries().length > 0;
     const visCount = filtered ? rows.reduce((n, _, i) => n + (rowVisible(i) ? 1 : 0), 0) : rows.length;
     status.textContent = `共 ${rows.length} 行` + (filtered ? `（已筛选，显示 ${visCount} 行）` : "") + ` · 错误 ${total} 处`;
     status.className = "status" + (total > 0 ? " err" : "");
@@ -1233,6 +1308,21 @@
     // 选中单元格的整行、整列高亮（拖选多格时以选区代替，避免大片高亮）
     td.classList.toggle("hl-row", !multi && !!cur2 && r === cur2.r && !isCur);
     td.classList.toggle("hl-col", !multi && !!cur2 && c === cur2.c && !isCur);
+  }
+
+  // 只给「一行」补选区类——增量滚动专用（移植自 2.0 版 grid.ts 的 paintRowSelection）。
+  // 原来滚动一帧会调 updateSelectionClasses()，它发现 DOM 换代（selDomGen 变了）就
+  // 整窗全量扫描：62 行 × 61 格 ≈ 3800 次 classList.toggle，等于把整表样式标记为失效，
+  // 实测就是滚动「一顿一顿」的主因（2.0 版同一处的注释也指认了这一点）。
+  function paintRowSelection(tr) {
+    const rect = selRect();
+    const multi = !!(rect && (rect.r1 !== rect.r2 || rect.c1 !== rect.c2));
+    const r = Number(tr.dataset.r);
+    for (const td of tr.children) {
+      const letter = td.dataset.c;
+      if (letter === undefined) continue; // 行号列
+      applySelClasses(td, r, COL_INDEX.get(letter) ?? -1, rect, cur, multi);
+    }
   }
 
   // 全量刷新（渲染窗口变化 / 差量面积过大时的兜底）
@@ -4364,14 +4454,47 @@
 
   // 危害因素名的比较键：统一全/半角尖括号与括号、去掉空白，避免「游离SiO2含量＜10%」与
   // 「游离SiO2含量<10%」这类写法差异导致查不到库内记录。
+  // 实现说明：原版是 5 次链式 replace（每次都要走一遍正则引擎），批量导入时会被调用上千万次，
+  // 改为「快路径预检 + 单次 replace 查表」，结果等价但快数倍。
+  const HAZARD_KEY_MAP = { "＜": "<", "﹤": "<", "＞": ">", "﹥": ">", "（": "(", "）": ")" };
+  const HAZARD_KEY_RE = /[\s\u00a0\u3000＜﹤＞﹥（）]/;
   function normHazardKey(s) {
-    return String(s === null || s === undefined ? "" : s)
-      .replace(/[＜﹤]/g, "<")
-      .replace(/[＞﹥]/g, ">")
-      .replace(/（/g, "(")
-      .replace(/）/g, ")")
-      .replace(/[\s\u00a0\u3000]+/g, "")
-      .trim();
+    const t = String(s === null || s === undefined ? "" : s);
+    // 快路径：绝大多数因素名不含需要归一化的字符（也不含空白），直接返回省掉正则替换
+    if (!HAZARD_KEY_RE.test(t)) return t;
+    // 慢路径：一次扫描同时完成「尖/圆括号转半角 + 删除空白」（\s 已含 \u00a0、\u3000）
+    return t.replace(/[\s\u00a0\u3000＜﹤＞﹥（）]/g, (ch) => HAZARD_KEY_MAP[ch] ?? "");
+  }
+
+  // 危害因素库查询索引：把「识别名 / 系统名」预先建表，使批量导入时的解析从
+  // O(行数 × 库条数) 降为 O(行数)。原先每行要对 600 条库做 2~3 次 find/filter，
+  // 3000 行实测耗时约 9.8 秒（占整个导入的 98%，页面表现为假死）。
+  // ⚠ 索引绑定「构建时的库内容」，只在一次导入内复用；库可被用户编辑，
+  //   跨操作复用会读到陈旧结果，因此不缓存到模块级，由调用方按批次创建。
+  function buildHazardIndex() {
+    const byRec = new Map();
+    const byName = new Map();
+    for (const x of hazardFactors) {
+      const rec = normHazardKey(x.rec);
+      if (rec && !byRec.has(rec)) byRec.set(rec, x); // 语义同 find：保留首个匹配
+      const name = normHazardKey(x.name);
+      if (name) {
+        const arr = byName.get(name);
+        if (arr) arr.push(x);
+        else byName.set(name, [x]);
+      }
+    }
+    return { byRec, byName, dust: new Map(), cache: new Map() };
+  }
+
+  // 单条记录的粉尘性质键（同一记录在导入中会被反复比较，算一次即可）
+  function hazardDustKey(x, index) {
+    let k = index.dust.get(x);
+    if (k === undefined) {
+      k = normHazardKey(x.dust);
+      index.dust.set(x, k);
+    }
+    return k;
   }
 
   // 把导入文件里的「检测项目」文本解析为危害因素库的识别名（rec）。
@@ -4379,34 +4502,94 @@
   // 例如系统名「滑石粉尘(游离SiO2含量＜10%)」下有
   //   滑石粉尘(总尘) / 滑石粉尘(呼尘) / 滑石粉尘(游离SiO2含量<10%)(总尘) / …(呼尘) / 滑石粉尘1 / 滑石粉尘2
   // 旧逻辑用 find() 取第一条，导致呼尘行也被解析成总尘。
-  // 入参：text = 文件里的检测项目（可能是识别名、也可能是系统名或简称）；dustHint = 文件的粉尘性质。
-  function resolveHazardRec(text, dustHint) {
+  // 入参：text = 文件里的检测项目（可能是识别名、也可能是系统名或简称）；dustHint = 文件的粉尘性质；
+  //      index = buildHazardIndex() 的结果（批量导入务必传入；缺省时临时建一个，单次调用成本可忽略）。
+  function resolveHazardRec(text, dustHint, index) {
     const t = String(text === null || text === undefined ? "" : text).trim();
     if (!t) return t;
+    const idx = index || buildHazardIndex();
     const key = normHazardKey(t);
     const dk = normHazardKey(dustHint);
-    const recHit = hazardFactors.find((x) => normHazardKey(x.rec) === key);
-    const nameHits = hazardFactors.filter((x) => normHazardKey(x.name) === key);
-    if (dk) {
-      // ① 用「检测项目 + 粉尘性质」拼库内识别名：文件里写系统名、全称或简称都能命中
-      const combo = hazardFactors.find((x) => normHazardKey(x.rec) === key + "(" + dk + ")");
-      if (combo) return combo.rec;
-      // ② 系统名命中多条时，按粉尘性质挑
-      const byDust = nameHits.find((x) => normHazardKey(x.dust) === dk);
-      if (byDust) return byDust.rec;
-      // ③ 本身已是库内识别名，且粉尘性质一致
-      if (recHit && normHazardKey(recHit.dust) === dk) return recHit.rec;
-    }
-    // ④ 没有可用的「粉尘性质」时保持原有行为（识别名优先，其次系统名）
-    if (recHit) return recHit.rec;
-    if (nameHits.length) return nameHits[0].rec;
-    return t;
+    // 同一「检测项目 + 粉尘性质」在导入文件里通常重复成百上千次 → 记忆化，直接返回
+    const memoKey = key + "\u0002" + dk;
+    const memo = idx.cache.get(memoKey);
+    if (memo !== undefined) return memo;
+    const result = (() => {
+      const recHit = idx.byRec.get(key) || null;
+      const nameHits = idx.byName.get(key) || [];
+      if (dk) {
+        // ① 用「检测项目 + 粉尘性质」拼库内识别名：文件里写系统名、全称或简称都能命中
+        const combo = idx.byRec.get(key + "(" + dk + ")");
+        if (combo) return combo.rec;
+        // ② 系统名命中多条时，按粉尘性质挑
+        const byDust = nameHits.find((x) => hazardDustKey(x, idx) === dk);
+        if (byDust) return byDust.rec;
+        // ③ 本身已是库内识别名，且粉尘性质一致
+        if (recHit && hazardDustKey(recHit, idx) === dk) return recHit.rec;
+      }
+      // ④ 没有可用的「粉尘性质」时保持原有行为（识别名优先，其次系统名）
+      if (recHit) return recHit.rec;
+      if (nameHits.length) return nameHits[0].rec;
+      return t;
+    })();
+    idx.cache.set(memoKey, result);
+    return result;
   }
 
   // 解析并导入一个 xlsx 工作簿；供「导入 Excel」按钮与「网站数据导入」共用。
   // 成功时弹提示并返回 { mainImported, surveyMatched, totalRows, message }；失败时抛错。
+  // ---------- 导入进度遮罩 ----------
+  // 大文件导入会占用主线程数秒，期间页面无法响应。用遮罩 + 分片让出主线程，
+  // 既能显示进展、也避免浏览器判定「页面无响应」。
+  let importMaskEl = null;
+  function ensureImportMask() {
+    if (importMaskEl) return importMaskEl;
+    const mask = document.createElement("div");
+    mask.id = "import-mask";
+    mask.style.cssText =
+      "position:fixed;inset:0;background:rgba(15,23,42,.38);display:none;align-items:center;justify-content:center;z-index:9999";
+    const card = document.createElement("div");
+    card.style.cssText =
+      "background:#fff;border-radius:10px;padding:18px 26px;box-shadow:0 10px 30px rgba(15,23,42,.25);" +
+      "font-size:13px;color:#1e293b;min-width:240px;max-width:70vw;text-align:center;line-height:1.6";
+    const txt = document.createElement("div");
+    txt.className = "import-mask-text";
+    txt.textContent = "正在导入…";
+    card.appendChild(txt);
+    mask.appendChild(card);
+    document.body.appendChild(mask);
+    importMaskEl = mask;
+    return mask;
+  }
+  function showImportMask(text) {
+    const mask = ensureImportMask();
+    mask.querySelector(".import-mask-text").textContent = text || "正在导入…";
+    mask.style.display = "flex";
+  }
+  function setImportProgress(text) {
+    if (!importMaskEl || importMaskEl.style.display === "none") return;
+    importMaskEl.querySelector(".import-mask-text").textContent = text;
+  }
+  function hideImportMask() {
+    if (importMaskEl) importMaskEl.style.display = "none";
+  }
+  // 让出主线程一帧：使进度文字真正绘制出来，同时让浏览器有机会响应输入。
+  // 后台标签页不触发 requestAnimationFrame，用 50ms 定时器兜底，避免导入被挂起。
+  const yieldToUI = () =>
+    new Promise((resolve) => {
+      let done = false;
+      const fin = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      requestAnimationFrame(() => setTimeout(fin, 0));
+      setTimeout(fin, 50);
+    });
+
   async function importWorkbookBuffer(buf, extraNote) {
     try {
+      showImportMask("正在读取文件…");
       await ensureXlsx();
       const sheets = await X.readWorkbook(buf);
       const byName = {};
@@ -4444,21 +4627,45 @@
           AM: "J", BE: "K", AC: "L", AO: "M", AR: "N", Y: "O", BC: "P", AQ: "Q",
           AD: "R", AE: "S", AF: "T", AW: "U",
         };
+        // 列 → 表头 → 文件内下标：一次算好。原实现每行每列都做 HEADERS.indexOf()，
+        // 3000 行时是二十多万次线性查找（占导入耗时的可观部分）。
+        const headerAt = {};
+        for (const c of [...INPUT_COLS, ...COMPUTED_COLS]) {
+          const h = HEADERS[colIdx(c)];
+          headerAt[c] = h !== undefined && h in idx ? idx[h] : -1;
+        }
+        const dustAt = headerAt.AU; // 粉尘性质列：解析粉尘类「总尘 / 呼尘」用
+        const hIndex = buildHazardIndex(); // 危害因素库索引（一次构建，逐行 O(1)）
+        // 反推映射的键值对只取一次（原写法每行都 Object.entries 新建一次数组）
+        const reverseEntries = Object.entries(COMPUTED_TO_INPUT);
         const imported = [];
         const importedVals = [];
-        for (const r of arr.slice(1)) {
-          if (!r.some((v) => v !== "" && v !== null && v !== undefined)) continue;
+        const body = arr.slice(1);
+        for (let ri = 0; ri < body.length; ri++) {
+          // 大文件分片：每 600 行让出一次主线程 → 进度提示可见、页面不假死
+          if (ri > 0 && ri % 600 === 0) {
+            setImportProgress(`正在解析测点数据…（${ri} / ${body.length} 行）`);
+            await yieldToUI();
+          }
+          const r = body[ri];
+          // 空行跳过（原用 r.some(回调)，大数组上回调开销明显，改显式循环提前退出）
+          let nonEmpty = false;
+          for (let k = 0; k < r.length; k++) {
+            const v = r[k];
+            if (v !== "" && v !== null && v !== undefined) { nonEmpty = true; break; }
+          }
+          if (!nonEmpty) continue;
           const row = blankRow();
           const vals = {};
           if (hasInput) {
             for (const c of INPUT_COLS) {
-              const h = HEADERS[colIdx(c)];
-              if (h in idx) row.input[c] = fmt(r[idx[h]]);
+              const at = headerAt[c];
+              if (at >= 0) row.input[c] = fmt(r[at]);
             }
           } else {
-            for (const [comp, inp] of Object.entries(COMPUTED_TO_INPUT)) {
-              const h = HEADERS[colIdx(comp)];
-              const v = h in idx ? r[idx[h]] : "";
+            for (const [comp, inp] of reverseEntries) {
+              const at = headerAt[comp];
+              const v = at >= 0 ? r[at] : "";
               if (v !== "" && v !== null && v !== undefined) row.input[inp] = fmt(v);
             }
             // AE 的自动默认值“长白班”不是录入区 S 列的合法下拉值，跳过反推（引擎会自动重算出来）
@@ -4469,28 +4676,27 @@
           // （如「滑石粉尘(游离SiO2含量＜10%)」下有 滑石粉尘(总尘)/滑石粉尘(呼尘)/滑石粉尘1/滑石粉尘2 …），
           // 旧逻辑 find() 只取第一条 → 呼尘行也会被解析成总尘。
           if (row.input.D) {
-            const dustH = HEADERS[colIdx("AU")];
-            row.input.D = resolveHazardRec(row.input.D, dustH in idx ? fmt(r[idx[dustH]]) : "");
+            row.input.D = resolveHazardRec(row.input.D, dustAt >= 0 ? fmt(r[dustAt]) : "", hIndex);
           }
           for (const c of MANUAL_COLS) {
-            const h = HEADERS[colIdx(c)];
-            if (h in idx) row.manual[c] = fmt(r[idx[h]]);
+            const at = headerAt[c];
+            if (at >= 0) row.manual[c] = fmt(r[at]);
           }
           // 备注：上游「备注」列（平台上 isSample=0 时显示为「不采样说明」、
           // isExclusionaryTesting=1 时为「排除性检测说明」，其余为「备注」）
           // → 主表「备注」列（录入区 V；计算引擎会把它同步填充到自动计算区备注 BI）
           if (!row.input.V) {
-            const h = HEADERS[colIdx("BI")];
-            if (h in idx) {
-              const remark = fmt(r[idx[h]]);
+            const at = headerAt.BI;
+            if (at >= 0) {
+              const remark = fmt(r[at]);
               // 跳过 Excel 错误值（如 #VALUE! / #N/A），这类不是真实备注
               if (remark !== "" && String(remark).charAt(0) !== "#") row.input.V = remark;
             }
           }
           if (hasInput) {
             for (const c of COMPUTED_COLS) {
-              const h = HEADERS[colIdx(c)];
-              if (h in idx) vals[c] = fmt(r[idx[h]]);
+              const at = headerAt[c];
+              if (at >= 0) vals[c] = fmt(r[at]);
             }
           }
           imported.push(row);
@@ -4544,7 +4750,11 @@
           }
           rowHeights = rows.map(() => ROW_H);
           rowOffsets = null;
+          setImportProgress(`正在计算 ${rows.length} 行的自动计算区…`);
+          await yieldToUI();
           L.computeRows(rows, { hazardFactors });
+          setImportProgress(`正在回填覆盖值并复算…（${rows.length} 行）`);
+          await yieldToUI();
           if (hasInput) {
             // 完整结构文件：保留文件里的覆盖值
             rows.forEach((row, i) => {
@@ -4575,6 +4785,8 @@
           selectedRow = -1;
         }
       }
+      setImportProgress("正在准备表格…");
+      await yieldToUI();
       rebuildDatalist(); // 参考库不随导入变化，仅重建录入区的联想列表
       renderWindow();
       let message;
@@ -4601,6 +4813,8 @@
     } catch (err) {
       console.error(err);
       throw err;
+    } finally {
+      hideImportMask();
     }
   }
 

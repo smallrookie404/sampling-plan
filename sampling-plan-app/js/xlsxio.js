@@ -21,6 +21,8 @@
   }
 
   function unesc(s) {
+    // 快路径：绝大多数单元格不含实体引用，省掉 7 次正则替换
+    if (s.indexOf("&") < 0) return s;
     return s
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
@@ -58,7 +60,9 @@
   }
 
   function parseSheetXml(xml, ss) {
-    const grid = new Map();
+    // 用「行数组 + 列下标」直接存，替代原来的 Map<"r|c", v>：
+    // 上万行的表有几十万个单元格，字符串键的 Map 读写占解析耗时的大头（实测约 2/3）。
+    const cells = [];
     let maxRow = -1, maxCol = -1;
     for (const m of xml.matchAll(/<c\s+([^>]*?)(?:\/>|>(.*?)<\/c>)/gs)) {
       const attrs = m[1], body = m[2] || "";
@@ -85,12 +89,14 @@
         if (isNaN(val)) val = raw;
       }
       if (val !== null) {
-        grid.set(`${pos.row}|${pos.col}`, val);
+        let line = cells[pos.row];
+        if (line === undefined) line = cells[pos.row] = [];
+        line[pos.col] = val;
         if (pos.row > maxRow) maxRow = pos.row;
         if (pos.col > maxCol) maxCol = pos.col;
       }
     }
-    return { grid, rows: maxRow + 1, cols: maxCol + 1 };
+    return { cells, rows: maxRow + 1, cols: maxCol + 1 };
   }
 
   async function readWorkbook(blob) {
@@ -119,11 +125,23 @@
   }
 
   function sheetToArray(sheet) {
-    const arr = [];
-    for (let r = 0; r < sheet.rows; r++) {
-      const row = [];
-      for (let c = 0; c < sheet.cols; c++) row.push(sheet.grid.get(`${r}|${c}`) ?? "");
-      arr.push(row);
+    const rows = sheet.rows || 0;
+    const cols = sheet.cols || 0;
+    const cells = sheet.cells || [];
+    const arr = new Array(rows);
+    for (let r = 0; r < rows; r++) {
+      const line = cells[r];
+      if (line === undefined) {
+        // 整行为空：每行都给独立数组（调用方可能就地写入）
+        arr[r] = new Array(cols).fill("");
+        continue;
+      }
+      const row = new Array(cols);
+      for (let c = 0; c < cols; c++) {
+        const v = line[c];
+        row[c] = v === undefined || v === null ? "" : v;
+      }
+      arr[r] = row;
     }
     return arr;
   }

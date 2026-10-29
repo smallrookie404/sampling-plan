@@ -121,9 +121,31 @@
    *     errors: { col: 说明 }       // 校验错误
    *   }
    */
+  // 单行「操作设备…作业」文本（AM 的默认推导）：取「区」或首个数字之前的部分
+  function opBaseText(text) {
+    const t = str(text);
+    let earliest = -1;
+    const q = t.indexOf("区");
+    if (q >= 0) earliest = q;
+    for (let d = 0; d < 10; d++) {
+      const p = t.indexOf(String(d));
+      if (p >= 0 && (earliest < 0 || p < earliest)) earliest = p;
+    }
+    const base = earliest < 0 || earliest === t.length ? t : t.slice(0, earliest);
+    return "操作设备" + base + "作业";
+  }
+
+  /*
+   * 计算入口。这是全表重算：行数上万时每次编辑都会调用，
+   * 因此刻意不用「每列一个 map 数组」的写法（旧实现每次重算要分配 40 多个 n 长数组、
+   * 约 7n 次分组键字符串拼接），改为两遍循环：
+   *   ① 下填列 + 「车间|岗位(|点位)」分组聚合（一遍扫描，结果落在 Map/Set 里）；
+   *   ② 逐行组装 values 并校验。
+   * 语义与旧版逐列实现完全一致（逐列比对见 tests/_diff_logic.mjs）。
+   */
   function computeRows(rows, ref) {
     const n = rows.length;
-    const last = n - 1;
+    if (!n) return rows;
 
     // 危害因素查找索引：一次构建，逐行 O(1) 查询（语义与原 find 一致：保留首个匹配）
     const hazardRecMap = new Map();
@@ -138,257 +160,182 @@
       const k = str(d);
       return k ? hazardRecMap.get(k) || null : null;
     };
-    const findName = (n) => {
-      const k = str(n);
+    const findName = (nm) => {
+      const k = str(nm);
       return k ? hazardNameMap.get(k) || null : null;
     };
 
-    // 提取各输入列
-    const col = (c) => rows.map((r, i) => (i <= last ? r.input[c] ?? "" : ""));
-    const A = col("A"), B = col("B"), C = col("C"), D = col("D"), E = col("E");
-    const F = col("F"), G = col("G"), H = col("H"), I = col("I"), L = col("L");
-    const M = col("M"), N = col("N"), O = col("O"), P = col("P"), Q = col("Q");
-    const R = col("R"), S = col("S"), T = col("T"), U = col("U");
+    // ---------- 第一遍：下填列 + 分组聚合 ----------
+    // 下填结果按列存数组（第二遍组装要用）：W=A X=B AL=C AG=G AH=F AZ=E AA=H BA=I
+    const W = new Array(n), X = new Array(n), AL = new Array(n);
+    const AG = new Array(n), AH = new Array(n), AZ = new Array(n);
+    const AA = new Array(n), Ifilled = new Array(n);
+    const keyWH = new Array(n);   // 车间|岗位
+    const keyWHP = new Array(n);  // 车间|岗位|点位
 
-    // 1) 基础下填/默认列（对应 W/X/Y/Z/AA/AC/AG/AH/AY/AZ/AL/AQ/AR/BC）
-    const W = fillDown(A);
-    const X = fillDown(B);
-    const Ydefault = O.map((v) => (v !== "" ? v : "固定"));
-    const Zbase = A.map(() => "浓度（或强度）相对稳定");
-    const AA = fillDown(H).map(toNum);
-    const ACbase = L.map((v) => (v !== "" ? v : "半手工作业"));
-    const AG = fillDown(G);
-    const AH = fillDown(F).map(toNum);
-    const AL = fillDown(C);
-    const AQ = Q.map((v) => (v !== "" ? v : "否"));
-    const ARbase = N.map((v) => (v !== "" ? v : "定点"));
-    const AY = fillDown(G);
-    const AZ = fillDown(E).map(toNum);
-    const BC = P.map((v) => (v !== "" ? v : "否"));
-    const I_filled = fillDown(I); // BA 使用的“检测天数”下填值
+    const groupDivisor = new Map();     // AB：车间|岗位 → 最大班数
+    const groupHasRounds = new Set();   // AD：组内是否有「轮班」
+    const groupSHit = new Map();        // AE：组内首个非空 S
+    const groupTHit = new Map();        // AF：组内首个非空 T
+    const groupJ = new Map();           // AM：组内首个非空 J
+    const groupO = new Map();           // Y：组内首个非空 O
+    const groupL = new Map();           // AC：组内首个非空 L
+    const groupK = new Map();           // BE/BD：组内首个非空 K
+    const groupHasNoiseInd = new Set(); // AV：组内存在「噪声 + 个体」
 
-    // 2) 组级计算（按 车间|岗位 分组）
-    // AB 每班最大人数
-    const baseDivisor = S.map((s, i) => {
-      const check = contains("其他", s) ? T[i] : s;
-      const ck = str(check);
-      if (contains("五班", ck)) return 5;
-      if (contains("四班", ck)) return 4;
-      if (contains("三班", ck)) return 3;
-      if (contains("两班", ck)) return 2;
-      return 1;
-    });
-    const groupDivisor = {};
-    const groupId = W.map((w, i) => str(w) + "|" + str(X[i]));
-    for (let i = 0; i < n; i++) {
-      const g = groupId[i];
-      if (!(g in groupDivisor) || baseDivisor[i] > groupDivisor[g]) groupDivisor[g] = baseDivisor[i];
-    }
-    const AB = AA.map((v, i) => {
-      const d = groupDivisor[groupId[i]] ?? 1;
-      return v === "" ? "" : ceilDiv(v, d);
-    });
-
-    // AD/AE/AF 班制：组内回填，无则单班/长白班
-    // 分组信息单遍预计算，避免逐行扫描造成 O(n²)
-    const groupHasRounds = {};
-    const groupSHit = {};
-    const groupTHit = {};
-    for (let i = 0; i < n; i++) {
-      const g = groupId[i];
-      if (contains("轮班", R[i])) groupHasRounds[g] = true;
-      if (groupSHit[g] === undefined && S[i] !== "") groupSHit[g] = S[i];
-      if (groupTHit[g] === undefined && T[i] !== "") groupTHit[g] = T[i];
-    }
-    const AD = R.map((v, i) => {
-      if (v !== "") return v;
-      return groupHasRounds[groupId[i]] ? "轮班" : "单班";
-    });
-    const AE = S.map((v, i) => {
-      if (v !== "") return v;
-      const hit = groupSHit[groupId[i]];
-      return hit === undefined || hit === "" ? "长白班" : hit;
-    });
-    const AF = T.map((v, i) => {
-      if (v !== "") return v;
-      return groupTHit[groupId[i]] ?? "";
-    });
-
-    // AV 噪声源：噪声+定点 时，同车间同岗位存在“个体”噪声采样 → 是
-    const AR = rows.map((r, i) => (r.overridden && r.overridden.AR ? r.values.AR : ARbase[i]));
-    const ANpre = D.map((d) => {
-      const h = findRec(d);
-      return h ? h.name : "";
-    });
-    const groupHasNoiseInd = {};
-    for (let i = 0; i < n; i++) {
-      const g = groupId[i];
-      if (ANpre[i] === "噪声" && AR[i] === "个体") groupHasNoiseInd[g] = true;
-    }
-    const AV = ANpre.map((an, i) => {
-      if (an !== "噪声" || AR[i] !== "定点") return "否";
-      return groupHasNoiseInd[groupId[i]] ? "是" : "否";
-    });
-
-    // 3) 危害因素表查找列
-    const AN = ANpre;
-    const AP = D.map((d) => {
-      const h = findRec(d);
-      return h ? h.qual : "";
-    });
-    const AT = D.map((d) => {
-      const h = findRec(d);
-      return h ? h.outsource : "";
-    });
-    const AU = D.map((d) => {
-      const h = findRec(d);
-      return h ? h.dust : "";
-    });
-    const BI = AN.map((an) => {
-      const h = findName(an);
-      return h ? h.noTestReason : "";
-    });
-    const AObase = M.map((v, i) => {
-      if (v !== "") return v;
-      const h = findName(AN[i]);
-      return h && h.noTestReason !== "" ? "否" : "是";
-    });
-    const AO = rows.map((r, i) => (r.overridden && r.overridden.AO ? r.values.AO : AObase[i]));
-
-    // 4) 派生列
-    const AK = AR.map((v) => (v === "定点" ? "采样点" : "采样对象"));
-    const AMbase = AL.map((s) => {
-      const text = str(s);
-      const posQ = text.indexOf("区");
-      const digits = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => text.indexOf(String(d))).filter((p) => p >= 0);
-      const earliest = [posQ, ...digits].filter((p) => p >= 0).sort((a, b) => a - b)[0];
-      const base = earliest === undefined || earliest === text.length ? text : text.slice(0, earliest);
-      return "操作设备" + base + "作业";
-    });
-    // 工作内容（AM）：录入区 J 有内容时，同 车间(W)|岗位(X)|点位(AL) 组的所有行
-    // 的 AM 按组内第一个非空 J 的内容填充（组内多行录入时取最先出现的）；J 全空则按原推导
-    const Jinput = col("J");
-    const AM = (() => {
-      const groupJ = new Map(); // 组键 -> 第一个非空 J 内容
-      for (let i = 0; i < n; i++) {
-        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
-        const j = str(Jinput[i]);
-        if (j !== "" && !groupJ.has(key)) groupJ.set(key, j);
-      }
-      return AMbase.map((v, i) => {
-        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
-        return groupJ.has(key) ? groupJ.get(key) : v;
-      });
-    })();
-    // 岗位性质（Y）：录入区 O 有内容时，同 车间(W)|岗位(X) 组的所有行
-    // 的 Y 按组内第一个非空 O 的内容填充（分组键不含点位，与工作内容 J→AM 略有区别）；
-    // O 全空则该组按原默认「固定」。手工覆盖（overridden.Y）在下方组装时仍优先
-    const Ybase = (() => {
-      const groupO = new Map(); // 车间|岗位 键 -> 第一个非空 O 内容
-      for (let i = 0; i < n; i++) {
-        const key = W[i] + "\u0001" + X[i];
-        const o = str(O[i]);
-        if (o !== "" && !groupO.has(key)) groupO.set(key, o);
-      }
-      return Ydefault.map((v, i) => {
-        const key = W[i] + "\u0001" + X[i];
-        return groupO.has(key) ? groupO.get(key) : v;
-      });
-    })();
-    // 危害因素其他来源（BE）：录入区 K 有内容时，同 车间(W)|岗位(X)|点位(AL) 组内
-    // 第一个非空 K 的内容用于填充该组 BE 为空的行（BE 已手工填写的不覆盖）；K 全空不填充
-    const Kinput = col("K");
-    const groupK = new Map(); // 组键 -> 第一个非空 K 内容
-    for (let i = 0; i < n; i++) {
-      const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
-      const k = str(Kinput[i]);
-      if (k !== "" && !groupK.has(key)) groupK.set(key, k);
-    }
-    // 危害因素其他来源（BE）：纯计算列——组内 K（录入区）有内容时按组内第一个非空 K 填充，否则为空
-    const BE = rows.map((_, i) => groupK.get(W[i] + "\u0001" + X[i] + "\u0001" + AL[i]) ?? "");
-    // 作业方式（AC）：录入区 L 有内容时，同 车间(W)|岗位(X)|点位(AL) 组的所有行
-    // 的 AC 按组内第一个非空 L 的内容填充（与工作内容 J→AM 一致）；L 全空则按原默认
-    const AC = (() => {
-      const groupL = new Map(); // 组键 -> 第一个非空 L 内容
-      for (let i = 0; i < n; i++) {
-        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
-        const l = str(L[i]);
-        if (l !== "" && !groupL.has(key)) groupL.set(key, l);
-      }
-      return ACbase.map((v, i) => {
-        const key = W[i] + "\u0001" + X[i] + "\u0001" + AL[i];
-        return groupL.has(key) ? groupL.get(key) : v;
-      });
-    })();
-    const AS = AR.map((v) => (v === "定点" ? "短时间" : v === "个体" ? "长时间" : ""));
-    const AW = AN.map((an, i) => (an === "高温" ? (U[i] !== "" ? U[i] : "Ⅱ") : ""));
-    const BA = AN.map((an, i) => {
-      const special =
-        ["游离二氧化硅", "噪声", "高温", "工频电场", "手传振动", "高频电磁场", "紫外辐射"].includes(an) ||
-        contains("有机组分定性", an);
-      return special ? 1 : I_filled[i];
-    });
-    const BB = AN.map((an, i) => {
-      if (contains("有机组分定性", an) || AR[i] === "个体" || ["游离二氧化硅", "工频电场", "高频电磁场", "激光辐射"].includes(an)) return 1;
-      if (["噪声", "高温", "手传振动"].includes(an)) return 3;
-      if (an === "紫外辐射") return 1;
-      const az = AZ[i];
-      if (az === 0.5) return 2;
-      if (az === 0.25) return 1;
-      return 3;
-    });
-    // 危害因素来源（BD）：组内 K（危害因素其他来源）有录入时置空，否则按危害因素类型推导
-    const BD = AN.map((an, i) => {
-      if (groupK.has(W[i] + "\u0001" + X[i] + "\u0001" + AL[i])) return "";
-      return ["噪声", "高温", "紫外辐射"].includes(an) ? "设备运行" : "原辅物料";
-    });
-
-    // 5) 组装结果
+    let prevA = "", prevB = "", prevC = "", prevE = "", prevF = "", prevG = "", prevH = "", prevI = "";
     for (let i = 0; i < n; i++) {
       const r = rows[i];
+      const inp = r.input;
+
+      const a = inp.A ?? ""; if (a !== "") prevA = a;
+      const b = inp.B ?? ""; if (b !== "") prevB = b;
+      const c = inp.C ?? ""; if (c !== "") prevC = c;
+      const e = inp.E ?? ""; if (e !== "") prevE = e;
+      const f = inp.F ?? ""; if (f !== "") prevF = f;
+      const g = inp.G ?? ""; if (g !== "") prevG = g;
+      const hh = inp.H ?? ""; if (hh !== "") prevH = hh;
+      const ii = inp.I ?? ""; if (ii !== "") prevI = ii;
+
+      W[i] = prevA; X[i] = prevB; AL[i] = prevC;
+      AG[i] = prevG;
+      AH[i] = toNum(prevF);
+      AZ[i] = toNum(prevE);
+      AA[i] = toNum(prevH);
+      Ifilled[i] = prevI;
+
+      const k2 = prevA + "\u0001" + prevB;
+      const k3 = k2 + "\u0001" + prevC;
+      keyWH[i] = k2;
+      keyWHP[i] = k3;
+
+      // AB 的班数除数：组内取最大值
+      const s = inp.S ?? "";
+      const check = contains("其他", s) ? (inp.T ?? "") : s;
+      let div = 1;
+      if (contains("五班", check)) div = 5;
+      else if (contains("四班", check)) div = 4;
+      else if (contains("三班", check)) div = 3;
+      else if (contains("两班", check)) div = 2;
+      const gd = groupDivisor.get(k2);
+      if (gd === undefined || div > gd) groupDivisor.set(k2, div);
+
+      if (contains("轮班", inp.R)) groupHasRounds.add(k2);
+      if (s !== "" && !groupSHit.has(k2)) groupSHit.set(k2, s);
+      const t = inp.T ?? "";
+      if (t !== "" && !groupTHit.has(k2)) groupTHit.set(k2, t);
+      const j = inp.J ?? "";
+      if (j !== "" && !groupJ.has(k3)) groupJ.set(k3, j);
+      const o = inp.O ?? "";
+      if (o !== "" && !groupO.has(k2)) groupO.set(k2, o);
+      const l = inp.L ?? "";
+      if (l !== "" && !groupL.has(k3)) groupL.set(k3, l);
+      const k = inp.K ?? "";
+      if (k !== "" && !groupK.has(k3)) groupK.set(k3, k);
+
+      // AV 预扫描：本组是否已有「噪声 + 个体」
+      const ov = r.overridden;
+      const rec0 = findRec(inp.D);
+      const an0 = rec0 ? rec0.name : "";
+      const ar0 = ov && ov.AR ? r.values.AR : (inp.N !== "" ? inp.N : "定点");
+      if (an0 === "噪声" && ar0 === "个体") groupHasNoiseInd.add(k2);
+    }
+
+    // ---------- 第二遍：组装结果 ----------
+    for (let i = 0; i < n; i++) {
+      const r = rows[i];
+      const inp = r.input;
       const vals = r.values;
-      // 任意自动列均可被覆盖（导入“仅自动计算区”文件时用于保留静态结果）
-      const keep = (c) => r.overridden && r.overridden[c] === true;
-      const put = (c, v) => {
-        if (!keep(c)) vals[c] = v;
-      };
-      put("W", W[i]);
-      put("X", X[i]);
-      put("Y", Ybase[i]);
-      put("Z", Zbase[i]);
-      put("AA", AA[i]);
-      put("AB", AB[i]);
-      put("AC", AC[i]);
-      put("AD", AD[i]);
-      put("AE", AE[i]);
-      put("AF", AF[i]);
-      put("AG", AG[i]);
-      put("AH", AH[i]);
-      put("AK", AK[i]);
-      put("AL", AL[i]);
-      put("AM", AM[i]);
-      put("AN", AN[i]);
-      put("AO", AO[i]);
-      put("AP", AP[i]);
-      put("AQ", AQ[i]);
-      put("AR", AR[i]);
-      put("AS", AS[i]);
-      put("AT", AT[i]);
-      put("AU", AU[i]);
-      put("AV", AV[i]);
-      put("AW", AW[i]);
-      put("AY", AY[i]);
-      put("AZ", AZ[i]);
-      put("BA", BA[i]);
-      put("BB", BB[i]);
-      put("BC", BC[i]);
-      put("BD", BD[i]);
-      put("BE", BE[i]);
-      put("BI", BI[i]);
-      // 手工列
-      for (const mc of MANUAL_COLS) vals[mc] = r.manual[mc] ?? "";
+      const ov = r.overridden;
+      const k2 = keyWH[i];
+      const k3 = keyWHP[i];
+      // 录入区取值：缺键统一按空串（与旧实现的 r.input[c] ?? "" 一致）
+      const vR = inp.R ?? "", vS = inp.S ?? "", vT = inp.T ?? "", vO = inp.O ?? "";
+      const vL = inp.L ?? "", vM = inp.M ?? "", vN = inp.N ?? "", vP = inp.P ?? "";
+      const vQ = inp.Q ?? "", vU = inp.U ?? "";
+
+      const rec = findRec(inp.D);
+      const an = rec ? rec.name : "";
+      const anName = findName(an);
+      const ar = ov && ov.AR ? vals.AR : vN !== "" ? vN : "定点";
+
+      // 1) 基础下填/默认列
+      if (ov == null || ov.W !== true) vals.W = W[i];
+      if (ov == null || ov.X !== true) vals.X = X[i];
+      if (ov == null || ov.Y !== true) {
+        if (groupO.has(k2)) vals.Y = groupO.get(k2);
+        else vals.Y = vO !== "" ? vO : "固定";
+      }
+      if (ov == null || ov.Z !== true) vals.Z = "浓度（或强度）相对稳定";
+      if (ov == null || ov.AA !== true) vals.AA = AA[i];
+      if (ov == null || ov.AB !== true) {
+        const d = groupDivisor.get(k2) ?? 1;
+        vals.AB = AA[i] === "" ? "" : ceilDiv(AA[i], d);
+      }
+      if (ov == null || ov.AC !== true) {
+        if (groupL.has(k3)) vals.AC = groupL.get(k3);
+        else vals.AC = vL !== "" ? vL : "半手工作业";
+      }
+      if (ov == null || ov.AD !== true) vals.AD = vR !== "" ? vR : groupHasRounds.has(k2) ? "轮班" : "单班";
+      if (ov == null || ov.AE !== true) vals.AE = vS !== "" ? vS : groupSHit.has(k2) ? groupSHit.get(k2) : "长白班";
+      if (ov == null || ov.AF !== true) vals.AF = vT !== "" ? vT : (groupTHit.get(k2) ?? "");
+      if (ov == null || ov.AG !== true) vals.AG = AG[i];
+      if (ov == null || ov.AH !== true) vals.AH = AH[i];
+
+      // 2) 危害因素查表列
+      if (ov == null || ov.AK !== true) vals.AK = ar === "定点" ? "采样点" : "采样对象";
+      if (ov == null || ov.AL !== true) vals.AL = AL[i];
+      if (ov == null || ov.AM !== true) vals.AM = groupJ.has(k3) ? groupJ.get(k3) : opBaseText(AL[i]);
+      if (ov == null || ov.AN !== true) vals.AN = an;
+      if (ov == null || ov.AO !== true) {
+        if (vM !== "") vals.AO = vM;
+        else vals.AO = anName && anName.noTestReason !== "" ? "否" : "是";
+      }
+      if (ov == null || ov.AP !== true) vals.AP = rec ? rec.qual : "";
+      if (ov == null || ov.AQ !== true) vals.AQ = vQ !== "" ? vQ : "否";
+      if (ov == null || ov.AR !== true) vals.AR = ar;
+      if (ov == null || ov.AS !== true) vals.AS = ar === "定点" ? "短时间" : ar === "个体" ? "长时间" : "";
+      if (ov == null || ov.AT !== true) vals.AT = rec ? rec.outsource : "";
+      if (ov == null || ov.AU !== true) vals.AU = rec ? rec.dust : "";
+      if (ov == null || ov.AV !== true) {
+        if (an !== "噪声" || ar !== "定点") vals.AV = "否";
+        else vals.AV = groupHasNoiseInd.has(k2) ? "是" : "否";
+      }
+      if (ov == null || ov.AW !== true) vals.AW = an === "高温" ? (vU !== "" ? vU : "Ⅱ") : "";
+      if (ov == null || ov.AY !== true) vals.AY = AG[i];
+      if (ov == null || ov.AZ !== true) vals.AZ = AZ[i];
+
+      // 3) 派生列
+      if (ov == null || ov.BA !== true) {
+        const special =
+          an === "游离二氧化硅" || an === "噪声" || an === "高温" || an === "工频电场" ||
+          an === "手传振动" || an === "高频电磁场" || an === "紫外辐射" || contains("有机组分定性", an);
+        vals.BA = special ? 1 : Ifilled[i];
+      }
+      if (ov == null || ov.BB !== true) {
+        if (contains("有机组分定性", an) || ar === "个体") vals.BB = 1;
+        else if (an === "游离二氧化硅" || an === "工频电场" || an === "高频电磁场" || an === "激光辐射") vals.BB = 1;
+        else if (an === "噪声" || an === "高温" || an === "手传振动") vals.BB = 3;
+        else if (an === "紫外辐射") vals.BB = 1;
+        else if (AZ[i] === 0.5) vals.BB = 2;
+        else if (AZ[i] === 0.25) vals.BB = 1;
+        else vals.BB = 3;
+      }
+      if (ov == null || ov.BC !== true) vals.BC = vP !== "" ? vP : "否";
+      if (ov == null || ov.BD !== true) {
+        if (groupK.has(k3)) vals.BD = "";
+        else vals.BD = an === "噪声" || an === "高温" || an === "紫外辐射" ? "设备运行" : "原辅物料";
+      }
+      if (ov == null || ov.BE !== true) vals.BE = groupK.get(k3) ?? "";
+      if (ov == null || ov.BI !== true) vals.BI = anName ? anName.noTestReason : "";
+
+      // 4) 手工列
+      for (let mi = 0; mi < MANUAL_COLS.length; mi++) {
+        const mc = MANUAL_COLS[mi];
+        vals[mc] = r.manual[mc] ?? "";
+      }
       // 录入区备注列（V）有内容时，自动计算区备注列（BI）填充该内容；为空则按原逻辑
-      const remark = r.input && r.input.V;
+      const remark = inp.V;
       if (remark !== undefined && String(remark).trim() !== "") {
         vals.BI = String(remark);
       }

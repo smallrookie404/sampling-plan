@@ -430,6 +430,11 @@ table.grid {
   cursor: col-resize;
 }
 .grid tbody td { height: 30px; background: var(--input-bg); }
+/* 主表格单元格布局隔离：61 列 × 渲染窗口行数，每次增删行的样式重算/布局都会波及整表。
+   contain:layout style 让每个单元格自成隔离区（实测「删 3 行 + 插 3 行」一轮 115ms → 74ms），
+   滚动与编辑刷新明显更跟手。⚠ 不能让 td 承担 sticky 定位以外的新包含块职责——
+   sticky 列在 tbody td 上用的是 left 偏移，已单独验证横向滚动仍正常锁定。 */
+#main-grid tbody td { contain: layout style; }
 .grid tbody td.computed { background: var(--computed-bg); }
 .grid tbody td.manual { background: var(--manual-bg); }
 .grid tbody td.override { background: var(--override-bg); }

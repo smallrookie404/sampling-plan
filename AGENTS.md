@@ -157,6 +157,14 @@ sampling-plan/
 - ⚠ 已知**预存在失败**（与近期改动无关，勿误判）：`tests/ui.smoke.mjs` 第 4 步「覆盖联动」（AR 覆盖为「个体」时期望 AS=长时间/AK=采样对象）——当前逻辑产出短时间/采样点，断言陈旧。
 - 环境注意：本机系统 PATH 中可能没有 `node`（`启动采样计划软件.bat` 会按顺序回退到内置运行时）。可先取内置 Node 绝对路径再执行；`sampling-plan-app/node_modules` 已含 jszip 与 playwright-core。
 - 快速自检：对改动文件跑 `node --check`（对全部 js/mjs 跑一遍也能一次性发现语法问题）。
+- 性能基准（下划线前缀＝非正式测试，不影响 CI）：
+  ```bash
+  node tests/_diff_logic.mjs 5000    # 新旧 computeRows 逐行逐列比对，必须「差异 0 处」
+  node tests/_bench_import.mjs 3000  # 导入各阶段耗时（构建行/解析危害因素/计算）
+  node tests/_bench_xlsx.mjs 3000    # xlsx 生成/解析/转数组耗时 + 往返一致性断言
+  node tests/_perf_grid.mjs 3000     # 真实 Chrome：导入 / 滚动帧耗时 / 编辑延迟 / 点行号 / sticky
+  node tests/_profile_grid.mjs 3000 rowclick  # CDP Profiler 热点（场景：rowclick|scroll）
+  ```
 
 ## 部署
 
@@ -344,6 +352,32 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · 实测（真实报告 `pjbg.docx` 1.88MB / document.xml 6.05MB）：6 步后处理 **352ms → 237ms（-33%）**；浏览器端另省掉 2 次整份解析（每次解压 ~180ms + DOMParser 数百 ms）。
      · 专项测试：`tests/pjbg.noisereuse.test.mjs`（**22 项**：只解析一次、缓存命中零解析、老接口退化、解析失败语义不变）+ `tests/pjbg.noiseapi.smoke.mjs`（**11 项**，Playwright：真实 DOMParser 下的分组/「/」拆分/文本格式/缓存只读/无表返回 ok=false）。
      · 基准脚本：`tests/_bench_pjbg.mjs`（端到端）。
+   - ⑫ **大表性能（2026-10-29）**——「导入几千行后导入慢、滚动卡、编辑卡」，按阶段逐项消除，**计算结果逐列不变**：
+     1. **导入解析**：`resolveHazardRec` 原来每行对 604 条危害因素库做 2~3 次 `find/filter`，每次都要跑 `normHazardKey` 的 5 个正则 —— 3000 行实测 **9.8 秒（占导入 98%，页面假死）**。改为 `buildHazardIndex()` 预建 `byRec / byName` 表 + 同「检测项目+粉尘性质」结果记忆化（库可能被编辑，索引**只在一次导入内复用**，不做模块级缓存）；`normHazardKey` 改「无特殊字符快路径 + 单次 replace 查表」。→ **11.7ms**。
+     2. **导入主循环**：`HEADERS[colIdx(c)]` 原在每行每列重复 `indexOf`（20 万次），改为循环外一次算好 `headerAt`；空行判断由 `r.some(回调)` 改显式循环；每 600 行 `await yieldToUI()` 让出主线程 + `#import-mask` 进度遮罩（后台标签页 rAF 不触发，用 50ms 定时器兜底）。
+     3. **xlsx 解析**（`js/xlsxio.js`）：`parseSheetXml` 的 `Map<"r|c", v>` 改为「行数组 + 列下标」的 `cells` 二维数组，`sheetToArray` 直接按索引取（不再拼字符串键），`unesc` 加「不含 & 直接返回」快路径。3000 行 **545+91ms → 186ms**。（`readWorkbook` 返回的 sheet 不再有 `grid` 字段，改为 `cells`。）
+     4. **计算引擎**（`js/logic.js` 的 `computeRows`）：由「每列一个 `map` 数组」（每次重算分配 40+ 个 n 长数组、约 7n 次分组键拼接）改为**两遍循环**——① 只做下填列与「车间|岗位(|点位)」分组聚合（落 Map/Set），② 逐行组装 + 校验；分组键只拼一次复用，`keep()` 覆盖判定内联。3000 行 **100ms → 45ms**，10000 行 **296ms → 148ms**。
+     5. **渲染侧**（`js/app.js`）：`updateVisibleCells` 不再每格两次 `querySelector`（改遍历子节点 + 列分类 Set）；`rowVisible` 的筛选条目改缓存（`activeFilterEntries`，改动 `gridFilter` 必须 `invalidateFilterCache()`）；`RENDER_OVERSCAN` 24 → 16。
+     6. **点整行不再整窗重建**：点行号原走 `renderWindow()`，3000 行实测一次 **323ms**；改为只切换受影响两行 tr 的 `selected` 类（`paintSelectedRow`）→ **19ms**。
+     7. **增量滚动改小步**：`ensureWindow` 的迟滞量原为 `RENDER_OVERSCAN/2`（=8），缓冲被吃掉一半才补齐，一次要整块滑动 17 行；改 `half = 1` 后窗口随可视区小步移动（每次 ≈ 滚过的行数），实测滚动总耗时 5.8s → 4.7s、>50ms 长帧 53 → 25 帧。
+     8. **单元格布局隔离**（`css/styles.css`）：`#main-grid tbody td { contain: layout style }`，「删 3 行 + 插 3 行」一轮 **115ms → 72ms**。横向滚动后 A 列仍锁在 43px，sticky 未受影响。
+     9. **输入重算防抖自适应**：`scheduleRecompute` 由固定 250ms 改为「≤5000 行 120ms、以上 250ms」——小表反馈更快，上万行不因频繁重算卡顿。
+     · **实测方式（重要）**：`tests/_perf_grid.mjs`（真实 Chrome：导入 / 滚动帧耗时 / 编辑延迟 / 点行号 / sticky 校验），`tests/_profile_grid.mjs`（CDP Profiler 热点）。`HEADFUL=1` 可切有头，但**有头窗口被系统节流（rAF 掉到 1fps），数据完全失真**，只能在 headless 下取相对值；headless 用软件光栅化，「绘制」耗时被放大，绝对值偏悲观。
+     · **⚠ 滚动剩余的“一顿一顿”已定量定位，别再重复试这些**：用 `PerformanceObserver('long-animation-frame')` 拆帧，卡顿帧 137ms 中脚本只占 21ms，样式重算+布局 ~99ms、绘制 ~120ms。对照实验**全部无效**：① 行节点复用（复用与删+插同为 170ms/轮）② 调缓冲（overscan 6/4/8/16/24 + 迟滞 1/2/8）③ 表格固定总宽/去 `max-content` ④ 去 sticky（表头或全部）⑤ 去边框/去背景 ⑥ `border-collapse` ⑦ 每行改 `display:flex`（噪声内，无稳定收益）。唯一有效的是减少**参与重排的单元格数**（隐藏 26 列后样式布局减半；`contain:layout style` 降 36%）。即成本 ∝ 渲染行数 × 61 列，是 `table` 整表重排的固有开销。
+     · 要再上一个量级，只剩**横向虚拟化**（只渲染视口内列 + 前后占位 `td`，表头用 `colspan` 同步）或**彻底改为 div 网格**。两者都会触碰 `td[data-r]/[data-c]` 契约（选区/粘贴/列宽拖动/`findTd`/`ui.smoke.mjs` 断言全依赖列在 DOM 中），属结构性改造，**必须先补齐交互回归**再动。
+     · 已确认为真问题并修掉的：点行号整窗重建（3000 行 **386ms → 20ms**）、导入解析（**9.8s → 12ms**）、xlsx 解析（**636 → 190ms**）、`computeRows`（3000 行 **100 → 45ms**）。
+     10. **对照 2.0 版（`G:/AtomCode/sampling-plan-v2`）后补的一处**：`ensureWindow` 里原来每帧都调
+         `updateSelectionClasses()`，它看到 `selDomGen` 变化就走 `fullScanSel` → 整窗（62 行 × 61 格 ≈ 3800 次
+         `classList.toggle`），等于每帧把整表样式标记为失效。2.0 的 `src/ui/grid/grid.ts:578` 明确注释这是滚动卡顿主因，
+         其做法是「只给本次新增的行补类（`paintRowSelection`）+ 把 `lastSelState` 同步成当前状态」。
+         已按此移植：滚动时的 JS 采样里 `fullScanSel` 消失，脚本占比 15% → 5%。
+     · **2.0 对照结论（别再重复找）**：2.0 的主表 `grid.ts` 与 1.0 **同源同构**（table + 字符串自绘 + overscan 虚拟滚动 +
+       单布防编辑框），它并没有横向虚拟化或 div 网格；除上面这条外，其余差异要么 1.0 已有（筛选时整窗重绘、
+       前缀和按可见位置），要么与滚动性能无关（空行隐藏默认值、分组标签居中）。
+       ⚠ 2.0 的 `RENDER_OVERSCAN = 8`（`tokens.ts`）**不要照抄**：在 1.0（ROW_H 30、900px 视口）实测中位 33ms、
+       >50ms 卡顿帧 49~56/150，明显差于 16（中位 17ms、26~29/150）——缓冲太小会每帧触发补行。
+     · ⚠ **不变量**：`computeRows` 的逐列结果以 `node tests/_diff_logic.mjs 5000`（拿 `git HEAD` 版 `logic.js` 与新版本比对）**0 差异**为准；改计算逻辑或导入链路后，连同 `tests/_bench_import.mjs` / `tests/_bench_xlsx.mjs`（含往返一致性断言）一起跑。
+     · 剩余可动的小项（未做）：滚动帧里的 `syncArmPosition()` 会强制读取几何（强制同步布局），以及 `refreshStatus()` 每次整窗重建都跑一遍 `countErrors`。
 
 ## 已知注意事项
 

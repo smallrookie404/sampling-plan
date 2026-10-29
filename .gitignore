@@ -35,6 +35,7 @@ sampling-plan-app/index.js
 sampling-plan-app/_routes.json
 
 # 工作区本地数据（记忆/日志等，不入库）
+.workbuddy/
 .workbuddy-ai/
 .atomcode/
 
