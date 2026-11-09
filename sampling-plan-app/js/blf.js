@@ -3413,6 +3413,69 @@
     }
   }
 
+  // ---------------- ⑭ 全文统一字体：仿宋_GB2312（后处理完毕后最后一步） ----------------
+  // 需求（用户 2026-11-09）：检评报告导出、前面 ①~⑬ 后处理全部完成后，整篇报告统一改成「仿宋_GB2312」。
+  // 范围：**只改 word/document.xml**（正文 / 表格 / 标题 / 段落标记）；页眉页脚、styles.xml、
+  //   numbering.xml 等其它部件一律不动（用户明确「页眉页脚不用管」）。
+  // 做法：把每个 <w:rPr> 里的 <w:rFonts> 四个字体槽（ascii/hAnsi/eastAsia/cs）统一成 仿宋_GB2312，
+  //   同时去掉主题字体属性（asciiTheme / hAnsiTheme / eastAsiaTheme / cstheme 会覆盖显式字体）；
+  //   没有 rFonts 的 rPr 补一个（按 OOXML 顺序放在 rStyle 之后、其余之前）；
+  //   连 <w:rPr> 都没有的 <w:r> 也补一个，否则它会继承样式默认字体，出现「漏网」。
+  // ★ 只动字体名：字号 sz / 加粗 b / 颜色 color / 行距 spacing / 缩进 ind / hint 等一律原样保留。
+  const PJBG_FONT = '仿宋_GB2312';
+  const PJBG_RFONTS = '<w:rFonts w:ascii="' + PJBG_FONT + '" w:hAnsi="' + PJBG_FONT
+    + '" w:eastAsia="' + PJBG_FONT + '" w:cs="' + PJBG_FONT + '"/>';
+  const PJBG_RPR = '<w:rPr>' + PJBG_RFONTS + '</w:rPr>';
+  const RE_RFONTS_TAG = /<w:rFonts\b[^>]*\/>|<w:rFonts\b[^>]*>\s*<\/w:rFonts>/;
+
+  // 规范化一个 <w:rFonts .../>：删掉旧字体与主题字体属性，保留 w:hint 等其它属性
+  function normalizeFontTag(tag) {
+    let attrs = tag.replace(/^<w:rFonts\b/, '').replace(/\s*\/?>\s*(?:<\/w:rFonts>\s*)?$/, '');
+    attrs = attrs.replace(/\s+w:(?:ascii|hAnsi|eastAsia|cs|asciiTheme|hAnsiTheme|eastAsiaTheme|cstheme)\s*=\s*"[^"]*"/gi, '');
+    attrs = attrs.trim();
+    return '<w:rFonts' + (attrs ? ' ' + attrs : '') + ' w:ascii="' + PJBG_FONT
+      + '" w:hAnsi="' + PJBG_FONT + '" w:eastAsia="' + PJBG_FONT + '" w:cs="' + PJBG_FONT + '"/>';
+  }
+
+  // 处理单个 <w:rPr>...</w:rPr> / <w:rPr/>
+  function forceFontInRPr(m) {
+    if (/\/>\s*$/.test(m)) return m.replace(/\/>\s*$/, '>') + PJBG_RFONTS + '</w:rPr>';
+    const openEnd = m.indexOf('>');
+    const open = m.slice(0, openEnd + 1);
+    let body = m.slice(openEnd + 1, m.length - '</w:rPr>'.length);
+    if (RE_RFONTS_TAG.test(body)) {
+      body = body.replace(RE_RFONTS_TAG, function (t) { return normalizeFontTag(t); });
+    } else {
+      // rStyle 必须排在 rFonts 之前
+      const rs = body.match(/^\s*<w:rStyle\b[^>]*\/>/);
+      body = rs ? rs[0] + PJBG_RFONTS + body.slice(rs[0].length) : PJBG_RFONTS + body;
+    }
+    return open + body + '</w:rPr>';
+  }
+
+  // 纯函数（供测试）：把整份部件 XML 的字体统一，返回 { xml, changed }
+  function forceFontFangSong(xml) {
+    if (typeof xml !== 'string' || !xml) return { xml: xml, changed: 0 };
+    let changed = 0;
+    let out = xml.replace(/<w:rPr\b[^>]*\/>|<w:rPr\b[^>]*>[\s\S]*?<\/w:rPr>/g, function (m) {
+      changed++;
+      return forceFontInRPr(m);
+    });
+    // 只匹配「body 里没有嵌套 <w:r>」的 run：文本框（w:txbxContent）里会嵌 run，
+    //   普通惰性匹配会把外层 run 截到内层的 </w:r> 而破坏结构；这里让外层跳过，
+    //   内层 run 由后续全局匹配单独处理（字体照样统一）。
+    out = out.replace(/<w:r\b[^>]*>(?:(?!<w:r\b)[\s\S])*?<\/w:r>/g, function (m) {
+      const openEnd = m.indexOf('>');
+      const body = m.slice(openEnd + 1, m.length - '</w:r>'.length);
+      // 只要 run 里已有 rPr 就跳过（不强制在开头）：字体统一那一步已按全文 rPr 正则处理过它，
+      // 这里再插会出现两个 rPr；Word 里 rPr 本应是首个子元素，但宽松判断更安全。
+      if (body.indexOf('<w:rPr') >= 0) return m;
+      changed++;
+      return m.slice(0, openEnd + 1) + PJBG_RPR + body + '</w:r>';
+    });
+    return { xml: out, changed: changed };
+  }
+
   // 对下载到的检评报告 docx 做全部后处理（读一次 document.xml，改完统一重打包）；
   // 任何一步失败都不影响出报告（回退到上一步结果 / 原始文件）。
   async function patchPjbgDocx(buf) {    try {
@@ -3568,6 +3631,18 @@
       if (r13.changed) {
         console.info('[检评报告] 表格列宽重排：' + r13.tables + ' 张表（总宽不变，估算缩短 '
           + Math.round(r13.narrowed / 567) + ' cm）');
+      }
+      // ⑭ 全文统一字体为「仿宋_GB2312」——放在所有后处理之后、重打包之前，保证后处理
+      //    新建/改写的段落（⑤⑨⑪⑫等）也一并统一。只改 word/document.xml；
+      //    页眉页脚 / styles.xml / numbering.xml 不动（用户 2026-11-09：「页眉页脚不用管」）。
+      //    本步单独兜底：万一字体处理抛错，只跳过本步，前面 ①~⑬ 的结果照常出报告。
+      try {
+        const r14 = forceFontFangSong(xml);
+        xml = r14.xml;
+        changed += r14.changed;
+        if (r14.changed) console.info('[检评报告] 全文统一字体为 ' + PJBG_FONT + '，共处理 ' + r14.changed + ' 处');
+      } catch (e) {
+        console.warn('[检评报告] 全文统一字体失败，跳过本步：', e);
       }
       if (!changed) return buf;
       // 快速重打包（2026-10-21）：只重压 document.xml，其余条目原始压缩字节直接拷贝。
@@ -4035,6 +4110,10 @@
     trimNote3: trimNote3,
     patchPjbgDocx: patchPjbgDocx,
     repackDocxFast: repackDocxFast,   // 供测试/基准：只重压 document.xml 的快速重打包
+    // ⑭ 全文统一字体（仿宋_GB2312）
+    forceFontFangSong: forceFontFangSong,
+    normalizeFontTag: normalizeFontTag,
+    PJBG_FONT: PJBG_FONT,
     // 后处理⑥（条件删除条目）
     fixConditionalDeletions: fixConditionalDeletions,
     collectConfirmColTexts: collectConfirmColTexts,
