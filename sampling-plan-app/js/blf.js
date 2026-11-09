@@ -3415,8 +3415,9 @@
 
   // ---------------- ⑭ 全文统一字体：仿宋_GB2312（后处理完毕后最后一步） ----------------
   // 需求（用户 2026-11-09）：检评报告导出、前面 ①~⑬ 后处理全部完成后，整篇报告统一改成「仿宋_GB2312」。
-  // 范围：**只改 word/document.xml**（正文 / 表格 / 标题 / 段落标记）；页眉页脚、styles.xml、
-  //   numbering.xml 等其它部件一律不动（用户明确「页眉页脚不用管」）。
+  // 范围：word/document.xml（正文 / 表格 / 标题 / 段落标记）+ word/numbering.xml
+  //   （1.1/1.2 自动编号的编号字体，用户 2026-11-09 追加要求「自动编号也改为仿宋GB2312」）；
+  //   页眉页脚、styles.xml 等其它部件一律不动（用户明确「页眉页脚不用管」）。
   // 做法：把每个 <w:rPr> 里的 <w:rFonts> 四个字体槽（ascii/hAnsi/eastAsia/cs）统一成 仿宋_GB2312，
   //   同时去掉主题字体属性（asciiTheme / hAnsiTheme / eastAsiaTheme / cstheme 会覆盖显式字体）；
   //   没有 rFonts 的 rPr 补一个（按 OOXML 顺序放在 rStyle 之后、其余之前）；
@@ -3633,14 +3634,38 @@
           + Math.round(r13.narrowed / 567) + ' cm）');
       }
       // ⑭ 全文统一字体为「仿宋_GB2312」——放在所有后处理之后、重打包之前，保证后处理
-      //    新建/改写的段落（⑤⑨⑪⑫等）也一并统一。只改 word/document.xml；
-      //    页眉页脚 / styles.xml / numbering.xml 不动（用户 2026-11-09：「页眉页脚不用管」）。
+      //    新建/改写的段落（⑤⑨⑪⑫等）也一并统一。
+      //    范围：word/document.xml + word/numbering.xml。1.1/1.2 自动编号的「编号字体」由
+      //    numbering.xml 的 <w:lvl><w:rPr><w:rFonts> 决定（不在 document.xml 里），
+      //    用户 2026-11-09 追加要求「自动编号也改为仿宋GB2312」，故一并统一；
+      //    页眉页脚 / styles.xml 仍不动（用户：「页眉页脚不用管」）。
       //    本步单独兜底：万一字体处理抛错，只跳过本步，前面 ①~⑬ 的结果照常出报告。
       try {
         const r14 = forceFontFangSong(xml);
         xml = r14.xml;
         changed += r14.changed;
         if (r14.changed) console.info('[检评报告] 全文统一字体为 ' + PJBG_FONT + '，共处理 ' + r14.changed + ' 处');
+        // ⑪ 新建的 numbering.xml 在 numParts 里（直接改它的 text，重打包时一并替换）；
+        // 模板自带 numbering.xml（⑪ 整步跳过）时从 zip 读出来改好，作为额外部件交给重打包。
+        // 两处都覆盖：无论编号是本次生成还是模板自带，编号字体都统一为仿宋_GB2312。
+        let numEntry = null, fromParts = false;
+        if (numParts) {
+          numEntry = numParts.find(function (e) { return e.name === 'word/numbering.xml'; }) || null;
+          fromParts = !!numEntry;
+        }
+        if (!numEntry) {
+          const nf = zip.file('word/numbering.xml');
+          if (nf) numEntry = { name: 'word/numbering.xml', text: await readZipEntryText(nf) };
+        }
+        if (numEntry) {
+          const rn = forceFontFangSong(numEntry.text);
+          if (rn.xml !== numEntry.text) {
+            numEntry.text = rn.xml;
+            if (!fromParts) numParts = (numParts || []).concat([numEntry]);
+            changed += rn.changed;
+            console.info('[检评报告] 1.1/1.2 自动编号字体统一为 ' + PJBG_FONT + '，共处理 ' + rn.changed + ' 处');
+          }
+        }
       } catch (e) {
         console.warn('[检评报告] 全文统一字体失败，跳过本步：', e);
       }

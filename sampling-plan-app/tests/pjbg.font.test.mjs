@@ -2,14 +2,18 @@
 //
 // 需求边界：
 //   · 位置：patchPjbgDocx 管线 ①~⑬ 全部跑完之后、重打包之前（新建/改写的段落也要统一）；
-//   · 范围：**只改 word/document.xml**（正文 / 表格 / 标题 / 段落标记）；
-//     页眉页脚、styles.xml、numbering.xml 一律不动（用户明确「页眉页脚不用管」）；
+//   · 范围：word/document.xml（正文 / 表格 / 标题 / 段落标记）+ word/numbering.xml
+//     （1.1/1.2 自动编号的「编号字体」，用户 2026-11-09 追加要求）；
+//     页眉页脚、styles.xml 一律不动（用户明确「页眉页脚不用管」）；
 //   · 只动字体名：字号 / 加粗 / 颜色 / 行距 / 缩进 / hint 等其它格式原样保留。
 //
 // 覆盖：
-//   A. 纯函数 forceFontFangSong：各种 rPr / rFonts / run 形态、theme 属性、rStyle 顺序、幂等、异常输入
+//   A. 纯函数 forceFontFangSong：各种 rPr / rFonts / run 形态、theme 属性、rStyle 顺序、幂等、
+//      异常输入、numbering.xml 编号 rPr
 //   B. 端到端 patchPjbgDocx：快速重打包 + JSZip 回退两条路径，校验 document.xml 生效、
 //      页眉页脚 / styles.xml 逐字节不变
+//   D. 1.1/1.2 自动编号：⑪ 新建 numbering.xml / 模板自带 numbering.xml 两种场景 × 两条重打包路径，
+//      校验编号 rFonts 四槽统一、编号字号与 lvl 结构保留、页眉页脚仍不变
 //
 // 用法：node tests/pjbg.font.test.mjs
 import fs from "node:fs";
@@ -129,6 +133,17 @@ console.log("[A] forceFontFangSong 纯函数");
   check("嵌套文本框：结构不被破坏", (r10.xml.match(/<w:r>/g) || []).length === 2 && r10.xml.indexOf("</w:drawing>") >= 0, r10.xml.slice(0, 240));
   check("嵌套文本框：内外层字体都统一", r10.xml.indexOf("宋体") < 0 && (r10.xml.match(/w:rFonts/g) || []).length >= 2
     && r10.xml.indexOf("文本框内文字") >= 0);
+
+  // 1.1/1.2 自动编号：编号字体由 numbering.xml 的 <w:lvl><w:rPr><w:rFonts> 决定
+  const numFragment = '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    + '<w:abstractNum w:abstractNumId="90"><w:lvl w:ilvl="0"><w:start w:val="1"/>'
+    + '<w:numFmt w:val="decimal"/><w:lvlText w:val="(%1)"/>'
+    + '<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman" w:eastAsia="仿宋_GB2312"/>'
+    + '<w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:lvl></w:abstractNum></w:numbering>';
+  const r11 = blf.forceFontFangSong(numFragment);
+  check("numbering.xml 编号 rFonts 四槽统一", r11.xml.indexOf(RF) >= 0 && r11.xml.indexOf("Times New Roman") < 0, r11.xml.slice(0, 260));
+  check("numbering.xml 保留编号字号 / lvl 结构", r11.xml.indexOf('<w:sz w:val="28"/>') >= 0
+    && r11.xml.indexOf('<w:lvlText w:val="(%1)"/>') >= 0 && r11.xml.indexOf("</w:lvl>") >= 0);
 }
 
 // ============ B. 端到端：只改 document.xml，页眉页脚 / styles.xml 不动 ============
@@ -195,6 +210,88 @@ for (const withCS of [true, false]) {
   const z2 = await JSZip.loadAsync(again);
   check(tag + "：重复导出幂等（document.xml 不再变化）",
     (await z2.file("word/document.xml").async("string")) === doc);
+}
+
+// ============ D. 1.1/1.2 自动编号字体（word/numbering.xml） ============
+// 编号字体不在 document.xml 里，由 numbering.xml 的 <w:lvl><w:rPr><w:rFonts> 决定。
+// 两种来源都要覆盖：⑪ 本次新建（在 numParts 里）/ 模板自带（⑪ 跳过，需从 zip 读出后替换）。
+const LIST_PPR = '<w:pPr><w:spacing w:line="490" w:lineRule="exact"/><w:ind w:firstLine="420"/>'
+  + '<w:jc w:val="both"/><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="仿宋_GB2312"/>'
+  + '<w:sz w:val="28"/></w:rPr></w:pPr>';
+const LIST_RPR = '<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="仿宋_GB2312"/>'
+  + '<w:sz w:val="28"/></w:rPr>';
+function listPara(items) {
+  let s = "";
+  items.forEach((it, i) => {
+    if (i > 0) s += "<w:br /><w:tab />";
+    s += '<w:t xml:space="preserve">' + it + "</w:t>";
+  });
+  return "<w:p>" + LIST_PPR + "<w:r>" + LIST_RPR + s + "</w:r></w:p>";
+}
+const NUM_DOC_XML = DOC_HEAD
+  + '<w:p><w:r><w:t>1检测与评价依据</w:t></w:r></w:p>'
+  + '<w:p><w:r><w:t>1.1法律、法规、规章</w:t></w:r></w:p>'
+  + listPara(["(1)《中华人民共和国职业病防治法》；", "(2)《中华人民共和国尘肺病防治条例》；"])
+  + '<w:p><w:r><w:t>1.3质量控制</w:t></w:r></w:p>'
+  + DOC_TAIL;
+const CT_XML = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+  + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />'
+  + '<Default Extension="xml" ContentType="application/xml" />'
+  + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" /></Types>';
+const RELS_XML = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+  + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml" /></Relationships>';
+const EXISTING_NUMBERING = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+  + '<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+  + '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/>'
+  + '<w:numFmt w:val="decimal"/><w:lvlText w:val="(%1)"/>'
+  + '<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman" w:eastAsia="仿宋_GB2312"/>'
+  + '<w:sz w:val="28"/></w:rPr></w:lvl></w:abstractNum>'
+  + '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>';
+
+async function buildNumDocx(withExisting) {
+  const z = new JSZip();
+  z.file("[Content_Types].xml", CT_XML);
+  z.file("word/_rels/document.xml.rels", RELS_XML);
+  z.file("word/document.xml", NUM_DOC_XML);
+  z.file("word/header1.xml", HEADER_XML);
+  z.file("word/footer1.xml", FOOTER_XML);
+  z.file("word/styles.xml", STYLES_XML);
+  if (withExisting) z.file("word/numbering.xml", EXISTING_NUMBERING);
+  return await z.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+}
+
+for (const withCS of [true, false]) {
+  for (const withExisting of [false, true]) {
+    const tag = (withCS ? "快速重打包" : "JSZip 回退") + " / " + (withExisting ? "模板自带 numbering" : "⑪ 新建 numbering");
+    console.log("[D] 1.1/1.2 自动编号字体（" + tag + "）");
+    const b = makeBlf(withCS);
+    const src = await buildNumDocx(withExisting);
+    const out = toNodeBytes(await b.patchPjbgDocx(src));
+    let z, o;
+    try { z = await JSZip.loadAsync(out); o = await JSZip.loadAsync(src); }
+    catch (e) { check(tag + "：输出可被 JSZip 解析", false, String(e)); continue; }
+    const nf = z.file("word/numbering.xml");
+    check(tag + "：存在 word/numbering.xml", !!nf);
+    const numXml = nf ? await nf.async("string") : "";
+    check(tag + "：编号 rFonts 四槽统一为 仿宋_GB2312", numXml.indexOf(RF) >= 0, numXml.slice(0, 260));
+    check(tag + "：编号旧字体 Times New Roman 已清除", numXml.indexOf("Times New Roman") < 0);
+    check(tag + "：编号字号 / 编号格式 / lvl 结构保留", numXml.indexOf('<w:sz w:val="28"/>') >= 0
+      && numXml.indexOf('<w:lvlText w:val="(%1)"/>') >= 0 && numXml.indexOf("</w:lvl>") >= 0);
+    check(tag + "：numId 定义仍在", /w:numId="\d+"/.test(numXml));
+    const doc = await z.file("word/document.xml").async("string");
+    check(tag + "：document.xml 列表段落字体也统一", doc.indexOf(RF) >= 0 && doc.indexOf("Times New Roman") < 0);
+    if (!withExisting) {
+      check(tag + "：⑪ 自动编号生效（document 引用 numId 90）", doc.indexOf('w:numId w:val="90"') >= 0);
+      check(tag + "：[Content_Types] 补了 numbering override",
+        (await z.file("[Content_Types].xml").async("string")).indexOf("/word/numbering.xml") >= 0);
+    }
+    check(tag + "：页眉逐字节不变", bytesEqual(
+      await z.file("word/header1.xml").async("uint8array"), await o.file("word/header1.xml").async("uint8array")));
+    check(tag + "：页脚逐字节不变", bytesEqual(
+      await z.file("word/footer1.xml").async("uint8array"), await o.file("word/footer1.xml").async("uint8array")));
+    check(tag + "：styles.xml 逐字节不变", bytesEqual(
+      await z.file("word/styles.xml").async("uint8array"), await o.file("word/styles.xml").async("uint8array")));
+  }
 }
 
 // ============ C. 大文档性能（6MB 级，仅记录，不做硬断言） ============
