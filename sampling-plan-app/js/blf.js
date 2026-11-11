@@ -191,6 +191,17 @@
 
   function normHeader(s) { return String(s === null || s === undefined ? '' : s).replace(/[*\s]/g, ''); }
 
+  // 网站数据导入时**不导入内容**的自动计算区列（用户 2026-11-11）。
+  // 「流量」(BF) / 「采样时长」(BG) 属 logic.js 的 MANUAL_COLS：导入时若有值会被当成本行
+  // 的手工值锁定（不再随参数联动），而这两项应由使用者在页面上现填。
+  // 只清空单元格内容，表头与列结构保持（导入模板仍是 39 列，不影响按表头对齐）。
+  const WORKER_SKIP_HEADERS = ['流量', '采样时长'];
+  const WORKER_SKIP_COLS = (function () {
+    const s = new Set();
+    WORKER_HEADERS.forEach((h, i) => { if (WORKER_SKIP_HEADERS.indexOf(h) >= 0) s.add(i); });
+    return s;
+  })();
+
   // 上游导出的「劳动定员」xlsx（43 列）→ 本表 39 列（按表头名对齐）
   function workerTo39(aoa) {
     if (!aoa || !aoa.length) return [];
@@ -200,7 +211,7 @@
     for (let i = 1; i < aoa.length; i++) {
       const r = aoa[i] || [];
       if (!r.some((v) => v !== '' && v !== null && v !== undefined)) continue;
-      rows.push(idx.map((k) => (k >= 0 ? txt(r[k]) : '')));
+      rows.push(idx.map((k, ci) => ((k < 0 || WORKER_SKIP_COLS.has(ci)) ? '' : txt(r[k]))));
     }
     return rows;
   }
@@ -3820,7 +3831,11 @@
     const sheets = [];
     // 1) 劳动定员和职业病危害因素接触情况调查（39 列，取自上游）—— 主表格（测点布局）的数据来源
     if (wantWorker) {
-      const workerBody = (up && up.worker39) ? up.worker39.map((r) => WORKER_HEADERS.map((_, i) => txt(r[i]))) : [];
+      // 「流量」「采样时长」不导入内容（用户 2026-11-11）：即使上游 worker39 带值也在此再兜一层，
+      // 与 workerTo39 共用 WORKER_SKIP_COLS，避免将来新增取数路径漏清。
+      const workerBody = (up && up.worker39)
+        ? up.worker39.map((r) => WORKER_HEADERS.map((_, i) => (WORKER_SKIP_COLS.has(i) ? '' : txt(r[i]))))
+        : [];
       sheets.push({
         name: '劳动定员和职业病危害因素接触情况调查',
         rows: [WORKER_HEADERS].concat(workerBody),
