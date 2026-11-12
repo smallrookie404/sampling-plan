@@ -758,6 +758,90 @@
     return { xml: out, changed: changed };
   }
 
+  // ---------------- 报告后处理②d：表4-1「职业病危害因素」列删掉「游离二氧化硅」 ----------------
+  // 用户要求（2026-11-12）：「游离二氧化硅」本身不是职业病危害因素（它是粉尘的组成检测项），
+  // 表4-1 该列里两种形态都要去掉，且**只删这一项、不能连累后面的因素**：
+  //   ① 单独一项：`二甲苯,游离二氧化硅,噪声` → `二甲苯,噪声`
+  //   ② 括号说明：`滑石粉尘(游离SiO2含量<10%)` → `滑石粉尘`
+  //      （括号内以「游离」开头、含 SiO2 / 二氧化硅；全/半角括号、空格差异都兼容）
+  // ⚠ 只动**表4-1**（表头同时含「职业病危害因素」和「工作地点」列）。表5-1 检测项目确认表里的
+  //   「游离二氧化硅」是检测项目，必须保留；「矽尘(10%≤游离SiO2含量≤50%)」括号内不以「游离」开头
+  //   （含量区间是粉尘分类依据），也不动。
+  const SILICA_PARA_RE = /[（(]\s*游离\s*(?:二氧化硅|SiO₂|SiO2)[^）)]*[）)]/gi;
+
+  // 纯文本级：去掉括号说明 + 去掉「游离二氧化硅」整项；其它项、顺序、分隔符原样保留。
+  // 无变化返回 null（调用方据此跳过，避免无谓改写 XML）。
+  function stripFreeSilicaText(text) {
+    const raw = String(text === null || text === undefined ? '' : text);
+    if (raw.indexOf('游离') < 0) return null;
+    // ① 括号说明（可跨软换行 <w:br/>，cellText 已转成 \n）
+    let s = raw.replace(SILICA_PARA_RE, '');
+    // ② 按项切分（保留原分隔符，删项时连同它后面的分隔符一起丢弃）
+    const parts = s.split(/([,，、;；\n])/);
+    const kept = [];
+    for (let i = 0; i < parts.length; i += 2) {
+      const t = parts[i].trim();
+      if (t !== '' && t.replace(/\s/g, '') !== '游离二氧化硅') kept.push({ text: t, sep: parts[i + 1] || '' });
+    }
+    let out = '';
+    kept.forEach(function (it, idx) {
+      out += it.text;
+      if (idx < kept.length - 1) out += (it.sep || ',');
+    });
+    // 软换行在重写后没有行结构意义 → 统一成逗号；清理首尾与连续分隔符
+    out = out.replace(/\n+/g, ',').replace(/^[\s,，、;；]+|[\s,，、;；]+$/g, '').replace(/([,，、;；])\s*([,，、;；])/g, '$1');
+    if (out === '') return '-';
+    return out === raw.trim() ? null : out;
+  }
+
+  // 逐个段落处理（保留段落/run 格式，只有命中段落才重写它自己的 <w:t>）
+  // 写回前转义 & < >：危害因素里常见「含量<10%」，原文是 &lt;，直接写回会破坏 XML。
+  function xmlEscapeText(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function stripFreeSilica(xml) {
+    if (xml.indexOf('游离') < 0) return { xml: xml, changed: 0 };
+    let changed = 0;
+    const out = mapTables(xml, function (tbl) {
+      const rows = tbl.match(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g) || [];
+      if (rows.length < 2) return tbl;
+      const headCells = rows[0].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+      let hIdx = -1;
+      let pIdx = -1;
+      for (let i = 0; i < headCells.length; i++) {
+        const t = cellText(headCells[i]);
+        if (hIdx < 0 && t.indexOf(HAZARD_COL_HEAD) >= 0) hIdx = i;
+        if (pIdx < 0 && t.indexOf(WORKPLACE_COL_HEAD) >= 0) pIdx = i;
+      }
+      if (hIdx < 0 || pIdx < 0) return tbl;   // 不是表4-1（表5-1 没有「工作地点」列）
+      let newTbl = tbl;
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = rows[ri].match(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/g) || [];
+        if (cells.length < 3) continue;
+        const ci = hIdx + (cells.length - headCells.length);   // 合并单元格导致的列号平移
+        if (ci < 0 || ci >= cells.length) continue;
+        const cell = cells[ci];
+        if (cellText(cell).indexOf('游离') < 0) continue;      // 兜底：列对不上就不动
+        const paras = cell.match(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g) || [];
+        let newCell = cell;
+        for (const p of paras) {
+          const pt = cellText(p);
+          if (pt.indexOf('游离') < 0) continue;
+          const nt = stripFreeSilicaText(pt);
+          if (nt === null) continue;
+          newCell = newCell.replace(p, setCellText(p, xmlEscapeText(nt)));
+          changed++;
+        }
+        if (newCell === cell) continue;
+        const newRow = rows[ri].replace(cell, newCell);
+        newTbl = newTbl.replace(rows[ri], newRow);
+      }
+      return newTbl;
+    });
+    return { xml: out, changed: changed };
+  }
+
   // ---------------- 报告后处理⑧：表3-6 个人使用的职业病防护用品「同规格行合并」 ----------------
   // 用户要求（2026-10-20）：表3-6「个人使用的职业病防护用品配置及使用情况」里，若多行的
   //   「分类 / 类别 / 生产厂家 / 型号或规格 / 防护性能参数」五列内容**分别相同**，就把这些行合并成一行：
@@ -3548,6 +3632,10 @@
       const r2b = fixNitrogenOxide(xml);
       xml = r2b.xml; changed += r2b.changed;
       if (r2b.changed) console.info('[检评报告] 表4-1 氮氧化物措辞精简，共修正 ' + r2b.changed + ' 处');
+      // ②d 表4-1「职业病危害因素」列：删掉「游离二氧化硅」（独立项 + 括号内「游离SiO2含量…」说明）
+      const r2d = stripFreeSilica(xml);
+      xml = r2d.xml; changed += r2d.changed;
+      if (r2d.changed) console.info('[检评报告] 表4-1 删除「游离二氧化硅」，共修正 ' + r2d.changed + ' 处');
       // ③ 正文措辞替换（1.4 章节的接触限值说法、7.2 标题）
       const r3 = fixReportText(xml);
       xml = r3.xml; changed += r3.changed;
@@ -4116,6 +4204,8 @@
     fixNonNoiseHazards: fixNonNoiseHazards,
     fixQuietPointHazards: fixQuietPointHazards,
     fixNitrogenOxide: fixNitrogenOxide,
+    stripFreeSilica: stripFreeSilica,
+    stripFreeSilicaText: stripFreeSilicaText,
     autoNumberItemLists: autoNumberItemLists,
     buildNumberedParas: buildNumberedParas,
     buildNumberingXml: buildNumberingXml,

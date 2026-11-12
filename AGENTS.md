@@ -201,7 +201,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      双击抓到的 td 变游离节点 → **搜索后双击进不了编辑态**（2026-10-21 修复）。
    - 专用回归测试：`tests/hazard.edit.smoke.mjs`（24 项）、`tests/hazard.search.smoke.mjs`（11 项，搜索后编辑）。**注意**：`tests/ui.smoke.mjs` 在「覆盖联动」既有失败处提前退出，其 4a 危害因素库用例实际不可达，故危害库编辑一律以该专项测试为准。新增的末列可能超出视口宽度，测试点击前需先 `hazard-wrap.scrollLeft = scrollWidth`。
    - ⚠ **命名坑**：函数一律 `haz*` 前缀（`hazSetCur`/`hazRemoveArm`…），状态变量一律 `hz*` 前缀（`hzCur`/`hzArm`…）。两套前缀极易写错（曾出现 `hzSetCur`/`hzRemoveArm`/`hazArm` 混用导致运行时报 “is not defined”，且 `node --check` **无法**发现）。改动后请用脚本核对「`haz*` 调用均有 `function haz*` 定义」「`hz*` 标识符均有 `let/const` 声明」。
-10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）⑨ **表3-3 下方插入「注1~注4」（整段标红）**（`addMaterialNote`）⑩ **表8-2 超标原因分析按检测项目自动填写**（`fillOverLimitCause`）⑪ **1.1/1.2 列表项改 Word 自动编号**（`autoNumberItemLists`）⑫ **表8-1 评价结论/补救措施自动判定**（`fillEvalConclusions`）⑬ **表格纵向压缩（重排列宽，总宽不变）**（`optimizeTableLayout`）⑭ **全文统一字体 仿宋_GB2312**（`forceFontFangSong`，含 1.1/1.2 自动编号，用户 2026-11-09，后处理完毕后最后一步）。
+10. **检评报告后处理管线**（blf.js `patchPjbgDocx`）：下载到 docx 后**只读一次** `word/document.xml`，按顺序跑下列步骤、最后统一 `DEFLATE` 重打包；**任一步失败回退上一步结果/原始文件，不影响出报告**。步骤：① 高毒物品 0/1→否/是（`fixHighToxColumn`）② 非噪声岗位删「噪声」危害（`fixNonNoiseHazards`，口径 LEX 最大值 < 80）②c **噪声岗位内低噪点位**删「噪声」危害（`fixQuietPointHazards`）②b 氮氧化物措辞精简（`fixNitrogenOxide`）②d **删「游离二氧化硅」**（`stripFreeSilica`，表4-1 危害因素列：独立项 + 括号内「游离SiO2含量…」说明；2026-11-12 加）③ 正文措辞替换（`fixReportText` + `TEXT_FIXES`）④ 表1-1 注3 按备注列裁剪（`fixHazardNote`）⑤ 表4-1 注段落替换 + 表3-1 接触人数联动（`fixNoteAndContactCount`）⑥ **条件删除条目 + 章节内序号重排**（`fixConditionalDeletions`）⑦ **「两班制」作息说明句标红**（`markShiftNoteRed`）⑧ **表3-6 防护用品同规格行合并**（`mergePpeRows`）⑨ **表3-3 下方插入「注1~注4」（整段标红）**（`addMaterialNote`）⑩ **表8-2 超标原因分析按检测项目自动填写**（`fillOverLimitCause`）⑪ **1.1/1.2 列表项改 Word 自动编号**（`autoNumberItemLists`）⑫ **表8-1 评价结论/补救措施自动判定**（`fillEvalConclusions`）⑬ **表格纵向压缩（重排列宽，总宽不变）**（`optimizeTableLayout`）⑭ **全文统一字体 仿宋_GB2312**（`forceFontFangSong`，含 1.1/1.2 自动编号，用户 2026-11-09，后处理完毕后最后一步）。
    - ⑤ **接触职业病危害人数口径（2026-10-19 变更，`sumExposedFromT41`）**：取**表4-1**「人数」列下「总数」子列的数字合计——
      · **按「车间+岗位」去重后只计一次**（同一岗位的多点位行会把同一个人数重复写在每行：包装工 20/20/20、压机工 30×4；逐格相加会成倍放大）；
      · 某岗位**所有行**的「职业病危害因素」列**全部为空或 `-`/`—`/`无`/`/`** → 该人数不纳入统计；
@@ -215,6 +215,13 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · 匹配侧：只在**表4-1**（表头同时含「职业病危害因素」+「工作地点…」列）动手，表5-1 检测项目确认表不碰；点位取「工作地点及内容」首个 `/`（兼容全角 `／`）前的部分；该单元格多行时**全部点位都低噪才删**。行键与列号平移同 ②。
      · 无 `quietPointPairs`（页面缓存了旧版 upload.js）时自动跳过；无低噪点位时零成本返回。
      · 专项测试：`tests/pjbg.quietpoint.test.mjs`（22 项）+ `pjbg.noiseapi.smoke.mjs` G 段（行内多点位切分 + 单点位单行守门，16 项）。
+   - ②d **删「游离二氧化硅」**（`stripFreeSilica`，用户 2026-11-12）：表4-1「职业病危害因素」列里，游离二氧化硅是粉尘的**组成检测项**、不是职业病危害因素，两种形态都去掉：
+     · **独立一项**：`二甲苯,游离二氧化硅,噪声` → `二甲苯,噪声`（按逗号/顿号/分号/软换行切项，只删这一项，删空填 `-`）；
+     · **括号说明**：`滑石粉尘(游离SiO2含量<10%)` → `滑石粉尘`（括号内以「游离」开头、含 SiO2/二氧化硅；全/半角括号、空格差异都兼容）。
+     · 只删该片段，**保留其余因素与顺序**；括号内不以「游离」开头的（如「矽尘(10%≤游离SiO2含量≤50%)」，含量区间是分类依据）保留。
+     · 只在**表4-1**（表头同时含「职业病危害因素」+「工作地点」列）动手；表5-1 检测项目确认表里的「游离二氧化硅」是检测项目，不删。
+     · 逐段落处理（保留段落/run 格式），写回前转义 `& < >`（危害因素常见「含量<10%」），幂等；无变化不改 XML。
+     · 专项测试：`tests/pjbg.silica.test.mjs`（28 项：纯文本各形态 / 表4-1 端到端 / 表5-1 不动 / 跨 run / 多段落 / 幂等）。
    - ⑥ 依据（**2026-10-21 按用户口径全面改写**，14 条，编号与需求一一对应）：
      · 数据源：**检测项目确认表**的「职业病危害因素」列（`collectConfirmColTexts`）→ 按危害因素库 `name` 匹配（`matchHazardRows`）→ 取各行 **`physchem`（物化性质）**；`name` 仅用于判高温/紫外辐射。
      · **「粉尘、毒物」是独立取值**（库中 17 条混合性因素）：它**不算「粉尘」**、**也不算「毒物」**，但算「含粉尘」「含毒物」（宽口径）。
@@ -338,7 +345,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
      · ⚠ 文本框（`w:txbxContent`）里会**嵌套 `<w:r>`**，补 `rPr` 时若用普通惰性正则会把外层 run 截到内层 `</w:r>` 破坏结构；第二次 replace 用负向前瞻 `(?:(?!<w:r\b)[\s\S])*?` 让外层 run 跳过、内层 run 单独匹配处理。
      · 性能：7MB `document.xml` / 6 万个 run 实测约 **240ms**（两次全文正则，不走 DOMParser）。
      · 专项测试：`tests/pjbg.font.test.mjs`（**94 项**：纯函数各形态 / 主题字体 / rStyle 顺序 / 幂等 / 文本框嵌套 / numbering.xml 编号 rPr / 端到端快速重打包 + JSZip 回退两条路径 / ⑪ 新建 + 模板自带 numbering.xml 两种场景 / 页眉页脚·styles.xml 逐字节不变 / 大文档性能）。
-   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）、`pjbg.autonum.test`（35）、`pjbg.eval.test`（29）、`pjbg.tablefit.test`（22）、`pjbg.font.test`（94）。
+   - ⑥ 纯 XML 夹具测试：`tests/pjbg.conddel.test.mjs`（**91 项**，含「多行段落行级删除」「长句分句裁剪」两条真实形态用例，无需真实报告）。改后处理链路回归：`report.smoke`、`pjbg.note.test`（56）、`pjbg.note1009.test`（18）、`pjbg.conddel.test`（91）、`pjbg.matnote.test`（23）、`pjbg.overlimit.test`（20）、`pjbg.repack.test`（14）、`pjbg.quietpoint.test`（22）、`pjbg.contactcount.test`（23）、`pjbg.ppe.test`（18）、`pjbg.autonum.test`（35）、`pjbg.eval.test`（29）、`pjbg.tablefit.test`（22）、`pjbg.font.test`（94）、`pjbg.silica.test`（28）。
    - ⑫ **导出耗时优化（2026-10-21，实测 0959：patchPjbgDocx 1286ms → 约 700ms）**：
      · **快速重打包 `repackDocxFast`（最大头，584ms → 约 255ms）**：不再用 `zip.generateAsync`（它会把 31 个条目
        连 1.7MB 图片一起重新 DEFLATE），改为按 ZIP 结构重建 —— 其余条目**原始压缩字节直接拷贝**（保留
@@ -431,7 +438,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 
 - 改了主表/上传功能 → `node --check sampling-plan-app/js/app.js sampling-plan-app/js/upload.js` + 跑对应测试。
 - 改了危害因素库编辑 → `node --check sampling-plan-app/js/app.js` + `node tests/hazard.edit.smoke.mjs`（24 项）+ `node tests/hazard.search.smoke.mjs`（11 项）。
-- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+ `node tests/pjbg.autonum.test.mjs`（35 项，1.1/1.2 自动编号）+ `node tests/pjbg.eval.test.mjs`（29 项，表8-1 评价结论）+ `node tests/pjbg.tablefit.test.mjs`（22 项，表格列宽重排）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
+- 改了检评报告后处理 → `node --check sampling-plan-app/js/blf.js` + `node tests/pjbg.conddel.test.mjs`（72 项，纯夹具）+ `node tests/pjbg.noisereuse.test.mjs`（22 项，噪声复用）+ `node tests/pjbg.quietpoint.test.mjs`（22 项，低噪点位）+ `node tests/pjbg.contactcount.test.mjs`（23 项，接触人数口径）+ `node tests/pjbg.ppe.test.mjs`（18 项，表3-6 合并）+ `node tests/pjbg.autonum.test.mjs`（35 项，1.1/1.2 自动编号）+ `node tests/pjbg.eval.test.mjs`（29 项，表8-1 评价结论）+ `node tests/pjbg.tablefit.test.mjs`（22 项，表格列宽重排）+ `node tests/pjbg.silica.test.mjs`（28 项，删游离二氧化硅）+（有样例时）`pjbg.note.test` / `pjbg.note1009.test` + `report.smoke`（41 项）。
 - 改了计算引擎 → `node --check sampling-plan-app/js/logic.js` + `node tests/engine.test.mjs`（对照原 Excel 缓存）。
 - 改了调查表 → `node --check sampling-plan-app/js/survey.js` + 跑 `tests/survey.smoke.mjs` / `tests/survey.edit.mjs`。
 - 改了导入导出 → `node tests/xlsxio.test.mjs`（会产出 `tests/out.xlsx`，已被 .gitignore 排除）。
