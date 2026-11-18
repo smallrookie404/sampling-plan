@@ -1,7 +1,7 @@
 {
   "hazardFactors": [
     {
-      "rec": "XY",
+      "rec": "安妥",
       "name": "安妥",
       "dust": "",
       "qual": "否",
@@ -31,7 +31,7 @@
       "physchem": "毒物"
     },
     {
-      "rec": "",
+      "rec": "2-氨基吡啶",
       "name": "2-氨基吡啶",
       "dust": "",
       "qual": "否",

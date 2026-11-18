@@ -15,11 +15,18 @@ const TEST_DIR = path.resolve("data/_test-hazard-edit");
 const TEST_DATA = path.join(TEST_DIR, "records.json");
 fs.mkdirSync(TEST_DIR, { recursive: true });
 
+// 本测试在**真实参考库**上做破坏性编辑（键入 XY/ZZ、Delete 清空、改「物化性质」），
+// 每次提交都会 persistLibrary() 写回 data/library.json。跑完必须还原，
+// 否则种子库被改成 XY / 空识别值 —— 曾因此把库首两行写坏（2026-11 定位）。
+const LIB_PATH = path.join(process.cwd(), "data", "library.json");
+const LIB_BACKUP = fs.readFileSync(LIB_PATH, "utf8");
+
 const server = await startServer({ port: 0, dataFile: TEST_DATA });
 const PORT = server.address().port;
 const APP_URL = `http://127.0.0.1:${PORT}/`;
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
 process.on("exit", () => {
+  try { fs.writeFileSync(LIB_PATH, LIB_BACKUP, "utf8"); } catch {}
   try { server.close(); } catch {}
   try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
   try { if (typeof browser !== "undefined" && browser) browser.process()?.kill(); } catch {}
