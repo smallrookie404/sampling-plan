@@ -1,7 +1,7 @@
 {
   "hazardFactors": [
     {
-      "rec": "安妥",
+      "rec": "XY",
       "name": "安妥",
       "dust": "",
       "qual": "否",
@@ -31,7 +31,7 @@
       "physchem": "毒物"
     },
     {
-      "rec": "2-氨基吡啶",
+      "rec": "",
       "name": "2-氨基吡啶",
       "dust": "",
       "qual": "否",
@@ -7635,6 +7635,66 @@
       "physchem": "粉尘"
     },
     {
+      "rec": "矽尘(50%<游离SiO2含量≤80%)(总尘)",
+      "name": "矽尘(50%<游离SiO2含量≤80%)",
+      "dust": "总尘",
+      "qual": "否",
+      "outsource": "否",
+      "twa": "是",
+      "stel": "否",
+      "cpe": "是",
+      "mac": "否",
+      "digits": "1",
+      "highTox": "否",
+      "noTestReason": "",
+      "physchem": "粉尘"
+    },
+    {
+      "rec": "矽尘(50%<游离SiO2含量≤80%)(呼尘)",
+      "name": "矽尘(50%<游离SiO2含量≤80%)",
+      "dust": "呼尘",
+      "qual": "否",
+      "outsource": "否",
+      "twa": "是",
+      "stel": "否",
+      "cpe": "是",
+      "mac": "否",
+      "digits": "1",
+      "highTox": "否",
+      "noTestReason": "",
+      "physchem": "粉尘"
+    },
+    {
+      "rec": "矽尘(游离SiO2含量>80%)(总尘)",
+      "name": "矽尘(游离SiO2含量>80%)",
+      "dust": "总尘",
+      "qual": "否",
+      "outsource": "否",
+      "twa": "是",
+      "stel": "否",
+      "cpe": "是",
+      "mac": "否",
+      "digits": "1",
+      "highTox": "否",
+      "noTestReason": "",
+      "physchem": "粉尘"
+    },
+    {
+      "rec": "矽尘(游离SiO2含量>80%)(呼尘)",
+      "name": "矽尘(游离SiO2含量>80%)",
+      "dust": "呼尘",
+      "qual": "否",
+      "outsource": "否",
+      "twa": "是",
+      "stel": "否",
+      "cpe": "是",
+      "mac": "否",
+      "digits": "1",
+      "highTox": "否",
+      "noTestReason": "",
+      "physchem": "粉尘"
+    },
+    {
       "rec": "稀土粉尘(游离SiO2含量<10%)",
       "name": "稀土粉尘(游离SiO2含量<10%)",
       "dust": "总尘",
@@ -8890,5 +8950,5 @@
       "physchem": "粉尘"
     }
   ],
-  "updatedAt": "2026-10-20T16:23:16.153Z"
+  "updatedAt": "2026-11-18T10:59:19.083Z"
 }
