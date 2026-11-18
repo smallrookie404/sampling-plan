@@ -144,7 +144,8 @@ sampling-plan/
   node tests/memberpicker.smoke.mjs # 项目组成员「人员选项框」：标题行（项目组成员+确认成员）在搜索框上方、默认收起、点搜索框展开全部、输入即过滤、无匹配提示、Esc/点外部收起（Playwright）
   node tests/noisereset.smoke.mjs  # 切项目/重新搜索/**加载中**清空三块页签的**内容**（卡片保留显示「（无）」）+ 噪声表格 + 报告缓存（Playwright）
   node tests/layout.hscroll.smoke.mjs # 横向滚动条贴窗口底部：主表/调查表/危害因素库底边 = 窗口底部-12px、页面不纵向滚动、模拟「flex 收缩失效」老内核仍贴底、切页签与视口缩放后重算（Playwright）
-  node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
+  node tests/datalist.rec.smoke.mjs # 录入区「接害因素」下拉只取危害因素库「识别」列(rec)：候选集合逐项等于 rec 去重集、系统名称独有值不进候选、改识别列候选同步（Playwright）
+  node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright；自带参考库备份还原）
   node tests/hazard.search.smoke.mjs # 危害因素库**搜索后**的编辑：双击/F2 进编辑、方向键按显示顺序移动、Delete 清空（Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
   node tests/pjbg.note1009.test.mjs # 后处理⑤回归 + ②b（需 1009 报告样例；缺失自动跳过）
@@ -411,6 +412,8 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 - `data/records.json` 目前仍是旧版「整表记录」格式（元素含 `rows`），首次访问 `/api/records` 时会自动迁移为索引 + `data/records/<id>.json`；迁移是幂等的，不要手工去改。
 - **只有修改参考库**才会触发 `scheduleLibrarySync` 防抖写回（约 1.2s，只写一个主端）；**打开页面不再写参考库**。调试或跑测试前后仍建议备份与恢复 `data/library.json`。
 - **滚动容器高度别只靠 flex 收缩**（2026-11-18）：主表/调查表/危害因素库都用 `flex:1 + min-height:0` 撑满，个别浏览器（360 极速/兼容、部分老内核）对 flex 子项按剩余高度收缩支持不到位，容器被整表内容撑高 → **横向滚动条掉到页面最下面**。`app.js` 的 `fitActiveScrollWrap()` 按视口实测剩余高度用 `max-height` 兜底钳住（页面 `resize` / `scroll` / 字体就绪 / `ResizeObserver` / 切页签 / 进出全屏时重算；`body.pdf-open` 时跳过），改动布局或新增滚动容器时同步接入，验收用 `tests/layout.hscroll.smoke.mjs`（要求容器底边 = 窗口底部 - 12px）。
+- **录入区「接害因素」(D) 的下拉候选只取参考库「识别」列(rec)**（2026-11-18 用户要求）：`rebuildDatalist()` 不再把 `h.name`（系统名称）混进 `#hazard-dl`。原因：D 的值按 rec **逐字**匹配（`logic.js findRec` ↔ `VLOOKUP(接害因素,A:B,2,FALSE)`），候选里混进系统名称会让人选到匹配不上的值（如 `安妥`/`1,3-丁二烯`/`氮氧化物(一氧化氮和二氧化氮)`）→ AN 为空、报「未找到」；系统名称只在下游按 AN 反查时用。回归见 `tests/datalist.rec.smoke.mjs`。
+- **浏览器测试会写真实参考库，必须自带还原**（2026-11-18）：危害因素库编辑类用例直接在 `data/library.json` 上改（键入 `XY`/`ZZ`、`Delete` 清空、改「物化性质」），每次提交都会 `persistLibrary()` 落盘。`tests/hazard.edit.smoke.mjs` 现在启动时备份、`process.on("exit")` 写回；**新增同类用例照此办理**，或像 `tests/datalist.rec.smoke.mjs` 那样用 `page.route` 拦掉 `PUT /api/library`。历史上库首两行被这套用例改成 `rec="XY"`（应为「安妥」）与 `rec=""`（应为「2-氨基吡啶」），已修正。
 - 测试契约：`tests/ui.smoke.mjs` 依赖 `td[data-r]/td[data-c]`、`td.rowno`、`div.computed-text`、`#grid-status` 文案与 GitHub 配置键名；`tests/xlsxio.test.mjs` 依赖「只导出 W~BI 自动计算区」的行为。改 DOM 结构或导出范围前先看这些断言。
 - 纯函数引擎（logic.js）是唯一可被 Node 直接测试的部分，新增计算请优先放这里，不要在 app.js 里再写一份公式。
 - 源文件统一 UTF-8；页面迭代频繁，部署后浏览器需 Ctrl+F5 强刷。

@@ -4280,15 +4280,18 @@
   }
 
   // ---------- 联想提示 ----------
+  // 录入区「接害因素」(D) 的下拉候选**只取危害因素库的「识别」列(rec)**：
+  //   计算按 rec 逐字匹配（logic.js findRec ↔ VLOOKUP(接害因素,A:B,2,FALSE)），把「系统名称」也塞进候选
+  //   会让人选到一个匹配不上的值（如 安妥 / 1,3-丁二烯 / 氮氧化物(一氧化氮和二氧化氮)），选完反而报
+  //   「接害因素在危害因素库中未找到」。系统名称只在下游按 AN 反查时用，不进录入侧下拉。
   function rebuildDatalist() {
     const seen = new Set();
     const opts = [];
     for (const h of hazardFactors) {
-      for (const v of [h.rec, h.name]) {
-        if (v && !seen.has(v)) {
-          seen.add(v);
-          opts.push(`<option value="${escAttr(v)}">`);
-        }
+      const v = h.rec;
+      if (v && !seen.has(v)) {
+        seen.add(v);
+        opts.push(`<option value="${escAttr(v)}">`);
       }
     }
     const dl = document.createElement("datalist");
