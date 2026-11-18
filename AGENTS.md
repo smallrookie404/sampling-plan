@@ -143,6 +143,7 @@ sampling-plan/
   node tests/entbasic.smoke.mjs  # 「企业基本信息上传」勾选项：三条补全规则（办公室/抄联系人/兼职专职1）、合并成一次 PUT、端到端上传调查表（Playwright）
   node tests/memberpicker.smoke.mjs # 项目组成员「人员选项框」：标题行（项目组成员+确认成员）在搜索框上方、默认收起、点搜索框展开全部、输入即过滤、无匹配提示、Esc/点外部收起（Playwright）
   node tests/noisereset.smoke.mjs  # 切项目/重新搜索/**加载中**清空三块页签的**内容**（卡片保留显示「（无）」）+ 噪声表格 + 报告缓存（Playwright）
+  node tests/layout.hscroll.smoke.mjs # 横向滚动条贴窗口底部：主表/调查表/危害因素库底边 = 窗口底部-12px、页面不纵向滚动、模拟「flex 收缩失效」老内核仍贴底、切页签与视口缩放后重算（Playwright）
   node tests/hazard.edit.smoke.mjs # 危害因素库单元格编辑（Excel 语义：布防/键入覆盖/双击/F2/导航/清空/选区/物化性质列；Playwright）
   node tests/hazard.search.smoke.mjs # 危害因素库**搜索后**的编辑：双击/F2 进编辑、方向键按显示顺序移动、Delete 清空（Playwright）
   node tests/pjbg.note.test.mjs  # 检评报告后处理②b/⑤（需样例 docx，见下）
@@ -409,6 +410,7 @@ Cloudflare 工作流需要 GitHub 仓库 Secrets：`CLOUDFLARE_API_TOKEN`、`CLO
 - `data/library.json`、`data/records.json` 由应用自动写回，仓库中保持提交以利备份；`.gitignore` 已排除原版 Excel 模板（含调查数据）。
 - `data/records.json` 目前仍是旧版「整表记录」格式（元素含 `rows`），首次访问 `/api/records` 时会自动迁移为索引 + `data/records/<id>.json`；迁移是幂等的，不要手工去改。
 - **只有修改参考库**才会触发 `scheduleLibrarySync` 防抖写回（约 1.2s，只写一个主端）；**打开页面不再写参考库**。调试或跑测试前后仍建议备份与恢复 `data/library.json`。
+- **滚动容器高度别只靠 flex 收缩**（2026-11-18）：主表/调查表/危害因素库都用 `flex:1 + min-height:0` 撑满，个别浏览器（360 极速/兼容、部分老内核）对 flex 子项按剩余高度收缩支持不到位，容器被整表内容撑高 → **横向滚动条掉到页面最下面**。`app.js` 的 `fitActiveScrollWrap()` 按视口实测剩余高度用 `max-height` 兜底钳住（页面 `resize` / `scroll` / 字体就绪 / `ResizeObserver` / 切页签 / 进出全屏时重算；`body.pdf-open` 时跳过），改动布局或新增滚动容器时同步接入，验收用 `tests/layout.hscroll.smoke.mjs`（要求容器底边 = 窗口底部 - 12px）。
 - 测试契约：`tests/ui.smoke.mjs` 依赖 `td[data-r]/td[data-c]`、`td.rowno`、`div.computed-text`、`#grid-status` 文案与 GitHub 配置键名；`tests/xlsxio.test.mjs` 依赖「只导出 W~BI 自动计算区」的行为。改 DOM 结构或导出范围前先看这些断言。
 - 纯函数引擎（logic.js）是唯一可被 Node 直接测试的部分，新增计算请优先放这里，不要在 app.js 里再写一份公式。
 - 源文件统一 UTF-8；页面迭代频繁，部署后浏览器需 Ctrl+F5 强刷。

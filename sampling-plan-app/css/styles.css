@@ -383,6 +383,10 @@ textarea.grid-arm { position: fixed; z-index: 900; margin: 0; padding: 2px 6px; 
 .survey-export-menu .survey-export-item:hover { background: var(--primary-light, #e8f0f8); }
 
 /* 网格 */
+/* 滚动容器：横向滚动条要贴在浏览器窗口底部。
+   flex:1 + min-height:0 靠 flex 收缩实现；个别浏览器（360 极速/兼容、部分老内核）收缩不生效，
+   容器会被整表撑高、横向滚动条掉到页面最下面 —— 由 js/app.js 的 fitActiveScrollWrap() 用
+   内联 max-height 兜底钳住（flex 正常时该值恰好等于原高度，视觉零变化），此处不要再写死高度。 */
 .grid-wrap {
   flex: 1;
   min-height: 0;

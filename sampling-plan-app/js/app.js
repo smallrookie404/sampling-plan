@@ -2266,6 +2266,7 @@
       document.body.classList.add("fullscreen-mode");
       FS_BAR.classList.remove("hidden");
       FS_BTN.textContent = "退出全屏";
+      scheduleFitScrollWrap();
     }
   }
 
@@ -2276,6 +2277,7 @@
       document.body.classList.remove("fullscreen-mode");
       FS_BAR.classList.add("hidden");
       FS_BTN.textContent = "⛶ 全屏";
+      scheduleFitScrollWrap();
     }
   }
 
@@ -2284,6 +2286,8 @@
     document.body.classList.toggle("fullscreen-mode", fs);
     FS_BAR.classList.toggle("hidden", !fs);
     FS_BTN.textContent = fs ? "退出全屏" : "⛶ 全屏";
+    // 进出全屏会隐藏顶栏/页签，容器顶边整体上移 → 重新钳一次高度
+    scheduleFitScrollWrap();
   }
 
   FS_BTN.addEventListener("click", () => {
@@ -2312,6 +2316,53 @@
     $(fsId).addEventListener("click", () => $(origId).click());
   }
   $("fs-exit").addEventListener("click", exitFullscreen);
+
+  // ---------- 滚动容器高度钳制：横向滚动条必须贴在浏览器窗口底部 ----------
+  // 背景：主表 / 调查表 / 危害因素库的滚动容器都是 flex:1 + min-height:0，靠 flex 收缩把底边压在
+  //      窗口底部。个别浏览器（360 极速/兼容模式、部分老内核）对「flex 子项按剩余高度收缩」支持
+  //      不到位，容器会被整表内容撑高 → 横向滚动条掉到页面最下面，要先把页面滚到底才能拖。
+  // 做法：不依赖 flex，按视口实测「容器顶边到窗口底部还剩多少」，用 max-height 兜底钳住：
+  //      flex 正常时 max-height 恰好等于原高度（视觉零变化），flex 失效时也能把滚动条钉在窗口底部。
+  const FIT_BOTTOM_GAP = 12; // 与 .tab-panel 的 padding-bottom 一致（12px）
+  function fitActiveScrollWrap() {
+    const panel = document.querySelector(".tab-panel.active");
+    if (!panel) return;
+    // 报告页 PDF 打开时整页纵向滚动（body.pdf-open），此时不能钳高度
+    if (document.body.classList.contains("pdf-open")) return;
+    const wrap = panel.querySelector(".grid-wrap, .hazard-wrap");
+    if (!wrap) return;
+    const top = wrap.getBoundingClientRect().top;
+    // 窗口极矮时至少留 120px，避免把容器压没；正常窗口下 avail 就是「顶边到窗口底部」的剩余空间
+    const avail = Math.max(120, Math.floor(window.innerHeight - top - FIT_BOTTOM_GAP));
+    if (wrap.dataset.fitMax === String(avail)) return;
+    wrap.dataset.fitMax = String(avail);
+    wrap.style.maxHeight = avail + "px";
+  }
+  let fitRaf = 0;
+  function scheduleFitScrollWrap() {
+    if (fitRaf) return;
+    const raf = window.requestAnimationFrame || ((fn) => setTimeout(fn, 16));
+    fitRaf = raf(() => {
+      fitRaf = 0;
+      fitActiveScrollWrap();
+    });
+  }
+  window.addEventListener("resize", scheduleFitScrollWrap);
+  window.addEventListener("orientationchange", scheduleFitScrollWrap);
+  // 页面被整体滚动（如从报告页 PDF 返回）时也要重算一次
+  window.addEventListener("scroll", scheduleFitScrollWrap, { passive: true });
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", scheduleFitScrollWrap);
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(scheduleFitScrollWrap).catch(() => {});
+  }
+  // 顶栏/页签/提示条/工具栏换行都会改变容器顶边，尺寸一变就重算（ResizeObserver 不支持时靠 resize 兜底）
+  if (typeof ResizeObserver !== "undefined") {
+    const fitRo = new ResizeObserver(scheduleFitScrollWrap);
+    document.querySelectorAll(".topbar, nav.tabs, #storage-notice, #sync-status, .grid-toolbar").forEach((el) => {
+      try { fitRo.observe(el); } catch {}
+    });
+  }
+  scheduleFitScrollWrap();
 
   // ---------- 数据记录与参考库存储：本地服务 / GitHub API / 临时模式 ----------
   const RECORDS_KEY = "samplingPlanRecords_v1"; // 仅用于“临时模式”兜底
@@ -3316,6 +3367,8 @@
       if (activeTab === "hazard") renderHazard();
       if (activeTab === "survey" && window.SurveySheets) window.SurveySheets.refresh();
       if (activeTab === "main") renderWindow();
+      // 换页签后容器顶边/高度都变了，重新把滚动容器钉回窗口底部
+      scheduleFitScrollWrap();
     });
   });
 
